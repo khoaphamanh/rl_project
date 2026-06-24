@@ -140,18 +140,18 @@ def draw_obs_grid(screen, image, ox, oy, font_tiny):
 # ---------------------------------------------------------------------------
 
 def interpret_obs(image):
-    """Return lines describing what is visible in the partial observation."""
+    """Return lines describing non-wall objects visible in the partial observation."""
     n = image.shape[0]
     agent_row = n - 1
     agent_col = n // 2
     lines = []
-    walls = []
 
     for row in range(n):
         for col in range(n):
             # MiniGrid obs is indexed [x, y] = [col, row], agent at [center, bottom]
             obj_idx, color_idx, state = image[col, row]
-            if obj_idx in (0, 1, 10):   # unseen / empty / self
+            # skip walls, floor, empty, unseen, agent — walls are visible on the minimap
+            if obj_idx in (0, 1, 2, 3, 10):
                 continue
 
             steps_fwd = agent_row - row
@@ -162,16 +162,14 @@ def interpret_obs(image):
             if steps_fwd > 0:
                 pos = f"{steps_fwd} step{'s' if steps_fwd > 1 else ''} ahead, {side}"
             elif steps_fwd == 0:
-                pos = f"same row (beside you), {side}"
+                pos = f"beside you, {side}"
             else:
                 pos = f"{abs(steps_fwd)} step{'s' if abs(steps_fwd) > 1 else ''} behind, {side}"
 
-            obj_name   = IDX_TO_OBJ.get(obj_idx, "object")
             color_name = IDX_TO_COLOR_NAME.get(color_idx, "")
+            obj_name   = IDX_TO_OBJ.get(obj_idx, "object")
 
-            if obj_idx == 2:
-                walls.append(pos)
-            elif obj_idx == 4:
+            if obj_idx == 4:
                 state_str = IDX_TO_STATE.get(state, "")
                 lines.append(f"{color_name.capitalize()} door ({state_str}) — {pos}")
             elif obj_idx == 8:
@@ -181,10 +179,7 @@ def interpret_obs(image):
             else:
                 lines.append(f"{color_name.capitalize()} {obj_name} — {pos}")
 
-    if walls:
-        lines.insert(0, f"Walls at: {'; '.join(walls)}")
-
-    # What is directly in front of the agent?
+    # Action hint for whatever is directly in front of the agent
     if agent_row > 0:
         fi, fc, fs = image[agent_col, agent_row - 1]
         fname = IDX_TO_OBJ.get(fi, "?")
