@@ -51,7 +51,7 @@ Standard RL algorithms like PPO, DQN assume the Markov property: the optimal act
 
 We address this by introducing recurrent agents that maintain a hidden state encoding observation history. Instead of deciding actions from observation alone, they condition on both past hidden state and current observation. 
 
-\textbf{Research Question:} Does equipping PPO and DQN with recurrent memory recover performance in partially observable environments, and how much memory capacity and history length are actually needed?
+\textbf{Research Question:} Does equipping PPO with recurrent memory recover performance in partially observable environments, and does replacing LSTM with a Transformer encoder provide an advantage when longer observation histories are required?
 
 We benchmark recurrent agents against baselines on memory-critical environments with ablations controlling observability level, memory capacity, and BPTT truncation horizon.
 
@@ -74,12 +74,16 @@ We adopt the Memory MiniGrid environment, where the agent begins in a left room 
     \label{fig:memory_grid}
 \end{figure}
 
+\subsection{Baselines}
+
+We include MLP PPO as a memoryless baseline. Since it conditions only on the current observation without any recurrent state, it cannot resolve state aliasing and can only guess when the task requires recalling past observations.
+
 \subsection{RPPO}
 
-We employ a CNN1D encoder combined with an LSTM layer, shared between the actor and critic networks. Both networks use two separate heads for policy and value outputs, following the architecture proposed by Pleines et al.
+Following Pleines et al., we employ a CNN1D encoder combined with an LSTM layer as the backbone, shared between the actor and critic, with two separate output heads for policy and value. However, we still need to determine through experiments whether sharing the encoder is beneficial or whether splitting it into two independent models yields better performance.
 
 \textbf{Sequence Padding: }
-Since episodes have variable lengths until termination, we pad all sequences to a uniform length to satisfy LSTM's input requirements. Embeddings corresponding to padded positions are masked and excluded from loss computation across all three PPO losses (policy loss, value loss, and entropy bonus).
+Since episodes have variable lengths until termination, we pad all sequences to a uniform length to satisfy LSTM's input requirements. Embeddings corresponding to padded positions are masked and excluded from loss computation across all three PPO losses (policy loss, value loss, and entropy bonus) \cite{rppo}.
 
 \textbf{Masking Example:}
 Given batch size 2:
@@ -96,12 +100,51 @@ After LSTM encoding and masking:
 
 The effective batch contains 8 steps (3 from Episode 1, 5 from Episode 2). The remaining PPO loss terms remain unchanged.
 
-\subsection{Hyperparameter Optimization}
-We conduct hyperparameter tuning for the LSTM architecture, focusing on input size, hidden size, and sequence length to analyze their impact on training dynamics. For PPO, we tune only the learning rate. The objective function is the total episode reward.
+\subsection{Ablation Study}
+
+\subsubsection{Transformer PPO}
+
+To isolate the effect of the memory mechanism, we replace the LSTM layer with a Transformer encoder. In this variant, we employ a fully connected layer followed by a Transformer encoder as the backbone. The Transformer encoder attends over the sequence of past observations, allowing the agent to selectively integrate relevant historical context without relying on a fixed-size hidden state as in LSTM. All other architectural choices remain identical to RPPO.
+
+\subsubsection{Reduced Observation Box}
+
+A known limitation of LSTM is its bottleneck when processing long sequences, as it must compress the entire history into a fixed-size hidden state. In the default Memory MiniGrid setting, the agent has a $7\times7$ partial observation box. If we reduce this to $5\times5$ or $3\times3$, the agent's field of view narrows and it requires more steps to navigate and solve the environment, resulting in longer observation sequences. This may expose the LSTM bottleneck more severely, while the Transformer's attention mechanism can in principle handle such longer dependencies more effectively. This setting therefore serves as a controlled ablation to compare the two memory mechanisms under increasing sequence length pressure.
+
 
 \subsection{Benchmarking}
 
-We benchmark RPPO against PPO and DQN baselines under the POMDP assumption on Memory MiniGrid. We expect RPPO to substantially outperform memoryless PPO and DQN. All methods are subjected to hyperparameter optimization and evaluated across multiple random seeds.
+We benchmark all agents on \texttt{MiniGrid-MemoryS7-v0} with the default $7\times7$ observation box. Table~\ref{tab:bench_main} summarizes our expected outcomes. MLP PPO, being memoryless, cannot resolve state aliasing and is expected to achieve low accumulated return $G_t$. Both LSTM PPO and Transformer PPO maintain a history of past observations and are expected to solve the task, yielding high $G_t$.
+
+\begin{table}[H]
+    \centering
+    \caption{Expected accumulated return $G_t$ on the default $7\times7$ observation setting.}
+    \label{tab:bench_main}
+    \begin{tabular}{lc}
+        \toprule
+        \textbf{Algorithm} & \textbf{Expected $G_t$} \\
+        \midrule
+        MLP PPO       & Low  \\
+        LSTM PPO      & High \\
+        Transformer PPO & High \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+To stress-test the memory mechanisms under longer observation sequences, we additionally evaluate on a reduced $5\times5$ observation box. Table~\ref{tab:bench_ablation} shows our expected outcomes for this setting. With a narrower field of view the agent requires more steps to solve the environment, exposing LSTM's fixed-size hidden state as a bottleneck. We therefore expect LSTM PPO to struggle and achieve low $G_t$, while Transformer PPO, benefiting from its attention mechanism over the full sequence, is expected to maintain high $G_t$.
+
+\begin{table}[H]
+    \centering
+    \caption{Expected accumulated return $G_t$ on the reduced $5\times5$ observation setting.}
+    \label{tab:bench_ablation}
+    \begin{tabular}{lc}
+        \toprule
+        \textbf{Algorithm} & \textbf{Expected $G_t$} \\
+        \midrule
+        LSTM PPO $5\times5$        & Low  \\
+        Transformer PPO $5\times5$ & High \\
+        \bottomrule
+    \end{tabular}
+\end{table}
 
 \section{Timeline}
 
