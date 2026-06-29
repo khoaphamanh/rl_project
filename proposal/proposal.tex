@@ -1,0 +1,201 @@
+% This is a variation of the NeurIPS'24 format
+
+\documentclass{article}
+\PassOptionsToPackage{numbers,square,sort&compress}{natbib}
+\usepackage[final]{adrl}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}     
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{float} % optional, for [H]
+
+%------------------------------------------------------------------------------------------%
+\usepackage{xcolor}
+\definecolor{dracula}{RGB}{40, 42, 54}
+\definecolor{textcolor}{RGB}{235, 235, 235}
+%\pagecolor{dracula}
+%\color{textcolor}
+%------------------------------------------------------------------------------------------
+
+
+% Add your own as neccessary
+
+\title{Consistent Grad-CAM Explanations for Anomaly Detection Decisions}
+% TODO: add your real name and real link
+\author{Anh Khoa Pham \\ \url{https://github.com/khoaphamanh/project_iml} \And Second Author \\ \url{https://github.com/second-author}}
+
+\begin{document}
+
+\maketitle
+\section{Motivation}
+In the Interpretable Machine Learning course, we have become familiar with gradient-based methods such as saliency maps and Integrated Gradients, which can be applied to virtually any deep learning model.
+
+In section \ref{subsec:grad-cam}, we introduce Gradient-weighted Class Activation Mapping (Grad-CAM), a local explanation method specifically designed for Convolutional Neural Networks (CNNs) to explain a particular model decision for a given image input.
+
+However, Grad-CAM also has limitations. To address these issues, section \ref{subsec:cgc} presents an approach that incorporates contrastive learning together with data augmentations to improve the quality and consistency of the explanations.
+
+Finally, in section \ref{sec:iad}, we aim to extend Grad-CAM beyond supervised multi-class classification. In particular, we explore how it can still be applied to an unsupervised anomaly detection setting by combining an variational autoencoder with pseudo-labels.
+
+\section{Related Topics}
+Saliency Maps and Integrated Gradients have long been two well-known local explanation methods, and they can be applied to any deep learning neural network through gradients \cite{iml}.
+
+\subsection{Gradient-weighted Class Activation Mapping}
+\label{subsec:grad-cam}
+Grad-CAM, first introduced in 2019 by Selvaraju et al., shares the same core idea as saliency maps: it uses derivatives to explain a model’s specific decision for a specific input image. However, unlike saliency maps, Grad-CAM computes gradients of the output only with respect to the last convolutional feature maps (i.e., up to the final convolutional layer). Note that Grad-CAM is a variant designed specifically for models with convolutional structures \cite{gc}.
+
+To compute Grad-CAM \cite{gc}, we first compute the neuron importance weights $\alpha_k^{c}$ using Eq. \ref{eq:neural_importance_weights}.
+
+\begin{equation}
+\label{eq:neural_importance_weights}
+\alpha_k^{c}=\frac{1}{Z}\sum_i\sum_j \frac{\partial y^{c}}{\partial A_{ij}^{k}}
+\end{equation}
+
+Where: 
+\begin{itemize}
+\item $\alpha_k^{c}$: Importance weight of feature map $k$ for class $c$.
+\item $c$: Index of the target class of interest.
+\item $k$: Index of the feature map (channel) in the chosen convolutional layer.
+\item $y^{c}$: The score (logit, i.e., pre-softmax) for class $c$.
+\item $A^{k}$: The $k$-th feature map (activation map) of the chosen convolutional layer.
+\item $A_{ij}^{k}$: Activation value at spatial location $(i,j)$ in feature map $k$.
+\item $\frac{\partial y^{c}}{\partial A_{ij}^{k}}$: Gradient of the class score w.r.t.\ that activation.
+\item $i,j$: Spatial indices over the height and width of the feature map.
+\item $Z$: Number of spatial locations in the feature map (typically $Z = H \times W$).
+\end{itemize}
+
+Finally, the Grad-CAM heatmap \cite{gc}  is computed by Eq. \ref{eq:gc}:
+\begin{equation}
+\label{eq:gc}
+L_{\mathrm{Grad\text{-}CAM}}^{c}
+=
+\mathrm{ReLU}\!\left(\sum_k \alpha_k^{c} A^{k}\right)
+\end{equation}
+
+Where:
+\begin{itemize}
+\item $L_{\mathrm{Grad\text{-}CAM}}^{c}$: The Grad-CAM localization map (heatmap) for the target class $c$.
+\item $c$: Index of the target class of interest.
+\item $\mathrm{ReLU}(\cdot)$: Element-wise rectified linear unit, keeping only positive contributions to class $c$.
+\item $\sum_k$: Summation over all feature maps (channels) in the chosen convolutional layer.
+\item $k$: Index of a feature
+map (channel).
+\item $\alpha_k^{c}$: Importance weight of feature map $k$ for class $c$.
+\item $A^{k}$: The $k$-th feature map from the selected convolutional layer.
+\end{itemize}
+
+Suppose we use a pretrained EfficientNet-B0 \cite{efficientnet} model with an input tensor of shape $(3,224,224)$.
+After passing through the final convolutional layer, the feature map tensor has shape $(1280,7,7)$ before entering the classifier head.
+Then, for a single input image, $A$ has shape $(1280,7,7)$; the number of feature maps is $K=1280$; and
+$Z = H \times W = 7 \times 7$.
+The weight vector $\alpha^{c}$ has shape $(1280,)$, and the Grad-CAM map
+$L_{\mathrm{Grad\text{-}CAM}}^{c}$ has shape $(7,7)$.
+
+Grad-CAM’s final heatmap has a much smaller spatial resolution than the original input image. Therefore, for visualization purposes, bilinear interpolation is used to upsample it back to the original input size.
+
+As suggested in the original Grad-CAM paper, the feature maps from the last convolutional layer should be used because they provide the best compromise between high-level semantics and detailed spatial information  \cite{gc}. Grad-CAM does not require any hyperparameters.
+
+Figure \ref{fig:gc} shows an example of Grad-CAM. From left to right, the first image is the original input, the second is the original Grad-CAM heatmap, the third is the Grad-CAM heatmap upsampled to match the input resolution, and the fourth is an overlay of the input image and the Grad-CAM heatmap to visualize how the highlighted pixels correspond to the image content.
+% In the document:
+\begin{figure}[H] % use [htbp] if you don't want to force placement
+    \centering
+    \includegraphics[width=1.0\linewidth]{grad_cam.png}
+    \caption{An example Grad-CAM visualization}
+    \label{fig:gc}
+\end{figure}
+
+\subsection{Contrastive Grad-CAM Consistency }
+\label{subsec:cgc}
+However, Grad-CAM explanations can sometimes lack consistency under data augmentation. For instance, if we compute Grad-CAM for an original image and then apply a center crop to that image, we would expect the Grad-CAM heatmap of the center-cropped image to also be center-cropped in a consistent way, but in practice this may not happen \cite{cgc}, see Fig. \ref{fig:cgc}.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\linewidth]{cgc.png}
+    \caption{Contrastive Grad-CAM consistency \cite{cgc}}
+    \label{fig:cgc}
+\end{figure}
+
+Pillai et al.~(2022) proposed adding a contrastive learning loss during training in addition to the standard cross-entropy loss \cite{cgc}.
+The overall training objective is:
+\begin{equation}
+L = L_{\mathrm{CE}} + \lambda L_{\mathrm{CGC}} .
+\end{equation}
+Where $L_{\mathrm{CE}}$ is the cross-entropy loss for classification, $\lambda$ is a hyperparameter that controls the trade-off between the two terms, and $L_{\mathrm{CGC}}$ is the contrastive Grad-CAM consistency loss (CGC) inspired by SimCLR \cite{cgc} \cite{simclr}. 
+
+For a query image $x_i$, the paper defines:
+\begin{equation}
+L_{i, CGC}
+=
+-\log
+\frac{\exp\left(\mathrm{sim}\!\left(T_i(g_i(x_i)),\, g_i(T_i(x_i))\right)/\tau\right)}
+{\sum_{j=1}^{n}\exp\left(\mathrm{sim}\!\left(T_i(g_i(x_i)),\, g_j(T_j(x_j))\right)/\tau\right)} .
+\end{equation}
+
+Where:
+\begin{itemize}
+\item $L_i$: Contrastive Grad-CAM consistency loss for the query image $x_i$.
+\item $n$: Batch size.
+\item $x_i$: Query image (one image in the batch).
+\item $x_j$: The $j$-th image in the batch (negatives when $j \neq i$).
+\item $T_i(\cdot), T_j(\cdot)$: Independently sampled random spatial augmentations (e.g., cropping, scaling, flipping).
+\item $g(\cdot)$: Grad-CAM operator that produces a heatmap for the model's top predicted category.
+\item $g_i(x_i)$: Grad-CAM heatmap computed on the original query image $x_i$.
+\item $T_i(g_i(x_i))$: Query heatmap after applying the same augmentation $T_i$ directly to the heatmap.
+\item $g_i(T_i(x_i))$: Grad-CAM heatmap computed from the augmented query image $T_i(x_i)$ (positive).
+\item $g_j(T_j(x_j))$: Grad-CAM heatmaps computed from other augmented images (negatives for $j\neq i$).
+\item $\mathrm{sim}(\cdot,\cdot)$: Similarity between two heatmaps (cosine similarity in the paper's experiments).
+\item $\tau$: Temperature hyperparameter.
+\end{itemize}
+
+In summary, the key idea of the CGC algorithm is that the Grad-CAM heatmap of an augmented image should undergo the same augmentation as the Grad-CAM heatmap of the original image. Based on the paper’s results \cite{cgc}, CGC requires additional resources to compute the contrastive learning loss in order to improve explanation consistency, rather than to increase model performance on supervised tasks such as classification.
+
+
+\section{Interpretable Anomaly Detection}
+\label{sec:iad}
+In the Interpretable Machine Learning course, we are typically introduced to XAI methods that require labels, for example in regression or classification settings. We therefore wondered whether XAI methods can also be applied to unsupervised learning problems such as anomaly detection, and we chose the MVTec-AD dataset for this challenge.
+
+Our idea is as follows. First, we train a Variational Autoencoder (VAE) \cite{vae} using the negative ELBO loss on the normal training set.
+
+Second, at test time, we compute an anomaly score for each image using the VAE (e.g., negative ELBO or reconstruction-based score) and use this score to decide whether an image is normal or anomalous.
+
+Third, we apply Grad-CAM (and CGC, if feasible) as post-hoc explanation methods by backpropagating gradients from the anomaly score to the final convolutional feature maps of the encoder. We expect the resulting heatmaps to highlight the image regions that contribute most to high anomaly scores, and thus correspond to defects in anomalous instances.
+
+In summary, Grad-CAM and CGC are post-processing steps for explanation. The key part of this approach is a reliable anomaly score: if the anomaly detector is inaccurate or unstable, the explanations will likely be unreliable as well.
+
+To be honest, since we have not implemented or experimented yet, we are not certain about the results, however, we expect the outcome to look like Fig \ref{fig:iad}. Where the image on the left is normal, the one in the middle is an anomalous acorn, and the one on the right is the Grad-CAM explaining why the acorn is considered an anomaly.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\linewidth]{iad.png}
+    \caption{Explanation of anomaly decision}
+    \label{fig:iad}
+\end{figure}
+
+
+
+\section{Experiments}
+In Sections \ref{subsec:grad-cam} and \ref{subsec:cgc}, we will use only a small subset of ImageNet, where the task is to classify around 10 classes. We will mainly focus on whether CGC improves interpretability compared to standard Grad-CAM. The model we choose is EfficientNet-B0, and we will use fine-tuning to save computational resources; the model performance should remain strong because EfficientNet-B0 has already been pretrained on ImageNet.
+
+In Section \ref{sec:iad}, we will use a Variational Autoencoder with an encoder based on EfficientNet-B0, while the decoder and the classifier head will have simpler architectures. We will train on only a small subset of the MVTec-AD dataset.
+
+\section{Timeline}
+With a team of only one person, we estimate that the entire project will take about three weeks of full-time work.
+
+\begin{itemize}
+\item \textbf{Research:} Finding relevant papers, datasets, and pretrained models will take about one week.
+\item \textbf{Implementation, Experiments, and Analysis:} Writing and running the code, selecting and testing suitable hyperparameters, and trying to achieve the best possible model performance will take about one and a half weeks.
+\item \textbf{Reporting:} Writing the report, selecting images for visualization, and creating the poster will take about half a week.
+\end{itemize}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
