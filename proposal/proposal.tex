@@ -23,176 +23,94 @@
 \usepackage{xcolor}
 \definecolor{dracula}{RGB}{40, 42, 54}
 \definecolor{textcolor}{RGB}{235, 235, 235}
-%\pagecolor{dracula}
-%\color{textcolor}
+\pagecolor{dracula}
+\color{textcolor}
 %------------------------------------------------------------------------------------------
 
 
 % Add your own as neccessary
 
-\title{Consistent Grad-CAM Explanations for Anomaly Detection Decisions}
+\title{When History Matters: Benchmarking Recurrent RL Agents on Memory Tasks}
 % TODO: add your real name and real link
-\author{Anh Khoa Pham \\ \url{https://github.com/khoaphamanh/project_iml} \And Second Author \\ \url{https://github.com/second-author}}
+\author{%
+  Anh Khoa Pham \\\href{mailto:khoa.pham@uni-hannover.de}{khoa.pham@stud.uni-hannover.de} %\url{https://github.com/khoaphamanh/rl_project}
+  \And
+  Quang Ky Anh Nguyen  \\\href{mailto:ky.nguyen@stud.uni-hannover.de}{ky.nguyen@stud.uni-hannover.de} %\url{https://github.com/author2}
+ % \And
+  %Author Three \\ \url{https://github.com/author3}
+}
 
 \begin{document}
 
 \maketitle
 \section{Motivation}
-In the Interpretable Machine Learning course, we have become familiar with gradient-based methods such as saliency maps and Integrated Gradients, which can be applied to virtually any deep learning model.
 
-In section \ref{subsec:grad-cam}, we introduce Gradient-weighted Class Activation Mapping (Grad-CAM), a local explanation method specifically designed for Convolutional Neural Networks (CNNs) to explain a particular model decision for a given image input.
+Standard RL algorithms like PPO, DQN assume the Markov property: the optimal action depends only on the current state. However, many environments are partially observable, means, the current observation alone is insufficient to act optimally. State aliasing occurs when different true states look identical to the agent, yet require different actions.
 
-However, Grad-CAM also has limitations. To address these issues, section \ref{subsec:cgc} presents an approach that incorporates contrastive learning together with data augmentations to improve the quality and consistency of the explanations.
+\textbf{Example:} In \texttt{MiniGrid-Memory}, the agent must remember an object it saw earlier, then select the matching object later. The choice point produces identical observations regardless of what was seen before, memoryless PPO and DQN can only guess to solve the task, find the same object as seen before.
 
-Finally, in section \ref{sec:iad}, we aim to extend Grad-CAM beyond supervised multi-class classification. In particular, we explore how it can still be applied to an unsupervised anomaly detection setting by combining an variational autoencoder with pseudo-labels.
+We address this by introducing recurrent agents that maintain a hidden state encoding observation history. Instead of deciding actions from observation alone, they condition on both past hidden state and current observation. 
+
+\textbf{Research Question:} Does equipping PPO and DQN with recurrent memory recover performance in partially observable environments, and how much memory capacity and history length are actually needed?
+
+We benchmark recurrent agents against baselines on memory-critical environments with ablations controlling observability level, memory capacity, and BPTT truncation horizon.
 
 \section{Related Topics}
-Saliency Maps and Integrated Gradients have long been two well-known local explanation methods, and they can be applied to any deep learning neural network through gradients \cite{iml}.
 
-\subsection{Gradient-weighted Class Activation Mapping}
-\label{subsec:grad-cam}
-Grad-CAM, first introduced in 2019 by Selvaraju et al., shares the same core idea as saliency maps: it uses derivatives to explain a model’s specific decision for a specific input image. However, unlike saliency maps, Grad-CAM computes gradients of the output only with respect to the last convolutional feature maps (i.e., up to the final convolutional layer). Note that Grad-CAM is a variant designed specifically for models with convolutional structures \cite{gc}.
+In the reinforcement learning course, algorithms such as DQN and PPO have been introduced and applied to simple environments like LunarLander and CartPole. These algorithms operate under the MDP assumption.
 
-To compute Grad-CAM \cite{gc}, we first compute the neuron importance weights $\alpha_k^{c}$ using Eq. \ref{eq:neural_importance_weights}.
+In Deep Learning, recurrent neural network layers such as LSTM and GRU possess the ability to maintain and integrate information from previous time steps, preserving temporal dependencies and event ordering. This property has been successfully applied in domains such as natural language processing.
 
-\begin{equation}
-\label{eq:neural_importance_weights}
-\alpha_k^{c}=\frac{1}{Z}\sum_i\sum_j \frac{\partial y^{c}}{\partial A_{ij}^{k}}
-\end{equation}
-
-Where: 
-\begin{itemize}
-\item $\alpha_k^{c}$: Importance weight of feature map $k$ for class $c$.
-\item $c$: Index of the target class of interest.
-\item $k$: Index of the feature map (channel) in the chosen convolutional layer.
-\item $y^{c}$: The score (logit, i.e., pre-softmax) for class $c$.
-\item $A^{k}$: The $k$-th feature map (activation map) of the chosen convolutional layer.
-\item $A_{ij}^{k}$: Activation value at spatial location $(i,j)$ in feature map $k$.
-\item $\frac{\partial y^{c}}{\partial A_{ij}^{k}}$: Gradient of the class score w.r.t.\ that activation.
-\item $i,j$: Spatial indices over the height and width of the feature map.
-\item $Z$: Number of spatial locations in the feature map (typically $Z = H \times W$).
-\end{itemize}
-
-Finally, the Grad-CAM heatmap \cite{gc}  is computed by Eq. \ref{eq:gc}:
-\begin{equation}
-\label{eq:gc}
-L_{\mathrm{Grad\text{-}CAM}}^{c}
-=
-\mathrm{ReLU}\!\left(\sum_k \alpha_k^{c} A^{k}\right)
-\end{equation}
-
-Where:
-\begin{itemize}
-\item $L_{\mathrm{Grad\text{-}CAM}}^{c}$: The Grad-CAM localization map (heatmap) for the target class $c$.
-\item $c$: Index of the target class of interest.
-\item $\mathrm{ReLU}(\cdot)$: Element-wise rectified linear unit, keeping only positive contributions to class $c$.
-\item $\sum_k$: Summation over all feature maps (channels) in the chosen convolutional layer.
-\item $k$: Index of a feature
-map (channel).
-\item $\alpha_k^{c}$: Importance weight of feature map $k$ for class $c$.
-\item $A^{k}$: The $k$-th feature map from the selected convolutional layer.
-\end{itemize}
-
-Suppose we use a pretrained EfficientNet-B0 \cite{efficientnet} model with an input tensor of shape $(3,224,224)$.
-After passing through the final convolutional layer, the feature map tensor has shape $(1280,7,7)$ before entering the classifier head.
-Then, for a single input image, $A$ has shape $(1280,7,7)$; the number of feature maps is $K=1280$; and
-$Z = H \times W = 7 \times 7$.
-The weight vector $\alpha^{c}$ has shape $(1280,)$, and the Grad-CAM map
-$L_{\mathrm{Grad\text{-}CAM}}^{c}$ has shape $(7,7)$.
-
-Grad-CAM’s final heatmap has a much smaller spatial resolution than the original input image. Therefore, for visualization purposes, bilinear interpolation is used to upsample it back to the original input size.
-
-As suggested in the original Grad-CAM paper, the feature maps from the last convolutional layer should be used because they provide the best compromise between high-level semantics and detailed spatial information  \cite{gc}. Grad-CAM does not require any hyperparameters.
-
-Figure \ref{fig:gc} shows an example of Grad-CAM. From left to right, the first image is the original input, the second is the original Grad-CAM heatmap, the third is the Grad-CAM heatmap upsampled to match the input resolution, and the fourth is an overlay of the input image and the Grad-CAM heatmap to visualize how the highlighted pixels correspond to the image content.
-% In the document:
-\begin{figure}[H] % use [htbp] if you don't want to force placement
-    \centering
-    \includegraphics[width=1.0\linewidth]{grad_cam.png}
-    \caption{An example Grad-CAM visualization}
-    \label{fig:gc}
-\end{figure}
-
-\subsection{Contrastive Grad-CAM Consistency }
-\label{subsec:cgc}
-However, Grad-CAM explanations can sometimes lack consistency under data augmentation. For instance, if we compute Grad-CAM for an original image and then apply a center crop to that image, we would expect the Grad-CAM heatmap of the center-cropped image to also be center-cropped in a consistent way, but in practice this may not happen \cite{cgc}, see Fig. \ref{fig:cgc}.
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.7\linewidth]{cgc.png}
-    \caption{Contrastive Grad-CAM consistency \cite{cgc}}
-    \label{fig:cgc}
-\end{figure}
-
-Pillai et al.~(2022) proposed adding a contrastive learning loss during training in addition to the standard cross-entropy loss \cite{cgc}.
-The overall training objective is:
-\begin{equation}
-L = L_{\mathrm{CE}} + \lambda L_{\mathrm{CGC}} .
-\end{equation}
-Where $L_{\mathrm{CE}}$ is the cross-entropy loss for classification, $\lambda$ is a hyperparameter that controls the trade-off between the two terms, and $L_{\mathrm{CGC}}$ is the contrastive Grad-CAM consistency loss (CGC) inspired by SimCLR \cite{cgc} \cite{simclr}. 
-
-For a query image $x_i$, the paper defines:
-\begin{equation}
-L_{i, CGC}
-=
--\log
-\frac{\exp\left(\mathrm{sim}\!\left(T_i(g_i(x_i)),\, g_i(T_i(x_i))\right)/\tau\right)}
-{\sum_{j=1}^{n}\exp\left(\mathrm{sim}\!\left(T_i(g_i(x_i)),\, g_j(T_j(x_j))\right)/\tau\right)} .
-\end{equation}
-
-Where:
-\begin{itemize}
-\item $L_i$: Contrastive Grad-CAM consistency loss for the query image $x_i$.
-\item $n$: Batch size.
-\item $x_i$: Query image (one image in the batch).
-\item $x_j$: The $j$-th image in the batch (negatives when $j \neq i$).
-\item $T_i(\cdot), T_j(\cdot)$: Independently sampled random spatial augmentations (e.g., cropping, scaling, flipping).
-\item $g(\cdot)$: Grad-CAM operator that produces a heatmap for the model's top predicted category.
-\item $g_i(x_i)$: Grad-CAM heatmap computed on the original query image $x_i$.
-\item $T_i(g_i(x_i))$: Query heatmap after applying the same augmentation $T_i$ directly to the heatmap.
-\item $g_i(T_i(x_i))$: Grad-CAM heatmap computed from the augmented query image $T_i(x_i)$ (positive).
-\item $g_j(T_j(x_j))$: Grad-CAM heatmaps computed from other augmented images (negatives for $j\neq i$).
-\item $\mathrm{sim}(\cdot,\cdot)$: Similarity between two heatmaps (cosine similarity in the paper's experiments).
-\item $\tau$: Temperature hyperparameter.
-\end{itemize}
-
-In summary, the key idea of the CGC algorithm is that the Grad-CAM heatmap of an augmented image should undergo the same augmentation as the Grad-CAM heatmap of the original image. Based on the paper’s results \cite{cgc}, CGC requires additional resources to compute the contrastive learning loss in order to improve explanation consistency, rather than to increase model performance on supervised tasks such as classification.
-
-
-\section{Interpretable Anomaly Detection}
-\label{sec:iad}
-In the Interpretable Machine Learning course, we are typically introduced to XAI methods that require labels, for example in regression or classification settings. We therefore wondered whether XAI methods can also be applied to unsupervised learning problems such as anomaly detection, and we chose the MVTec-AD dataset for this challenge.
-
-Our idea is as follows. First, we train a Variational Autoencoder (VAE) \cite{vae} using the negative ELBO loss on the normal training set.
-
-Second, at test time, we compute an anomaly score for each image using the VAE (e.g., negative ELBO or reconstruction-based score) and use this score to decide whether an image is normal or anomalous.
-
-Third, we apply Grad-CAM (and CGC, if feasible) as post-hoc explanation methods by backpropagating gradients from the anomaly score to the final convolutional feature maps of the encoder. We expect the resulting heatmaps to highlight the image regions that contribute most to high anomaly scores, and thus correspond to defects in anomalous instances.
-
-In summary, Grad-CAM and CGC are post-processing steps for explanation. The key part of this approach is a reliable anomaly score: if the anomaly detector is inaccurate or unstable, the explanations will likely be unreliable as well.
-
-To be honest, since we have not implemented or experimented yet, we are not certain about the results, however, we expect the outcome to look like Fig \ref{fig:iad}. Where the image on the left is normal, the one in the middle is an anomalous acorn, and the one on the right is the Grad-CAM explaining why the acorn is considered an anomaly.
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.7\linewidth]{iad.png}
-    \caption{Explanation of anomaly decision}
-    \label{fig:iad}
-\end{figure}
-
-
+The seminal paper "Deep Recurrent Q-Learning for Partially Observable MDPs" by Hausknecht et al. first combined DQN with LSTM in the Atari 2600 Game environment under the POMDP assumption \cite{drqn}. More recently, "Generalization, Mayhem and Limits in Recurrent Proximal Policy Optimization" by Pleines et al. (2022) introduced RPPO, which integrates PPO with LSTM/GRU architectures for partially observable environments \cite{rppo}.
 
 \section{Experiments}
-In Sections \ref{subsec:grad-cam} and \ref{subsec:cgc}, we will use only a small subset of ImageNet, where the task is to classify around 10 classes. We will mainly focus on whether CGC improves interpretability compared to standard Grad-CAM. The model we choose is EfficientNet-B0, and we will use fine-tuning to save computational resources; the model performance should remain strong because EfficientNet-B0 has already been pretrained on ImageNet.
+\subsection{Enviroment}
+We adopt the Memory MiniGrid environment, where the agent begins in a left room with a 7×7 observation field. The task is to identify an object (green key) in the initial room, then proceed to a fork on the right to select the matching object. This instantiates a POMDP: task completion depends on the agent remembering the object's features across time steps. Reward is sparse, provided only upon task success. As shown in Fig. \ref{fig:memory_grid}, we start with \texttt{MiniGrid-MemoryS7-v0} and plan to scale to \texttt{MiniGrid-MemoryS9-v0} or \texttt{MiniGrid-MemoryS11-v0} if preliminary results are favorable.
 
-In Section \ref{sec:iad}, we will use a Variational Autoencoder with an encoder based on EfficientNet-B0, while the decoder and the classifier head will have simpler architectures. We will train on only a small subset of the MVTec-AD dataset.
+\begin{figure}[H] % use [htbp] if you don't want to force placement
+    \centering
+    \includegraphics[width=0.4\linewidth]{memory_grid.png}
+    \caption{An example of Memory Minigrid enviroment}
+    \label{fig:memory_grid}
+\end{figure}
+
+\subsection{RPPO}
+
+We employ a CNN1D encoder combined with an LSTM layer, shared between the actor and critic networks. Both networks use two separate heads for policy and value outputs, following the architecture proposed by Pleines et al.
+
+\textbf{Sequence Padding: }
+Since episodes have variable lengths until termination, we pad all sequences to a uniform length to satisfy LSTM's input requirements. Embeddings corresponding to padded positions are masked and excluded from loss computation across all three PPO losses (policy loss, value loss, and entropy bonus).
+
+\textbf{Masking Example:}
+Given batch size 2:
+\begin{align}
+\text{Episode 1:} \quad &[t_1, t_2, t_3, \text{PAD}, \text{PAD}] \\
+\text{Episode 2:} \quad &[t_1, t_2, t_3, t_4, t_5]
+\end{align}
+
+After LSTM encoding and masking:
+\begin{align}
+\text{Episode 1:} \quad &[0.8, 0.6, 0.4, 0.0, 0.0] \\
+\text{Episode 2:} \quad &[0.5, 0.3, 0.7, 0.4, 0.6]
+\end{align}
+
+The effective batch contains 8 steps (3 from Episode 1, 5 from Episode 2). The remaining PPO loss terms remain unchanged.
+
+\subsection{Hyperparameter Optimization}
+We conduct hyperparameter tuning for the LSTM architecture, focusing on input size, hidden size, and sequence length to analyze their impact on training dynamics. For PPO, we tune only the learning rate. The objective function is the total episode reward.
+
+\subsection{Benchmarking}
+
+We benchmark RPPO against PPO and DQN baselines under the POMDP assumption on Memory MiniGrid. We expect RPPO to substantially outperform memoryless PPO and DQN. All methods are subjected to hyperparameter optimization and evaluated across multiple random seeds.
 
 \section{Timeline}
-With a team of only one person, we estimate that the entire project will take about three weeks of full-time work.
 
+Our project timeline is as follows:
 \begin{itemize}
-\item \textbf{Research:} Finding relevant papers, datasets, and pretrained models will take about one week.
-\item \textbf{Implementation, Experiments, and Analysis:} Writing and running the code, selecting and testing suitable hyperparameters, and trying to achieve the best possible model performance will take about one and a half weeks.
-\item \textbf{Reporting:} Writing the report, selecting images for visualization, and creating the poster will take about half a week.
+    \item Literature review: 3 days
+    \item Implementation: 4 days
+    \item Runing code: 1 week
+    \item Reporting, visualization, and poster design: 2 days 
 \end{itemize}
 
 \bibliographystyle{IEEEtran}
