@@ -78,7 +78,7 @@ KEY_BINDINGS = [
 SIDEBAR_WIDTH = 430
 CELL_SIZE = 35  # px per cell in partial-obs grid
 FPS = 30
-ENV_ID = "MiniGrid-MemoryS7-v0"
+ENV_ID = "MiniGrid-MemoryS11-v0"
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,33 @@
+can you tell me the motivation of using RPPO and under which condition that RPPO will work well? and in the paper, they compare RPPO to which other kind of algorithm to prove that RPPO better?
+
+Good questions. Let me break them down carefully from the paper.
+
+Motivation for RPPO
+The core motivation is that standard PPO operates on the current observation alone, which is sufficient for fully observable MDPs but breaks down in POMDPs — where the current observation oto_t
+ot​ doesn't fully capture the underlying state sts_t
+st​. A recurrent layer (LSTM/GRU) maintains a hidden state hth_t
+ht​ that summarizes history, so the policy becomes πθ(at∣ot,ht)\pi_\theta(a_t | o_t, h_t)
+πθ​(at​∣ot​,ht​) instead of just πθ(at∣ot)\pi_\theta(a_t | o_t)
+πθ​(at​∣ot​). This lets the agent reason over its observation history rather than being stuck with a memoryless belief.
+
+Conditions under which RPPO works well
+The paper is fairly honest about this. Based on their experiments, RPPO works well when:
+
+The task requires memorizing initial cues and maintaining them — like MiniGrid Memory or the ballet environment (on training seeds at least)
+The task requires continuously updating memory based on past decisions — Mortar Mayhem is their proof of this, where memoryless PPO completely fails
+Training diversity is high — they show in Figure 8 that 1000 training seeds are needed for strong generalization in Mortar Mayhem; 200 seeds performs poorly
+Distractors and noise are limited — Searing Spotlights breaks RPPO precisely because stochastically moving spotlights create too much noise for the recurrent hidden state to handle reliably
+
+
+What they compare RPPO against
+This is the important caveat for your project: they do not compare against a rich set of algorithms. Their comparisons are essentially:
+
+RPPO vs. PPO-MLP (no recurrence) — the primary comparison, shown clearly in Figure 6 on Mortar Mayhem's Act Only Task, where memoryless PPO flatlines near zero regardless of what augmentations are added to the observation (at−1a_{t-1}
+at−1​, rt−1r_{t-1}
+rt−1​, visual vs. vector)
+Various PPO-MLP ablations — adding last action, last reward, visual observations — all still failing without memory
+A random baseline as lower bound
+
+They do not compare against transformers, R2D2, or other recurrent algorithms like DRQN. The paper's contribution is really about how to implement RPPO correctly and where its limits are, not about proving RPPO beats a broad field of competitors.
+
+This is worth keeping in mind for your project write-up — your baseline comparison (RPPO vs. PPO-MLP) is well-grounded in this paper, but claiming RPPO is state-of-the-art broadly would go beyond what the paper supports.

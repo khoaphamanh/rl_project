@@ -45,23 +45,15 @@
 \maketitle
 \section{Motivation}
 
-Standard RL algorithms like PPO, DQN assume the Markov property: the optimal action depends only on the current state. However, many environments are partially observable, means, the current observation alone is insufficient to act optimally. State aliasing occurs when different true states look identical to the agent, yet require different actions.
+Standard PPO assumes the Markov property, but many environments are partially observable: the current observation alone is insufficient to act optimally, leading to state aliasing. In \texttt{MiniGrid-Memory}, the agent must recall an object seen earlier to select the correct one at a later fork, a memoryless agent can only guess.
 
-\textbf{Example:} In \texttt{MiniGrid-Memory}, the agent must remember an object it saw earlier, then select the matching object later. The choice point produces identical observations regardless of what was seen before, memoryless PPO and DQN can only guess to solve the task, find the same object as seen before.
-
-We address this by introducing recurrent agents that maintain a hidden state encoding observation history. Instead of deciding actions from observation alone, they condition on both past hidden state and current observation. 
+We address this by equipping PPO with a recurrent encoder that maintains a history of past observations. We further ask whether a Transformer encoder handles longer histories better than LSTM, testing this via a reduced observation box ablation.
 
 \textbf{Research Question:} Does equipping PPO with recurrent memory recover performance in partially observable environments, and does replacing LSTM with a Transformer encoder provide an advantage when longer observation histories are required?
 
-We benchmark recurrent agents against baselines on memory-critical environments with ablations controlling observability level, memory capacity, and BPTT truncation horizon.
-
 \section{Related Topics}
 
-In the reinforcement learning course, algorithms such as DQN and PPO have been introduced and applied to simple environments like LunarLander and CartPole. These algorithms operate under the MDP assumption.
-
-In Deep Learning, recurrent neural network layers such as LSTM and GRU possess the ability to maintain and integrate information from previous time steps, preserving temporal dependencies and event ordering. This property has been successfully applied in domains such as natural language processing.
-
-The seminal paper "Deep Recurrent Q-Learning for Partially Observable MDPs" by Hausknecht et al. first combined DQN with LSTM in the Atari 2600 Game environment under the POMDP assumption \cite{drqn}. More recently, "Generalization, Mayhem and Limits in Recurrent Proximal Policy Optimization" by Pleines et al. (2022) introduced RPPO, which integrates PPO with LSTM/GRU architectures for partially observable environments \cite{rppo}.
+PPO and DQN, introduced in the RL course, operate under the MDP assumption. LSTM and GRU layers can maintain temporal context across time steps, making them natural candidates for POMDPs. Hausknecht et al.\ pioneered this combination with DRQN \cite{drqn}, and Pleines et al.\ (2022) extended it to PPO, introducing RPPO with LSTM/GRU backbones for partially observable environments \cite{rppo}.
 
 \section{Experiments}
 \subsection{Enviroment}
@@ -104,11 +96,11 @@ The effective batch contains 8 steps (3 from Episode 1, 5 from Episode 2). The r
 
 \subsubsection{Transformer PPO}
 
-To isolate the effect of the memory mechanism, we replace the LSTM layer with a Transformer encoder. In this variant, we employ a fully connected layer followed by a Transformer encoder as the backbone. The Transformer encoder attends over the sequence of past observations, allowing the agent to selectively integrate relevant historical context without relying on a fixed-size hidden state as in LSTM. All other architectural choices remain identical to RPPO.
+We replace the LSTM layer with a fully connected layer followed by a Transformer encoder, keeping all other architectural choices identical to RPPO. Unlike LSTM, the Transformer attends directly over the full observation sequence without compressing history into a fixed-size hidden state.
 
-\subsubsection{Reduced Observation Box}
+\subsubsection{Reduced Observation Box (Optional)}
 
-A known limitation of LSTM is its bottleneck when processing long sequences, as it must compress the entire history into a fixed-size hidden state. In the default Memory MiniGrid setting, the agent has a $7\times7$ partial observation box. If we reduce this to $5\times5$ or $3\times3$, the agent's field of view narrows and it requires more steps to navigate and solve the environment, resulting in longer observation sequences. This may expose the LSTM bottleneck more severely, while the Transformer's attention mechanism can in principle handle such longer dependencies more effectively. This setting therefore serves as a controlled ablation to compare the two memory mechanisms under increasing sequence length pressure.
+LSTM must compress the entire history into a fixed-size hidden state, which becomes a bottleneck for long sequences. Reducing the observation box from $7\times7$ to $5\times5$ or $3\times3$ narrows the agent's field of view, forcing more steps to solve the environment and thus producing longer sequences. This setting is designed to expose the LSTM bottleneck and test whether the Transformer handles longer dependencies more effectively.
 
 
 \subsection{Benchmarking}
@@ -130,11 +122,11 @@ We benchmark all agents on \texttt{MiniGrid-MemoryS7-v0} with the default $7\tim
     \end{tabular}
 \end{table}
 
-To stress-test the memory mechanisms under longer observation sequences, we additionally evaluate on a reduced $5\times5$ observation box. Table~\ref{tab:bench_ablation} shows our expected outcomes for this setting. With a narrower field of view the agent requires more steps to solve the environment, exposing LSTM's fixed-size hidden state as a bottleneck. We therefore expect LSTM PPO to struggle and achieve low $G_t$, while Transformer PPO, benefiting from its attention mechanism over the full sequence, is expected to maintain high $G_t$.
+Optionally, if time permits, we evaluate on a reduced $5\times5$ observation box to stress-test the memory mechanisms under longer sequences. We expect LSTM PPO to struggle due to its fixed-size hidden state bottleneck, while Transformer PPO should maintain high $G_t$ thanks to its attention over the full sequence. Table~\ref{tab:bench_ablation} summarizes the expected outcomes.
 
 \begin{table}[H]
     \centering
-    \caption{Expected accumulated return $G_t$ on the reduced $5\times5$ observation setting.}
+    \caption{(Optional) Expected accumulated return $G_t$ on the reduced $5\times5$ observation setting.}
     \label{tab:bench_ablation}
     \begin{tabular}{lc}
         \toprule
