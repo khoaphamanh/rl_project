@@ -3,15 +3,40 @@ import os
 import numpy as np
 import torch
 
+from config.helper import Helper
 
-class Config:
+
+class Config(Helper):
+    """All hyperparameters. Built once, in main.py.
+
+    Inheriting Helper means config.build_extractor(), config.zero_hidden()
+    and config.is_recurrent read these attributes directly.
+    """
+
     def __init__(self):
 
-        # seed
+        # default seed
         self.seed_default = 42
 
+        # fix hyperparameters
         self.input_size = 7 * 7 * 3
+
+        # model hyperparameters
         self.hidden_size = 64
+        self.recurrent_model = "GRU"  # or "LSTM"
+        self.n_layers_mlp = 3
+        self.lr = 1e-3
+
+        self.tbptt_length = "max"
+
+        # env
+        self.name_env = "MiniGrid-MemoryS11-v0"
+
+        # sampling: W games played in parallel, T steps each per iteration
+        # the paper uses W=16, T=512; smaller here so it runs on a laptop
+        self.n_workers = 4  # W
+        self.worker_steps = 128  # T
+        self.batch_size = self.n_workers * self.worker_steps  # W * T
 
     def set_seed(self, env=None, seed=None):
         """Seed every source of randomness and return the seed that was used.

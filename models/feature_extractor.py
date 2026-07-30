@@ -79,9 +79,15 @@ class LSTM(nn.Module):
 
         self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
 
-    def forward(self, x, hidden=None):
-        output, _ = self.lstm(flatten_obs(x), hidden)
-        return output
+    def forward(self, x, hidden=None, return_hidden=False):
+        """return_hidden=True also gives back (h_n, c_n) of the last step.
+
+        The rollout loop needs it: c_n cannot be recovered from output, so it
+        would be lost forever. Default stays output-only, so Network and
+        memory_test are unaffected.
+        """
+        output, hidden = self.lstm(flatten_obs(x), hidden)
+        return (output, hidden) if return_hidden else output
 
 
 class GRU(nn.Module):
@@ -97,9 +103,10 @@ class GRU(nn.Module):
 
         self.gru = nn.GRU(input_size, hidden_size, batch_first=True)
 
-    def forward(self, x, hidden=None):
-        output, _ = self.gru(flatten_obs(x), hidden)
-        return output
+    def forward(self, x, hidden=None, return_hidden=False):
+        """return_hidden=True also gives back h_n of the last step."""
+        output, hidden = self.gru(flatten_obs(x), hidden)
+        return (output, hidden) if return_hidden else output
 
 
 OBS_SHAPE = (7, 7, 3)  # MiniGrid-MemoryS11-v0 partial observation

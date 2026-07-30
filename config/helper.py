@@ -65,7 +65,7 @@ class Helper:
     # ------------------------------------------------------------------
     # hidden state
     # ------------------------------------------------------------------
-    def zero_hidden(self, batch_size=None):
+    def zero_hidden(self):
         """h_0 (and c_0) of shape (1, batch_size, hidden_size), None for MLP.
 
         The leading 1 is num_layers * num_directions -- NOT the batch. That
@@ -79,10 +79,7 @@ class Helper:
         if not self.is_recurrent:
             return None
 
-        if batch_size is None:
-            batch_size = self.n_workers
-
-        h = torch.zeros(1, batch_size, self.hidden_size, device=self.device)
+        h = torch.zeros(1, self.n_workers, self.hidden_size, device=self.device)
         return (h, h.clone()) if self.is_lstm else h
 
     def reset_hidden_of(self, hidden, w):

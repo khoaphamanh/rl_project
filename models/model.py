@@ -8,8 +8,8 @@ paper (Figure 6) a one-line swap.
 
     obs  (batch, seq_len, 7, 7, 3)
               |
-      feature_extractor            MLP / LSTM / GRU
-              |
+      feature_extractor            MLP / LSTM / GRU   -> also gives back the
+              |                                          hidden state it ended on
        (batch, seq_len, hidden_size)
           /              \\
     fc_actor           fc_critic
@@ -57,23 +57,29 @@ class Network(nn.Module):
         self.fc_critic = nn.Linear(hidden_size, 1)
 
     def forward(self, x, hidden=None):
-        """(batch, seq_len, *obs_shape) -> (Categorical, value).
+        """(batch, seq_len, *obs_shape) -> (Categorical, value, hidden).
 
-        hidden is h_0 for a GRU, (h_0, c_0) for an LSTM, and ignored by the
-        MLP. value is squeezed from (batch, seq_len, 1) to (batch, seq_len)
-        so it lines up with the rewards.
+        hidden going IN is h_0 for a GRU, (h_0, c_0) for an LSTM, and ignored
+        by the MLP. hidden coming OUT is the state after the last timestep, so
+        the caller can feed it straight back on the next call -- that is how
+        the rollout loop keeps its memory while stepping one timestep at a
+        time. It is None for the MLP, which has nothing to carry.
+
+        value is squeezed from (batch, seq_len, 1) to (batch, seq_len) so it
+        lines up with the rewards.
         """
         if self.is_recurrent:
-            features = self.feature_extractor(x, hidden)
+            features, hidden = self.feature_extractor(x, hidden, return_hidden=True)
         else:
             features = self.feature_extractor(x)
+            hidden = None
 
         logits = self.fc_actor(features)  # (batch, seq_len, n_actions)
         value = self.fc_critic(features).squeeze(-1)  # (batch, seq_len)
 
         # a distribution, not raw logits: PPO needs log_prob() and entropy(),
         # and dist.logits gives the raw numbers back if they are ever wanted
-        return Categorical(logits=logits), value
+        return Categorical(logits=logits), value, hidden
 
 
 OBS_SHAPE = (7, 7, 3)  # MiniGrid-MemoryS11-v0 partial observation
@@ -105,9 +111,8 @@ def main():
     print("FORWARD PASS")
     for name, extractor in extractors:
         net = Network(extractor, HIDDEN_SIZE, N_ACTIONS)
-        dist, value = net(x)
+        dist, value, hidden = net(x)
         action = dist.sample()
-        print("action:", action)
 
         print(
             f"  {name:<5} recurrent={str(net.is_recurrent):<5} {n_params(net):>7,} params"
@@ -117,6 +122,13 @@ def main():
         print(
             f"        action   {tuple(action.shape)}  log_prob {tuple(dist.log_prob(action).shape)}"
         )
+        # the state the encoder ended on: None for MLP, h for GRU, (h, c) for LSTM
+        if hidden is None:
+            print(f"        hidden   None")
+        elif isinstance(hidden, tuple):
+            print(f"        hidden   (h {tuple(hidden[0].shape)}, c {tuple(hidden[1].shape)})")
+        else:
+            print(f"        hidden   {tuple(hidden.shape)}")
 
     # the recurrent ones can be continued from a hidden state (truncated BPTT)
     print("\nWITH AN INITIAL HIDDEN STATE")
@@ -131,7 +143,7 @@ def main():
 
     # both heads read the same features, so one backward pass trains everything
     print("\nSHARED ENCODER CHECK (GRU)")
-    dist, value = gru_net(x)
+    dist, value, _ = gru_net(x)
     loss = -dist.log_prob(dist.sample()).mean() + value.pow(2).mean()
     loss.backward()
 
