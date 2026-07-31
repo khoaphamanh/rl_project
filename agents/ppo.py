@@ -1,9 +1,14 @@
 """
-PPO agent -- sampling stage only.
+PPO agent -- everything up to the loss, no optimizer yet.
 
-This file covers one thing: filling the rollout buffer. The agent plays
-W games in parallel for T steps each and writes down what happened. No
-advantage, no loss, no optimizer yet.
+The pipeline, one method each, in the order main.py calls them:
+
+    sample()          play W games for T steps, write down what happened
+    gae()             turn (rewards, values) into (advantages, returns)
+    split_pad_mask()  cut at every done, pad to a rectangle, build the mask
+    clip_loss()       the clipped surrogate, once per minibatch
+
+The rollout itself:
 
     for t in 0 .. T-1:
         dist, value, hidden = self.model(obs, hidden)  one step, seq_len = 1
@@ -43,7 +48,7 @@ class PPOAgent:
 
     config : a Config instance, built in main.py. Uses n_workers,
              worker_steps, name_env, input_size, hidden_size,
-             recurrent_model, n_layers_mlp, gamma, gae_lambda.
+             recurrent_model, n_layers_mlp, gamma, gae_lambda, clip_eps.
     """
 
     def __init__(self, config, seed=None):
@@ -57,15 +62,15 @@ class PPOAgent:
         self.gamma = config.gamma  # discount
         self.gae_lambda = config.gae_lambda  # GAE bias/variance knob
 
+        self.clip_eps = config.clip_eps  # PPO trust region half-width
+
         # one independent game per worker, each with its own layout and cue
         self.envs = [gym.make(config.name_env) for _ in range(self.n_workers)]
         self.n_actions = self.envs[0].action_space.n  # 7
         self.obs_shape = self.envs[0].observation_space["image"].shape  # (7, 7, 3)
 
         # the config decides WHICH encoder, the agent only uses it
-        self.model = Network(
-            config.build_extractor(), self.hidden_size, self.n_actions
-        )
+        self.model = Network(config.build_extractor(), self.hidden_size, self.n_actions)
         self.model.to(config.device)
 
         # the observation each worker is currently looking at. It survives
@@ -184,7 +189,7 @@ class PPOAgent:
         # kills the whole term.
         # obs_t1 = s_(t+1) of the last step, i.e. s_T. NOT the loop's obs_t:
         # that one was s_t, read at the top of every iteration. self.obs has
-        # been overwritten T times since (line 170), so what it holds now is
+        # been overwritten T times since (line 173), so what it holds now is
         # one past the end of the loop. Same expression, different content.
         obs_t1 = torch.from_numpy(self.obs).to(self.config.device).unsqueeze(1)
         with torch.no_grad():
@@ -236,8 +241,10 @@ class PPOAgent:
         delta_t alone, lam = 1 sums them all and becomes the Monte Carlo return
         minus the baseline.
 
-        Returns (advantages, returns), both (W, T), NOT normalized -- that is a
-        per-minibatch step later. Put them into buf before split_pad_mask:
+        Returns (advantages, returns), both (W, T). advantages come out
+        STANDARDIZED (mean 0, std 1 over the whole rollout), returns come out
+        raw -- see the two comments at the bottom, the order matters. Put both
+        into buf before split_pad_mask:
 
             buf["advantages"], buf["returns"] = agent.gae(buf)
         """
@@ -270,7 +277,38 @@ class PPOAgent:
 
         # V[:, :T] and not V: the bootstrap column is a state, never a step,
         # and there is no advantage to pair it with.
+        #
+        # Computed FIRST, from the raw advantages, and that order is not
+        # optional. returns is the critic's regression target, so it has to
+        # stay on the scale of actual discounted reward. Build it out of a
+        # rescaled advantage instead and V is being asked to predict a number
+        # that no longer means anything.
         returns = advantages + V[:, :T]
+
+        # normalize the ADVANTAGES ONLY.
+        #
+        # The surrogate multiplies the ratio by A, so A is what sets the size
+        # of the policy step. Raw GAE values drift with the reward scale of the
+        # task and with how wrong the critic currently is -- early on they are
+        # large, later they shrink towards 0 as V catches up. One fixed lr
+        # cannot suit both. Standardizing pins the step size, and it changes
+        # nothing the policy gradient actually reads: every SIGN and every
+        # relative ORDER survives an affine rescale. "Better than average"
+        # stays better than average.
+        #
+        # Over the whole (W, T) rollout, NOT per minibatch. Two reasons:
+        #   - here every slot is a real step. After split_pad_mask there is
+        #     padding, and a plain .mean()/.std() would average the fake zeros
+        #     in -- it would have to be a masked mean and a masked std.
+        #   - a recurrent minibatch is a handful of SEQUENCES, some of them
+        #     very short. Its std is a noisy estimate of the same quantity,
+        #     and dividing each minibatch by a different noisy number makes
+        #     the effective step size jitter between minibatches of one epoch.
+        #
+        # 1e-8 covers the degenerate rollout where every advantage is equal
+        # and std is 0 -- on a sparse-reward task that scored nothing at all,
+        # which for MemoryS7 is exactly what the first iterations look like.
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         return advantages, returns
 
@@ -352,6 +390,108 @@ class PPOAgent:
                     out["cxs"][0, i] = buf["cxs"][w, start]
 
         return out
+
+    # ------------------------------------------------------------------
+    # the loss
+    # ------------------------------------------------------------------
+    @staticmethod
+    def masked_mean(x, mask):
+        """Average x over the REAL slots only. (n_seq, L) -> scalar.
+
+        split_pad_mask pads every sequence out to L, so some of the slots are
+        zeros that never happened. x.mean() divides by all n_seq * L of them,
+        which shrinks every gradient by (real / total) -- and worse, any slot
+        whose per-step loss is not zero gets trained on. Padding is not data.
+
+            (x * mask).sum() / mask.sum()
+
+        The multiply deletes the fake entries, the denominator counts only the
+        real ones. For a full batch mask.sum() is W * T, never n_seq * L:
+        padding adds slots, it never adds steps.
+
+        Every term of the PPO loss goes through here -- policy, value,
+        entropy. clamp(min=1) only stops an all-padding input from returning
+        nan, which cannot happen for a minibatch with at least one sequence.
+        """
+        return (x * mask).sum() / mask.sum().clamp(min=1.0)
+
+    def clip_loss(self, new_log_probs, old_log_probs, advantages, mask):
+        """PPO's clipped surrogate -- the policy loss. (n_seq, L) -> scalar.
+
+        Called once per minibatch, inside the grad-on region. new_log_probs is
+        the ONLY argument with a graph behind it: old_log_probs came from the
+        rollout buffer, advantages from gae(), mask from split_pad_mask(), and
+        the objective is only the PPO objective if all three are constants.
+
+            ratio_t = pi_new(a_t | s_t) / pi_old(a_t | s_t)
+                    = exp(new_log_prob_t - old_log_prob_t)
+
+            L_t     = -min( ratio_t * A_t,
+                            clip(ratio_t, 1-eps, 1+eps) * A_t )
+
+        Both log-probs are evaluated at the SAME a_t -- the action the rollout
+        actually took, replayed out of the buffer. The ratio asks "how much
+        more likely is the current policy to do that again?". 1.0 means not
+        changed at all, which is exactly what it is on the first minibatch of
+        the first epoch, before the optimizer has stepped once. Useful sanity
+        check: there, ratio must be 1.0 and loss must equal -masked_mean(A).
+
+        The min is a PESSIMISTIC bound -- of the two estimates it always takes
+        the smaller, which after the minus sign is the larger loss. What it
+        does depends on which way the advantage points:
+
+                            A > 0 (do it more)   A < 0 (do it less)
+            ratio > 1+eps   clipped              not clipped
+            ratio < 1-eps   not clipped          clipped
+
+        Read the pattern down the diagonal: the gradient is cut only when the
+        policy has ALREADY moved past eps in the direction the advantage asked
+        for. Moving the wrong way is never clipped, so a correction always
+        gets through. That is what keeps n_epochs of reuse on one batch from
+        riding a single good-looking action all the way to a collapsed policy.
+
+        And a clipped step contributes a CONSTANT to the loss, so its gradient
+        is exactly 0. Clipping does not shrink an update, it deletes it.
+
+        Returns (loss, info):
+            loss  scalar, with a graph, already negated -- torch.optim
+                  descends and the surrogate is something to maximize. Add the
+                  value and entropy terms to it, then call backward once.
+            info  plain floats for logging, all computed under no_grad:
+                  clip_fraction  fraction of real steps that hit a clip. It
+                                 climbing during an iteration is normal; ~0
+                                 means the lr is too small to move anything,
+                                 ~1 means pi_new has run away from pi_old.
+                  approx_kl      how far the policy has drifted this
+                                 iteration. The usual early-stop signal.
+        """
+        eps = self.clip_eps
+
+        # subtract in log space, then exp. The buffer stores logs, and this is
+        # both cheaper and far more stable than dividing two tiny probabilities.
+        log_ratio = new_log_probs - old_log_probs
+        ratio = torch.exp(log_ratio)
+
+        unclipped = ratio * advantages
+        clipped = torch.clamp(ratio, 1.0 - eps, 1.0 + eps) * advantages
+
+        loss = -self.masked_mean(torch.min(unclipped, clipped), mask)
+
+        with torch.no_grad():
+            # |ratio - 1| > eps is exactly the condition under which the clamp
+            # bit, so this is the clipped fraction without re-deriving the min
+            clip_fraction = self.masked_mean((ratio - 1.0).abs().gt(eps).float(), mask)
+
+            # Schulman's k3 estimator of KL(pi_old || pi_new): (r - 1) - log r.
+            # The naive -mean(log_ratio) is unbiased but can come out negative,
+            # which a KL never is; this one cannot, and has far less variance.
+            approx_kl = self.masked_mean((ratio - 1.0) - log_ratio, mask)
+
+        info = {
+            "clip_fraction": float(clip_fraction),
+            "approx_kl": float(approx_kl),
+        }
+        return loss, info
 
     def close(self):
         for env in self.envs:
