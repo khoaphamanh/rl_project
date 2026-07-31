@@ -303,7 +303,9 @@ def draw_legend(screen, ox, y, font_tiny):
 # ---------------------------------------------------------------------------
 
 
-def draw_channel_block(screen, ox, y, image, channel, name, table, font_tiny, font_micro):
+def draw_channel_block(
+    screen, ox, y, image, channel, name, table, font_tiny, font_micro
+):
     """
     Draw one channel of obs['image'] as a 7×7 table: raw id on top of the
     decoded name, in every cell. Indexed image[x, y, channel], printed with
@@ -312,8 +314,12 @@ def draw_channel_block(screen, ox, y, image, channel, name, table, font_tiny, fo
     n = image.shape[0]
     agent_row, agent_col = n - 1, n // 2
 
-    present = ",".join(str(v) for v in sorted({int(v) for v in image[:, :, channel].ravel()}))
-    hdr = font_tiny.render(f"c={channel}  {name}   present: {present}", True, (255, 210, 80))
+    present = ",".join(
+        str(v) for v in sorted({int(v) for v in image[:, :, channel].ravel()})
+    )
+    hdr = font_tiny.render(
+        f"c={channel}  {name}   present: {present}", True, (255, 210, 80)
+    )
     screen.blit(hdr, (ox, y))
     y += hdr.get_height() + 3
 
@@ -350,7 +356,9 @@ def draw_channel_block(screen, ox, y, image, channel, name, table, font_tiny, fo
             num_s = font_micro.render(str(value), True, num_col)
             name_s = font_micro.render(table.get(value, "?"), True, name_col)
             screen.blit(num_s, (rect.x + (rect.w - num_s.get_width()) // 2, rect.y + 1))
-            screen.blit(name_s, (rect.x + (rect.w - name_s.get_width()) // 2, rect.y + 12))
+            screen.blit(
+                name_s, (rect.x + (rect.w - name_s.get_width()) // 2, rect.y + 12)
+            )
 
         y += CH_CELL_H
 
@@ -382,7 +390,9 @@ def draw_channel_panel(screen, ox, win_h, image, font, font_tiny, font_micro):
         )
         y += 10
 
-    pygame.draw.line(screen, (65, 65, 65), (ox + 5, y), (ox + CHANNEL_PANEL_WIDTH - 5, y))
+    pygame.draw.line(
+        screen, (65, 65, 65), (ox + 5, y), (ox + CHANNEL_PANEL_WIDTH - 5, y)
+    )
     y += 6
     for line in (
         "dimmed = filler, not information. colour is 0 (-> 'red') on",

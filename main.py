@@ -4,6 +4,9 @@ Entry point.
 The Config is built here and handed to the agent, so every hyperparameter
 lives in one place and nothing below imports Config on its own.
 
+No PPO happens here. main.py prints what it is about to run, calls
+agent.train_agent() once, prints the final number, and closes the envs.
+
 Run with:
     python main.py
 """
@@ -17,31 +20,34 @@ def main():
 
     agent = PPOAgent(config)
 
-    print(f"env         {config.name_env}")
-    print(f"encoder     {config.recurrent_model}  hidden_size {config.hidden_size}")
-    print(f"seed        {agent.seed}")
-    print(
-        f"sampling    W={config.n_workers} x T={config.worker_steps} "
-        f"-> batch_size {config.batch_size}"
-    )
+    # AFTER the agent, not before: PPOAgent.__init__ calls config.set_seed(),
+    # and that is what puts the seed actually used into the dump. One file per
+    # run, logs/log_<date>_<time>.log, hyperparameters at the top.
+    logger = config.build_logger()
 
-    buf, stats = agent.sample()
+    try:
+        # the whole run. One stats dict per iteration comes back; the ones on
+        # report iterations carry the eval_* keys too
+        history = agent.train_agent(logger=logger)
 
-    print("\nBUFFER")
-    for key, tensor in buf.items():
-        print(f"  {key:<10} {str(tuple(tensor.shape)):<20} {tensor.dtype}")
+        # the clean final number: argmax instead of sampling, so it is fully
+        # reproducible. Early in training this deadlocks (one action repeated
+        # until the time limit) -- at the END of a run it is the honest score.
+        final = agent.evaluate(deterministic=True)
 
-    print("\nROLLOUT")
-    print(f"  episodes finished {stats['episodes']}")
-    print(f"  mean return       {stats['return_mean']:.3f}")
-    print(f"  mean length       {stats['length_mean']:.1f}")
-    print(f"  total reward      {buf['rewards'].sum():.3f}")
-
-    for w in range(config.n_workers):
-        ended = buf["dones"][w].nonzero().flatten().tolist()
-        print(f"  worker {w} episodes ended at steps {ended}")
-
-    agent.close()
+        logger.info("")
+        logger.info(f"ran {len(history)} iterations")
+        logger.info("FINAL (deterministic)")
+        logger.info(f"  success_rate  {final['success_rate']:.3f}")
+        logger.info(f"  timeout_rate  {final['timeout_rate']:.3f}")
+        logger.info(
+            f"  return_mean   {final['return_mean']:.3f} "
+            f"+- {final['return_std']:.3f}"
+        )
+        logger.info(f"  length_mean   {final['length_mean']:.1f}")
+    finally:
+        # the W envs are released even if the run is interrupted with ctrl-c
+        agent.close()
 
 
 if __name__ == "__main__":

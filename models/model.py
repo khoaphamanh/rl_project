@@ -29,9 +29,9 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 try:  # when imported from the repo root as models.model
-    from models.feature_extractor import MLP, LSTM, GRU
+    from models.feature_extractor import MLP, LSTM, GRU, CELL_SIZE, random_obs
 except ImportError:  # when run directly: python models/model.py
-    from feature_extractor import MLP, LSTM, GRU
+    from feature_extractor import MLP, LSTM, GRU, CELL_SIZE, random_obs
 
 
 class Network(nn.Module):
@@ -83,7 +83,7 @@ class Network(nn.Module):
 
 
 OBS_SHAPE = (7, 7, 3)  # MiniGrid-MemoryS11-v0 partial observation
-INPUT_SIZE = 7 * 7 * 3
+INPUT_SIZE = 7 * 7 * CELL_SIZE  # 980 AFTER one-hot, not 147. See flatten_obs.
 HIDDEN_SIZE = 64
 N_LAYERS = 3
 N_ACTIONS = 7  # MiniGrid action space is Discrete(7)
@@ -100,7 +100,7 @@ def main():
     print(f"obs_shape={OBS_SHAPE}  hidden_size={HIDDEN_SIZE}  n_actions={N_ACTIONS}")
     print(f"input: ({NUM_SEQUENCES}, {SEQ_LEN}, {OBS_SHAPE})\n")
 
-    x = torch.randint(0, 11, (NUM_SEQUENCES, SEQ_LEN, *OBS_SHAPE), dtype=torch.uint8)
+    x = random_obs(NUM_SEQUENCES, SEQ_LEN)
 
     extractors = [
         ("MLP", MLP(INPUT_SIZE, HIDDEN_SIZE, N_LAYERS)),
