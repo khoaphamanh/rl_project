@@ -357,3 +357,356 @@ dL/dw	7.2	5.5	❌
 Everything you can observe is identical. The only difference is buried in one weight's gradient — which is exactly why the padding bug in the paper's Figure 1 goes unnoticed: broken gradients still produce loss curves that look completely normal.
 
 Then: clip the gradient norm to 0.5, w ← 0.5 − lr × 5.5, v ← 2.0 − lr × 3.225, grab the next minibatch of chunks, repeat.
+
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------
+
+for iteration in range(n_iterations):
+
+    buf, stats = agent.sample()              # 1. collect 512 fresh steps
+
+    adv, ret = gae(buf)                      # 2. ONCE, before any update
+    seqs     = split_pad_mask(buf, adv, ret) # 3. ONCE
+
+    for epoch in range(3):                   # 4. reuse that data 3 times
+        for mb in shuffle(seqs):
+            loss = policy_loss + value_loss - entropy_bonus
+            optimizer.zero_grad()
+            loss.backward()
+            clip_grad_norm_(model.parameters(), 0.5)
+            optimizer.step()
+
+    log(stats)                               # 5. throw the data away
+
+
+================================================================================
+PPO STEP BY STEP, AND WHERE grad / no_grad GOES
+(written against agents/ppo.py, config/config.py, config/helper.py, models/model.py)
+================================================================================
+
+Status: steps 1, 2, 3, 4 are written. Steps 5, 6, 7, 8 are missing.
+        i.e. everything up to "ready to train" is done. What is left is the
+        update itself: minibatches, the clipped loss, backward.
+
+Line numbers below are as of the state of the repo when this was written
+(agents/ppo.py is 357 lines, sample() ends at 208, gae() at 273). They drift
+as soon as the file is edited - trust the function names, re-check the numbers.
+
+
+STEP 1 - Rollout: sample()                          -> no_grad   [DONE]
+
+  WHERE:  PPOAgent.sample()          agents/ppo.py:90-211
+          the rollout loop           agents/ppo.py:127-173
+
+          ppo.py:104          W, T, H unpacked from the config
+          ppo.py:106-116      allocate the buffer, (W, T, ...) per key
+          ppo.py:117-120      hxs, and cxs for LSTM only
+          ppo.py:124          for t in range(T)  <- the rollout loop starts
+          ppo.py:125          store obs of step t
+          ppo.py:130-134      store h (and c) ENTERING step t
+          ppo.py:136-137      (W, ...) -> (W, 1, ...), seq_len = 1
+          ppo.py:139          with torch.no_grad()   <- the whole forward
+          ppo.py:142          the model call, hidden fed straight back in
+          ppo.py:143-144      dist.sample() and log_prob -> log pi_old
+          ppo.py:146-148      write action, log_prob, value into the buffer
+          ppo.py:150-158      env.step per worker, store reward and done
+          ppo.py:160-168      on done: log the episode, reset env, ZERO that
+                              worker's hidden (helper.py:85-103)
+          ppo.py:170          carry the new obs into self.obs
+          ppo.py:199-207      stats (episodes / return_mean / length_mean)
+
+  SUPPORTING:
+          Network.forward()            models/model.py:59-82
+          config.zero_hidden()         config/helper.py:68-83   (h_0 in __init__)
+          config.reset_hidden_of()     config/helper.py:85-103  (the done reset)
+          PPOAgent.__init__()          agents/ppo.py:49-82      (envs, model,
+                                       first obs, first hidden)
+
+Play W x T steps, one timestep per forward (seq_len = 1), carrying self.hidden
+by hand. Everything written into buf is DATA, not part of a graph:
+
+  - log_probs become log pi_old(a), the fixed denominator of the PPO ratio.
+    If these carried gradients the ratio would be exp(x - x) with a live graph
+    on both sides, and the whole objective collapses.
+  - values become the baseline used by GAE - also a constant target.
+
+Rule: no parameter is being trained here, so nothing needs a graph. no_grad
+also saves memory over T = 128 steps.
+
+
+STEP 2 - Bootstrap value V(s_T)                     -> no_grad   [DONE]
+
+  WHERE:  end of PPOAgent.sample()   agents/ppo.py:175-200
+          (after the rollout loop closes at 170, before stats at 199)
+
+          ppo.py:110-113      "values": torch.zeros(W, T + 1)  <- the extra
+                              column is allocated here, not at the end
+          ppo.py:148          the loop fills columns 0..T-1
+          ppo.py:172-181      the comment explaining why this exists at all
+          ppo.py:182-186      obs_t1 = self.obs, reshaped to (W, 1, ...).
+                              Named obs_t1, not obs_t, because it is s_(t+1)
+                              of the last step = s_T
+          ppo.py:187          with torch.no_grad()
+          ppo.py:188-195      why dist and the returned hidden are both
+                              dropped into _
+          ppo.py:196          the model call
+          ppo.py:197          write into column T
+
+  ALSO TOUCHED:
+          ppo.py:14-17        module docstring, the "one exception" note
+          ppo.py:95-98        sample() docstring, values is now (W, T+1)
+
+Q: isn't this already done inside the loop, at
+       dist, value, self.hidden = self.model(obs_t, self.hidden)
+A: no. That line is called on s_t and stores V(s_t). It runs T times, so it
+   produces T values for T+1 states. The last state is never forwarded.
+
+   loop t:      0        1        2        3       (loop ends)
+   model on:   s_0      s_1      s_2      s_3        s_4   <- never forwarded
+   stored:    V(s_0)   V(s_1)   V(s_2)   V(s_3)       ??
+   reward:     r_0      r_1      r_2      r_3
+
+Every delta_t needs TWO values, V(s_t) and V(s_(t+1)):
+
+   t=0   values[0]  values[1]     both there
+   t=1   values[1]  values[2]     both there
+   t=2   values[2]  values[3]     both there
+   t=3   values[3]  V(s_4)        MISSING
+
+For every step except the last, the "next value" is simply the one the next
+loop iteration already wrote. Only the final step has no next iteration to
+borrow from. The gap is exactly ONE value per worker, not T.
+
+Why not just reuse the next rollout's first value? Because it will be computed
+AFTER the optimizer moved the weights. GAE for this buffer must use V_old, the
+weights that collected it. So: one extra forward, 129 instead of 128.
+
+Implemented as OPTION B - the buffer is one column longer:
+
+    "values": torch.zeros(W, T + 1)      # index t = V(s_t), index T = bootstrap
+
+and after the for-t loop:
+
+    obs_t = torch.from_numpy(self.obs).to(self.config.device).unsqueeze(1)
+    with torch.no_grad():
+        _, last_value, _ = self.model(obs_t, self.hidden)
+    buf["values"][:, T] = last_value[:, 0].cpu()
+
+Then GAE reads values[:, t+1] uniformly, with no special case at t = T-1.
+(Option A was to return last_value separately and special-case the last step.)
+
+Two things this must not break, both checked:
+  - the returned hidden is DROPPED, and self.obs is not touched. The next
+    rollout continues from exactly where this one stopped.
+  - split_pad_mask needed NO change. It sizes each key from buf[k].shape[2:]
+    (empty for values) and only ever copies indices start..stop <= T-1, so the
+    bootstrap column is never copied into a sequence. Verified: real slots
+    match buf, padding stays 0, mask.sum() == W * T.
+
+Where a worker ended exactly at t = T-1, self.obs is already the RESET game's
+first observation and self.hidden was zeroed, so this bootstrap belongs to the
+wrong episode. Harmless: (1 - dones[w, T-1]) = 0 kills the whole term.
+
+
+STEP 3 - GAE                                        -> no grad at all  [DONE]
+
+  WHERE:  PPOAgent.gae()           agents/ppo.py:216-275
+
+          ppo.py:217-243      the docstring: why once per rollout, why both
+                              outputs must be constants
+          ppo.py:244          W, T unpacked
+          ppo.py:246-248      V (W, T+1), rewards (W, T), dones (W, T)
+          ppo.py:250          advantages, the (W, T) output
+          ppo.py:252-254      last_adv = 0, i.e. adv_(T). Nothing is known
+                              past the end of the buffer, the sum stops there
+          ppo.py:256-258      for t in reversed(range(T))  <- backwards,
+                              because adv_t is built from adv_(t+1)
+          ppo.py:259-265      not_done = 1 - dones[:, t]
+          ppo.py:267-269      delta, then the recursion, then write adv[:, t]
+          ppo.py:271-273      returns = advantages + V[:, :T]
+          ppo.py:275          return advantages, returns
+
+          ppo.py:57-58        self.gamma / self.gae_lambda copied from the
+                              config in __init__, same as n_workers and
+                              worker_steps. gae() reads the attributes, it
+                              does not reach into self.config. Note this is a
+                              SNAPSHOT: changing config.gamma after the agent
+                              is built has no effect
+          config.py:41-44     gamma = 0.99, gae_lambda = 0.95  (added for this)
+
+Pure arithmetic on tensors that are already detached (they were made under
+no_grad in sample()), so the context manager is not even needed. Checked:
+adv.requires_grad and ret.requires_grad are both False.
+
+    V = buf["values"]                        # (W, T+1), thanks to step 2
+
+    delta_t = r_t + gamma * V[:, t+1] * (1 - done_t) - V[:, t]
+    adv_t   = delta_t + gamma * lam * (1 - done_t) * adv_(t+1)   # backwards, t = T-1 .. 0
+    ret_t   = adv_t + V[:, t]                                    # the critic's target
+
+Backwards over t. Because values is (W, T+1), V[:, t+1] is valid at t = T-1
+too - no special case, no separate last_value argument. adv has shape (W, T),
+one per real step; adv_(T) in the recursion starts at 0.
+
+not_done does TWO jobs, and both matter at an episode boundary:
+  - it drops V(s_(t+1)), which after the env reset belongs to the NEXT
+    episode. A finished episode is worth its own last reward and nothing more.
+  - it drops adv_(t+1), so the recursion cannot leak an advantage backwards
+    across the boundary into a different game.
+
+returns = advantages + V[:, :T], sliced: the bootstrap column is a state, never
+a step, and has no advantage to pair with. returns is the value-loss target;
+treating it as a constant is what makes the critic regression well posed.
+
+VERIFIED (scratch script, W=1, T=4, gamma .99, lam .95):
+    rewards [0, 0, 1, 0]   values [.5, .6, .7, .8, .9]   dones [0, 0, 1, 0]
+    adv = [0.4468286, 0.37515, 0.3, 0.091]      matches hand computation
+    ret = [0.9468286, 0.97515, 1.0, 0.891]
+  - ret at the done step is exactly 1.0 = its own reward. No bootstrap leaked
+    across the boundary.
+  - ret at t=3 is 0.891 = gamma * 0.9, pure bootstrap, no reward. Correct.
+  - with lam = 1 and no dones, ret equals the discounted Monte Carlo return
+    plus gamma^n * bootstrap, exactly. That is the definition GAE collapses to.
+
+Then, before calling split_pad_mask (see step 4, ppo.py:327):
+
+    buf["advantages"], buf["returns"] = agent.gae(buf)     # both (W, T)
+
+Confirmed they ride along into the sequences for free: split_pad_mask returns
+advantages (n_seq, L) and returns (n_seq, L) with no change to the function.
+
+FLAG: ppo.py:152 folds truncated into done. MiniGrid-MemoryS7 has a step limit,
+so a timeout is recorded as "the episode ended and the future is worth 0",
+which is a slight pessimistic bias. The correct fix is to bootstrap on truncated
+and cut only on terminated. Fine to leave for now - just know it is there.
+
+
+STEP 4 - split_pad_mask()                           -> no grad   [DONE]
+
+  WHERE:  PPOAgent.split_pad_mask()  agents/ppo.py:280-354
+
+          ppo.py:279-307      the docstring: what a sequence is, why a done
+                              must end one, the masked-reduction rule
+          ppo.py:310-318      build segments = (worker, first step, last step)
+                              of every unbroken stretch. The cut condition is
+                              at 316: a done, OR running out of buffer
+          ppo.py:320-321      lengths -> n_seq and L = the longest sequence
+          ppo.py:327          keys = everything except hxs/cxs. THIS is what
+                              makes advantages/returns come along for free if
+                              they are put into buf before the call
+          ppo.py:326-329      allocate (n_seq, L, *trailing dims), dtype kept
+          ppo.py:330          the mask, zeros
+          ppo.py:332-335      hxs/cxs, now (1, n_seq, H) = one h_0 PER SEQUENCE
+          ppo.py:337-342      copy each segment into row i, set mask[:n] = 1.0
+          ppo.py:344-350      h_0 of the sequence = the per-step hxs stored at
+                              its FIRST step (ppo.py:130-134). After a done
+                              that is zeros already, so the reset carries into
+                              training for free
+
+Cut at every done, pad to L, build mask.
+
+Trick: ppo.py:327 loops over whatever keys buf has, so doing
+
+    buf["advantages"] = adv
+    buf["returns"]    = ret
+
+BEFORE calling it gets both split and padded for free - no change to the
+function, and its signature stays split_pad_mask(self, buf) rather than the
+(buf, adv, ret) sketched in the loop above.
+
+Also worth naming: out["hxs"] here is (1, n_seq, H) - exactly the h_0 shape
+nn.GRU wants, and it is a DETACHED CONSTANT. That is truncated BPTT, the
+scissors at "chunk 1 starts" above: the VALUE crosses the boundary, the
+DERIVATIVE is replaced by 0.
+
+
+STEP 5 - Epoch / minibatch loop                                  [MISSING]
+
+    for epoch in range(n_epochs):
+        for mb in shuffled_minibatches(seqs):     # slice along n_seq, never along L
+
+Split by SEQUENCE, never by timestep - a sequence must stay whole or the
+recurrence breaks.
+
+
+STEP 6 - Forward pass on the minibatch      -> WITH grad, the only place  [MISSING]
+
+    h0 = (mb["hxs"], mb["cxs"]) if is_lstm else mb["hxs"]
+    dist, value, _ = self.model(mb["obs"], h0)      # seq_len = L, whole seq in ONE call
+    new_log_prob = dist.log_prob(mb["actions"])
+    entropy      = dist.entropy()
+
+Two details:
+  - Feed the whole padded sequence in one call, not step by step. That is why
+    you padded.
+  - THROW THE RETURNED HIDDEN AWAY. Never feed it into the next minibatch -
+    that would extend the graph across an optimizer.step() and error out (or
+    silently train on stale weights).
+
+
+STEP 7 - Loss        -> grad flows; the old quantities are constants  [MISSING]
+
+    adv    = normalize(mb["advantages"], mask)             # masked mean/std, no grad
+    ratio  = torch.exp(new_log_prob - mb["log_probs"])     # old = constant
+    p_loss = -torch.min(ratio * adv, clamp(ratio, 1-eps, 1+eps) * adv)
+    v_loss = (value - mb["returns"]).pow(2)                # target = constant
+    loss   = masked(p_loss) + c1 * masked(v_loss) - c2 * masked(entropy)
+
+Reduce EVERY term as (x * mask).sum() / mask.sum(), never .mean() - otherwise
+you train on padding, the exact bug the ppo.py:296-298 docstring warns about.
+
+
+STEP 8 - Backward and step                                       [MISSING]
+
+    optimizer.zero_grad()
+    loss.backward()
+    clip_grad_norm_(self.model.parameters(), 0.5)
+    optimizer.step()
+
+Then throw the rollout away and go back to step 1. Any diagnostics logged
+(approx-KL, clip fraction, explained variance) go under no_grad.
+
+
+--------------------------------------------------------------------------------
+THE grad / no_grad ANSWER IN ONE TABLE
+--------------------------------------------------------------------------------
+
+  step                  model called?                mode        where                    why
+  --------------------  ---------------------------  ----------  -----------------------  ------------------------------------------
+  1 rollout             yes, seq_len=1, T times      no_grad     ppo.py:127-173  [DONE]   producing data; log_pi_old must be constant
+  2 bootstrap V(s_T)    yes, once                    no_grad     ppo.py:175-200  [DONE]   it is a number in the GAE recursion
+  3 GAE                 no                           -           ppo.py:216-275  [DONE]   inputs already detached
+  4 split/pad/mask      no                           -           ppo.py:280-354  [DONE]   reshaping
+  5 minibatching        no                           -           not written yet          indexing
+  6 replay minibatch    yes, seq_len=L, once per mb  GRAD ON     not written yet          the only forward that gets backpropped
+  7 loss                no                           grad flows  not written yet          adv, returns, log_pi_old, h_0 all constants
+  8 backward + step     no                           -           not written yet
+
+Short version: the model runs under no_grad EVERYWHERE EXCEPT STEP 6. The
+rollout produces constants; the update replays those same observations through
+the network a second time, and that second pass is the one that carries the
+graph.
+
+
+--------------------------------------------------------------------------------
+WHAT IS STILL MISSING BEFORE THIS CAN BE WRITTEN
+--------------------------------------------------------------------------------
+
+Config still needs the update hyperparameters:
+
+    clip_eps (0.2), value_coef (0.5), entropy_coef (0.01), max_grad_norm (0.5),
+    n_epochs (3), n_mini_batch, n_iterations
+
+    (gamma and gae_lambda are already there, config.py:41-44, added for step 3)
+
+plus an Adam optimizer built on self.model.parameters() in PPOAgent.__init__
+(lr is already in the config, config.py:28).
+
+tbptt_length = "max" at config.py:30 currently means "cut only on done", which
+is what split_pad_mask does. Making it an integer would mean additionally
+cutting every k steps, using the stored per-step hxs at each chunk start as a
+detached h_0 - i.e. the scissors from the worked example above.
+
+    
+

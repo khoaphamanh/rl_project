@@ -30,13 +30,18 @@ class Config(Helper):
         self.tbptt_length = "max"
 
         # env
-        self.name_env = "MiniGrid-MemoryS11-v0"
+        self.name_env = "MiniGrid-MemoryS7-v0"
 
         # sampling: W games played in parallel, T steps each per iteration
         # the paper uses W=16, T=512; smaller here so it runs on a laptop
         self.n_workers = 4  # W
         self.worker_steps = 128  # T
         self.batch_size = self.n_workers * self.worker_steps  # W * T
+
+        # advantage estimation
+        self.gamma = 0.99  # discount: how far ahead a reward still counts
+        self.gae_lambda = 0.95  # 0 = TD(0), low variance / high bias
+        #                         1 = Monte Carlo, high variance / no bias
 
     def set_seed(self, env=None, seed=None):
         """Seed every source of randomness and return the seed that was used.
