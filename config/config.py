@@ -7,11 +7,35 @@ from config.helper import Helper
 
 
 class Config(Helper):
-    """All hyperparameters. Built once, in main.py.
+    """Hyperparameters shared by every encoder. NOT built directly.
 
-    Inheriting Helper means config.build_extractor(), config.zero_hidden()
-    and config.is_recurrent read these attributes directly.
+    The four architecture configs subclass this and fill in _configure_model()
+    with the one encoder they are for:
+
+        config_mlp.py          ConfigMLP          hidden_size, n_layers_mlp
+        config_lstm.py         ConfigLSTM         hidden_size
+        config_gru.py          ConfigGRU          hidden_size
+        config_transformer.py  ConfigTransformer  hidden_size, d_model, n_heads,
+                                                  n_layers, d_ff, p_drop, ...
+
+    Everything that stays the SAME whichever encoder runs -- the env, the
+    rollout size, the PPO knobs, evaluation -- lives here, so that an ablation
+    changes exactly one thing between runs: the encoder. That is the whole
+    point of the split; a hyperparameter that belongs here but got copied into
+    four files would be four chances for the runs to stop being comparable.
+
+    Build one with make_config("MLP"), never Config() -- see config/__init__.py.
+    Config on its own is abstract: _configure_model() raises until a subclass
+    overrides it.
+
+    Inheriting Helper means config.build_extractor(), config.zero_hidden() and
+    config.is_recurrent read these attributes directly.
     """
+
+    # Set by each subclass in _configure_model(). Named here so is_recurrent
+    # and build_model_name have an attribute to read, and so a stray Config()
+    # fails in the hook below rather than later on a None.upper().
+    recurrent_model = None
 
     def __init__(self):
 
@@ -27,18 +51,18 @@ class Config(Helper):
         #   and then no encoder can read the cue, so all three score alike.
         #   See feature_extractor.flatten_obs for the measurements.
 
-        # model hyperparameters
-        self.hidden_size = 64
-        self.recurrent_model = "TRANSFORMER"  # or "LSTM", "MLP", "TRANSFORMER", "GRU"
-        self.n_layers_mlp = 3
+        # model hyperparameters shared by every encoder. recurrent_model,
+        # hidden_size and the per-architecture knobs (n_layers_mlp, d_model,
+        # n_heads, ...) are NOT here -- each subclass sets its own in
+        # _configure_model(). hidden_size in particular is per-encoder on
+        # purpose: it is the one width every encoder has, so owning it is what
+        # lets an LSTM be widened without dragging the MLP along.
         self.lr = 1e-3
 
         self.tbptt_length = "max"
 
         # env
-        self.name_env = (
-            "MiniGrid-MemoryS11-v0"  # "MiniGrid-MemoryS11-v0""MiniGrid-DoorKey-8x8-v0"
-        )
+        self.name_env = "MiniGrid-DoorKey-8x8-v0"  # "MiniGrid-DoorKey-5x5-v0"  # "MiniGrid-MemoryS11-v0""MiniGrid-DoorKey-8x8-v0"
         self.force_cue_visible = False  # wrap the env in StartInCueView, which
         #   spawns the agent at (1, height//2) instead of a random x along the
         #   hallway. MiniGrid's own MemoryEnv shows the cue from x = 1 ONLY, so
@@ -79,48 +103,6 @@ class Config(Helper):
         # batch_size counts SEQUENCES, and two sibling attributes counting
         # different things under the same word is a trap. This one counts steps.
         self.n_total_steps = self.n_workers * self.worker_steps  # W * T
-
-        # ------------------------------------------------------------------
-        # transformer only -- read by build_extractor when recurrent_model is
-        # "TRANSFORMER", ignored otherwise. Down here rather than up beside
-        # hidden_size because max_seq_length is derived from worker_steps,
-        # which is only known above.
-        #
-        # SMALL ON PURPOSE: a first test of the encoder, not a tuned run.
-        # Measured on DoorKey-8x8, one fwd+bwd over mini_batch_size=4
-        # sequences of L=640, it is CHEAPER than the GRU beside it:
-        #
-        #     GRU                                200,832 params     97 ms
-        #     Transformer d_model=64, 2 layers   166,912 params     74 ms
-        #     Transformer d_model=128, 4 layers  926,912 params    279 ms
-        #
-        # A GRU walks 640 steps strictly one after another; attention does all
-        # 640 in one matmul. What does bite is that attention is quadratic in
-        # L, so the third line above is where it stops being free.
-        # ------------------------------------------------------------------
-        self.d_model = 64  # the width the attention stack runs at. Independent
-        #   of hidden_size -- fc_out projects d_model -> hidden_size -- but set
-        #   equal to it here so the test adds no width anywhere and the
-        #   comparison against the GRU stays honest.
-        self.n_heads = 4  # must DIVIDE d_model. 64 / 4 = 16 numbers per head.
-        self.n_layers_transformer = 1  # one layer is a single lookup and cannot
-        #   compose two of them ("find the cue" then "relate it to here"), so
-        #   2 is the smallest stack that is still a transformer.
-        self.d_ff = 4 * self.d_model  # 256, the ratio the original paper uses
-
-        self.p_drop = 0.0  # NOT a free choice. PPO compares log_probs recorded
-        #   during the rollout against log_probs recomputed during the update.
-        #   Dropout makes the same observation give two different answers, so
-        #   the ratio pi_new / pi_old is noise before any learning happens --
-        #   and nothing in this project calls model.eval(), so a nonzero value
-        #   would be live during both passes. Leave at 0.0.
-
-        self.max_seq_length = self.worker_steps  # also NOT free. The positional
-        #   codes and the causal mask are built once, this long, and forward
-        #   raises on anything longer. split_pad_mask pads to L = the longest
-        #   unbroken stretch of steps, which is at most T -- so tying this to
-        #   worker_steps makes it follow the env instead of being one more
-        #   number to remember to change per maze size.
 
         # advantage estimation
         self.gamma = 0.99  # discount: how far ahead a reward still counts
@@ -177,16 +159,47 @@ class Config(Helper):
         # where a trained model is written
         self.dir_pretrained_model = os.path.join("agents", "pretrained_model")
 
-        # ppo_GRU.pth, ppo_LSTM.pth, ppo_MLP.pth -- the ENCODER IS IN THE NAME
-        # rather than a single fixed ppo_feature_extractor.pth, because the
-        # whole experiment is running all three and one fixed name would have
-        # each run silently overwrite the previous one's weights. Relative, like
-        # logs/, so everything is written under the repo root -- which means
-        # python must be run FROM the repo root.
-        self.name_model = f"ppo_{self.recurrent_model.upper()}.pth"
+        # ----- the encoder, filled by the subclass -----------------------
+        # ConfigMLP / ConfigLSTM / ConfigGRU / ConfigTransformer override this
+        # to set recurrent_model and whatever architecture knobs their encoder
+        # needs. Called HERE, near the end, for two reasons that decide the
+        # ordering:
+        #   - AFTER worker_steps exists, because the transformer's
+        #     max_seq_length is derived from it;
+        #   - BEFORE name_model, because build_model_name() spells
+        #     recurrent_model, which does not exist until this runs.
+        self._configure_model()
+
+        # ppo_GRU_MiniGrid-MemoryS11-v0.pth -- BOTH THE ENCODER AND THE ENV ARE
+        # IN THE NAME, because both change what the weights mean. One fixed
+        # ppo_feature_extractor.pth would have every run overwrite the last;
+        # keying on the encoder alone still lets a MemoryS11 run land on top of
+        # a finished DoorKey run of the same encoder, which is what nearly
+        # happened here with three checkpoints sitting under three envs.
+        #
+        # Spelled by helper.build_model_name(), not by an f-string here, so
+        # watch.py cannot end up with a different idea of the filename.
+        # Relative, like logs/, so everything is written under the repo root --
+        # which means python must be run FROM the repo root.
+        self.name_model = self.build_model_name()
         self.path_model = os.path.join(self.dir_pretrained_model, self.name_model)
         # the directory itself is made by helper.build_model_path(), at save
         # time, not here
+
+    def _configure_model(self):
+        """Set recurrent_model and this encoder's architecture knobs.
+
+        Overridden by ConfigMLP / ConfigLSTM / ConfigGRU / ConfigTransformer.
+        Config itself is abstract, so building one directly stops here with a
+        clear message instead of failing later inside build_extractor or on a
+        None.upper() in build_model_name.
+        """
+        raise NotImplementedError(
+            "Config is abstract -- build a ConfigMLP / ConfigLSTM / ConfigGRU / "
+            "ConfigTransformer, or call make_config('MLP'). Each one fills in "
+            "recurrent_model and its own encoder hyperparameters in "
+            "_configure_model()."
+        )
 
     def set_seed(self, env=None, seed=None):
         """Seed every source of randomness and return the seed that was used.

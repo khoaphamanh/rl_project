@@ -1,53 +1,66 @@
 """
 Watch a trained policy play. The viewer half of main.py.
 
-main.py trains and writes agents/pretrained_model/ppo_<encoder>.pth. This
-opens that file in a pygame window and plays it on the eval mazes, with two
-buttons: NEW GAME (the next eval maze) and REPLAY (the same one again).
+main.py trains and writes agents/pretrained_model/ppo_<encoder>_<env>.pth. This
+opens that file in a pygame window and plays it on the eval mazes. The controls
+come in two rows that mean the same thing at two scales: the top one moves
+within an episode (a step at a time), the bottom one moves between episodes (a
+maze at a time), and in both, left goes back and right forward.
 
 No training happens here and nothing is written -- it only reads the
 checkpoint. See Helper.watch_agent in config/helper.py.
 
 Run with:
-    python watch.py            the encoder config.py is currently set to
-    python watch.py LSTM       a specific one, whatever config.py says
-    python watch.py GRU 1      ... at 1 agent step per second (default 2.5)
+    python watch.py MLP            the MLP checkpoint, at the default 2.5/sec
+    python watch.py GRU            the GRU checkpoint
+    python watch.py LSTM 1         ... at 1 agent step per second
+    python watch.py TRANSFORMER
+
+The encoder is required and picks the Config subclass exactly the way main.py
+does, so watcher and trainer always agree on the filename. The env comes from
+config.py, so watch the encoder on the same env it was trained on -- a DoorKey
+policy has no checkpoint under a MemoryS11 name and load_model will say so.
 """
 
-import os
-import sys
+import argparse
 
-from config.config import Config
+from config import make_config, MODEL_CHOICES
 
 
 def main():
-    config = Config()
+    parser = argparse.ArgumentParser(
+        description="Watch a trained PPO policy play in a pygame window."
+    )
+    parser.add_argument(
+        "model",
+        type=str.upper,  # "gru" and "GRU" both work; choices stay uppercase
+        choices=MODEL_CHOICES,
+        help="which feature extractor's checkpoint to load (%(choices)s)",
+    )
+    parser.add_argument(
+        "steps_per_sec",
+        nargs="?",
+        type=float,
+        default=None,  # None -> use watch_agent's own default, not duplicated here
+        help="agent steps per second (default 2.5)",
+    )
+    args = parser.parse_args()
 
-    # optional: pick the encoder from the command line, so all three saved
-    # runs can be watched without editing config.py between them
-    if len(sys.argv) > 1:
-        config.recurrent_model = sys.argv[1].upper()
-
-        # REBUILD THE PATH. name_model and path_model were computed once in
-        # Config.__init__, from the encoder name as it stood THEN -- assigning
-        # recurrent_model here does not reach back and update them, so without
-        # these two lines "python watch.py LSTM" would build an LSTM and then
-        # try to load ppo_GRU.pth into it. (build_extractor() and is_lstm are
-        # methods, so those do follow the change on their own.)
-        config.name_model = f"ppo_{config.recurrent_model}.pth"
-        config.path_model = os.path.join(config.dir_pretrained_model, config.name_model)
+    # make_config sets name_model / path_model from the encoder AND the env, so
+    # unlike the old manual rebuild there is nothing to keep in sync by hand
+    config = make_config(args.model)
 
     print(f"loading {config.path_model}")
     print(
-        "buttons: STEP -1 | PAUSE/PLAY | STEP +1,  NEW GAME | REPLAY,\n"
+        "buttons: STEP -1   | PAUSE/PLAY | STEP +1     within one episode\n"
+        "         LAST GAME | REPLAY     | NEW GAME    between eval mazes\n"
         "         AUTO NEW GAME (walks the whole eval set unattended)\n"
-        "keys:    SPACE pause   <- -> step   N new   R replay   A auto   Q quit"
+        "keys:    SPACE pause   <- -> step   P/N maze   R replay   A auto   Q quit"
     )
 
-    # blocks until the window is closed. No steps_per_sec unless one was asked
-    # for, so the default lives in watch_agent and is not duplicated here.
-    if len(sys.argv) > 2:
-        config.watch_agent(steps_per_sec=float(sys.argv[2]))
+    # blocks until the window is closed
+    if args.steps_per_sec is not None:
+        config.watch_agent(steps_per_sec=args.steps_per_sec)
     else:
         config.watch_agent()
 

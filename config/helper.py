@@ -11,6 +11,7 @@ config.something and can read config's own attributes directly:
     config.env_max_steps       that env's own time limit, 5 * size^2
     config.build_extractor()   the encoder named by config.recurrent_model
     config.build_logger()      logs/log_<date>_<time>.log, hyperparameters first
+    config.log_model_summary() torchinfo's table: layers, params, size in MB
     config.build_model_path()  agents/pretrained_model/, created, + the filename
     config.save_model()        weights + the architecture they belong to
     config.load_model()        the same, back into a built model, checked
@@ -240,6 +241,102 @@ class Helper:
 
         return logger
 
+    def log_model_summary(self, model, logger=None, batch_size=None, seq_len=8):
+        """torchinfo's table for the built model, into the log file.
+
+        Called from main.py right after build_logger(), so the run's permanent
+        record says not just which hyperparameters were used but how big the
+        thing they built actually was:
+
+            Total params        201,352
+            Trainable params    201,352
+            Params size (MB)       0.77
+
+        WHY IT NEEDS A PROBE INPUT. torchinfo works by running a forward pass
+        and watching the shapes go by, so it has to be handed something to
+        pass. That is the only reason batch_size and seq_len exist here.
+        Parameter counts do NOT depend on either -- an nn.Linear has the same
+        weights whatever you push through it -- so the numbers above are exact
+        for any probe. What the probe does change is the Output Shape column
+        and the mult-adds estimate, which are per-batch quantities.
+
+        seq_len matters most for TRANSFORMER, where attention is quadratic in
+        it: the mult-adds at seq_len=8 are not a hundredth of the mult-adds at
+        seq_len=640. Read that row as an illustration, not as the cost of a
+        real update. Params are still exact.
+
+        dtypes=[torch.uint8] is not optional. The observation stays uint8 all
+        the way to flatten_obs, which one-hots it -- torchinfo's default float
+        probe would be handed to F.one_hot and raise.
+
+        hidden is left at its default of None, which is the same thing every
+        first step of a rollout does: the model builds its own zeros. Nothing
+        is trained, no gradient is kept, and the probe never touches the envs.
+
+        torchinfo is imported HERE rather than at the top of the file, so a
+        machine without it can still train -- the summary is a convenience,
+        not a dependency of the experiment. Returns the ModelStatistics object
+        (so .total_params and .trainable_params can be read), or None if
+        torchinfo is missing.
+        """
+        try:
+            from torchinfo import summary
+        except ImportError:
+            message = (
+                "torchinfo not installed, skipping the model summary "
+                "(pip install torchinfo)"
+            )
+            (logger.warning if logger is not None else print)(message)
+            return None
+
+        if batch_size is None:
+            # the update's batch counts SEQUENCES, which is what a forward
+            # pass during optimization actually receives
+            batch_size = self.mini_batch_size
+
+        shape = (batch_size, seq_len, 7, 7, 3)
+        info = summary(model, input_size=shape, dtypes=[torch.uint8], verbose=0)
+
+        write = logger.info if logger is not None else print
+        write("")
+        write(f"MODEL SUMMARY  {self.recurrent_model.upper()}  (probe input {shape})")
+        for line in str(info).splitlines():
+            write(f"  {line}")
+        write("")
+
+        return info
+
+    def build_model_name(self):
+        """ppo_<ENCODER>_<env>.pth -- the ONE place the filename is spelled.
+
+            ppo_GRU_MiniGrid-DoorKey-8x8-v0.pth
+            ppo_MLP_MiniGrid-MemoryS7-v0.pth
+
+        BOTH halves are in the name because both change what the weights mean.
+        The encoder decides the architecture; the env decides what the agent
+        was trained to do, and a DoorKey policy loaded against MemoryS11 is not
+        a worse agent, it is a meaningless one.
+
+        Keying on the encoder alone -- what this used to do -- meant a GRU run
+        on MemoryS11 silently overwrote a GRU run on DoorKey. train_agent()
+        saves on every improvement and starts each run from best_success =
+        -1.0, so the first evaluation of the new run, however bad, lands on top
+        of a finished result from the old one. Nothing warns, because the
+        filename is the only thing that ever distinguished them.
+
+        It is a METHOD, not an attribute set in Config.__init__, so that both
+        halves are read WHEN IT IS CALLED. That is what lets watch.py override
+        recurrent_model from the command line and get the matching file --
+        an f-string evaluated once in __init__ would still be spelling the
+        encoder that was set at import time.
+
+        The replace() is for gymnasium's namespaced ids ("ALE/Pong-v5"), which
+        MiniGrid does not use but which would otherwise put a directory
+        separator in the middle of a filename and fail confusingly.
+        """
+        env = self.name_env.replace("/", "-")
+        return f"ppo_{self.recurrent_model.upper()}_{env}.pth"
+
     def build_model_path(self):
         """agents/pretrained_model/ppo_<encoder>.pth, with the directory made.
 
@@ -413,17 +510,37 @@ class Helper:
                         its own is not enough to follow a policy -- by the
                         time you hit it the step you wanted has gone by, so
                         the controls that actually work are the single steps
-            NEW GAME    advance to the next maze of the EVAL SET and play it
+            LAST GAME   go back to the PREVIOUS maze of the eval set
             REPLAY      play the SAME maze again from step 0
+            NEW GAME    advance to the NEXT maze of the eval set and play it
             AUTO NEW    a toggle, not an action: when an episode ends, wait
              GAME       _VIEW_AUTO_DELAY seconds and start the next maze on
                         its own. Left on, the window walks the whole eval set
                         unattended, which is how you find WHICH mazes a 0.94
                         policy is losing without pressing anything 50 times
 
+        The two button rows are deliberately parallel, and reading them that
+        way is the whole layout:
+
+            STEP -1     PAUSE/PLAY   STEP +1      move within ONE episode
+            LAST GAME   REPLAY       NEW GAME     move between EPISODES
+
+        Left goes back, right goes forward, the middle one holds still. So
+        LAST GAME is to mazes what STEP -1 is to steps, and the index wraps
+        both ways -- LAST GAME on maze 1 lands on maze 50.
+
+        WHY LAST GAME IS NEEDED AT ALL. Without it the eval set is a one-way
+        street: overshoot the maze you wanted and the only way back is 49 more
+        presses of NEW GAME. That matters most with AUTO NEW GAME on, which is
+        exactly when a maze goes by before you have read the outcome -- the
+        loss you are hunting for scrolls past and cannot be recovered.
+
         STEP -1 and STEP +1 are exact inverses: the actions taken are on
         record, so going back and forward again re-walks the SAME trajectory
-        rather than re-sampling a new one.
+        rather than re-sampling a new one. LAST GAME and NEW GAME are NOT
+        inverses in that sense -- each one restarts an episode from step 0,
+        so the maze comes back but the trajectory through it is drawn again
+        (identically if deterministic, freshly sampled if not).
 
         WHY THE EVAL SET AND NOT RANDOM MAZES. The mazes are exactly
         evaluate()'s: seed = eval_seed + i for i in 0..n_eval_episodes-1. So
@@ -465,7 +582,8 @@ class Helper:
                             distribution as it changes without pausing.
 
         Keys: SPACE pause/resume, LEFT/RIGHT ARROW step one action back or
-        forward, N new game, R replay, A toggle auto new game, Q or Esc quit.
+        forward, P previous maze, N next maze, R replay, A toggle auto new
+        game, Q or Esc quit.
 
         Blocks until the window is closed. Never called from main.py or from
         training -- it is a separate thing you run against a saved file.
@@ -543,16 +661,24 @@ class Helper:
                 else int(dist.sample()[0, 0])
             )
 
-        def start(next_maze, keep_trail=False):
-            """Begin an episode. next_maze=False replays the current one.
+        def start(move=0, keep_trail=False):
+            """Begin an episode. move = +1 next maze, -1 previous, 0 this one.
+
+            An integer rather than the old next_maze boolean, because there
+            are now three destinations and a second boolean beside the first
+            would allow the meaningless "next and previous at once".
+
+            The modulo wraps BOTH ways -- Python's -1 % 50 is 49, not -1 -- so
+            LAST GAME on maze 1 lands on maze 50 and the eval set behaves as a
+            ring rather than a street with two dead ends.
 
             keep_trail is for go_to() only: it re-runs this to get back to a
             clean reset and then re-walks the recorded actions, so the trail
             must survive the wipe.
             """
             index = ep.get("index", -1)
-            if next_maze:
-                index = (index + 1) % self.n_eval_episodes
+            if move:
+                index = (index + move) % self.n_eval_episodes
 
             trail = list(ep["trail"]) if keep_trail else []
 
@@ -639,7 +765,7 @@ class Helper:
             """
             target = max(0, target)
 
-            start(next_maze=False, keep_trail=True)
+            start(move=0, keep_trail=True)  # same maze, trail preserved
             for i in range(target):
                 act(forced=ep["trail"][i])
 
@@ -648,7 +774,7 @@ class Helper:
             if target < len(ep["trail"]):
                 ep["action"] = ep["trail"][target]
 
-        start(next_maze=True)
+        start(move=+1)  # index starts at -1, so this opens on maze 1
 
         # ---- the loop --------------------------------------------------
         paused = False
@@ -663,9 +789,11 @@ class Helper:
             """One place for a control, whether it came from a click or a key."""
             nonlocal paused, step_once, auto_new
             if name == "new":
-                start(next_maze=True)
+                start(move=+1)
+            elif name == "last":
+                start(move=-1)
             elif name == "replay":
-                start(next_maze=False)
+                start(move=0)
             elif name == "pause":
                 paused = not paused
             elif name == "step":
@@ -680,6 +808,7 @@ class Helper:
 
         keys = {
             pygame.K_n: "new",
+            pygame.K_p: "last",  # p for previous; n and p are the usual pair
             pygame.K_r: "replay",
             pygame.K_SPACE: "pause",
             pygame.K_RIGHT: "step",
@@ -717,7 +846,7 @@ class Helper:
                     since_done += dt
                     if since_done >= _VIEW_AUTO_DELAY:
                         since_done = 0.0
-                        start(next_maze=True)
+                        start(move=+1)
             else:
                 since_done = 0.0
 
@@ -1222,10 +1351,7 @@ def _draw_viewer_sidebar(
             color, dy=1)
 
     # ---- the buttons, pinned to the bottom -------------------------------
-    # Two rows. Transport controls on top, because those are the ones pressed
-    # WHILE an episode is running and they want the big target; the episode
-    # controls below are pressed between episodes, when there is no hurry.
-    # three rows: transport, episode, and the one persistent setting at the
+    # Three rows: transport, episode, and the one persistent setting at the
     # bottom. The toggle is shorter than the action buttons on purpose -- it
     # changes what happens LATER, it does not do anything when pressed, and
     # looking different is what keeps that distinction readable.
@@ -1234,23 +1360,31 @@ def _draw_viewer_sidebar(
     row_bottom = row_toggle - bh - gap
     row_top = row_bottom - bh - gap
 
-    # a transport bar reads left-to-right as back / play / forward, so the
-    # two step buttons flank PAUSE rather than sitting both on one side
+    # BOTH action rows use these same three columns, so the buttons line up
+    # vertically and the two rows read as the same control at two scales:
+    #
+    #     STEP -1     PAUSE/PLAY   STEP +1      <- moves within one episode
+    #     LAST GAME   REPLAY       NEW GAME     <- moves between episodes
+    #
+    # left goes back, right goes forward, the middle one stays put. Giving
+    # the episode row its own geometry would break that reading for no gain.
     side = 104
     middle = inner - 2 * side - 2 * gap
-    half = (inner - gap) // 2
+    col_left = pad
+    col_mid = pad + side + gap
+    col_right = col_mid + middle + gap
 
     buttons = {
         # greyed out at step 0, where there is nothing behind us to go back to
         "back": _draw_button(
-            screen, pygame, pygame.Rect(pad, row_top, side, bh),
+            screen, pygame, pygame.Rect(col_left, row_top, side, bh),
             "STEP -1", fonts["head"], mouse, (170, 170, 190),
             enabled=ep["step"] > 0,
         ),
         # one button, two labels. Green while paused reads as "press to go",
         # which is the state you are in when you have stopped to read the bars.
         "pause": _draw_button(
-            screen, pygame, pygame.Rect(pad + side + gap, row_top, middle, bh),
+            screen, pygame, pygame.Rect(col_mid, row_top, middle, bh),
             "PLAY" if paused else "PAUSE", fonts["head"], mouse,
             (120, 230, 140) if paused else (200, 200, 200),
         ),
@@ -1258,18 +1392,24 @@ def _draw_viewer_sidebar(
         # policy: by the time you hit it the step you wanted is already gone,
         # so the useful control is one that moves in single steps.
         "step": _draw_button(
-            screen, pygame,
-            pygame.Rect(pad + side + gap + middle + gap, row_top, side, bh),
+            screen, pygame, pygame.Rect(col_right, row_top, side, bh),
             "STEP +1", fonts["head"], mouse, (170, 170, 190),
             enabled=not ep["done"],
         ),
-        "new": _draw_button(
-            screen, pygame, pygame.Rect(pad, row_bottom, half, bh),
-            "NEW GAME", fonts["head"], mouse, (90, 190, 255),
+        # the previous maze of the eval set, wrapping round to 50 from 1. Never
+        # disabled: unlike STEP -1, which runs out at step 0, there is always
+        # another maze behind this one.
+        "last": _draw_button(
+            screen, pygame, pygame.Rect(col_left, row_bottom, side, bh),
+            "LAST GAME", fonts["head"], mouse, (90, 190, 255),
         ),
         "replay": _draw_button(
-            screen, pygame, pygame.Rect(pad + half + gap, row_bottom, half, bh),
+            screen, pygame, pygame.Rect(col_mid, row_bottom, middle, bh),
             "REPLAY", fonts["head"], mouse, (255, 190, 90),
+        ),
+        "new": _draw_button(
+            screen, pygame, pygame.Rect(col_right, row_bottom, side, bh),
+            "NEW GAME", fonts["head"], mouse, (90, 190, 255),
         ),
         # a SETTING, not an action: when an episode ends, start the next eval
         # maze on its own after a short pause. Turn it on to watch all 50 go
@@ -1284,7 +1424,7 @@ def _draw_viewer_sidebar(
     }
 
     hint = fonts["tiny"].render(
-        "SPACE pause   <- -> step   N new   R replay   A auto   Q quit",
+        "SPACE pause   <- -> step   P/N maze   R replay   A auto   Q quit",
         True, (105, 105, 105),
     )
     screen.blit(hint, (pad, row_toggle + th + 8))

@@ -1,22 +1,41 @@
 """
-Entry point.
+Entry point. Trains PPO with ONE encoder, named on the command line.
 
-The Config is built here and handed to the agent, so every hyperparameter
-lives in one place and nothing below imports Config on its own.
+    python main.py MLP
+    python main.py GRU
+    python main.py LSTM
+    python main.py TRANSFORMER
 
-No PPO happens here. main.py prints what it is about to run, calls
+The encoder is the only thing that changes between runs of an ablation, so it
+is the only argument. make_config(name) builds the matching Config subclass
+(config/__init__.py); everything else -- env, rollout size, PPO knobs -- is the
+same across all four and lives in config.py.
+
+No PPO happens here. main.py builds the config, hands it to the agent, calls
 agent.train_agent() once, prints the final number, and closes the envs.
-
-Run with:
-    python main.py
 """
 
+import argparse
+
 from agents.ppo import PPOAgent
-from config.config import Config
+from config import make_config, MODEL_CHOICES
 
 
 def main():
-    config = Config()
+    parser = argparse.ArgumentParser(
+        description="Train PPO with one feature extractor on a MiniGrid env."
+    )
+    parser.add_argument(
+        "model",
+        type=str.upper,  # so "mlp" and "MLP" both work; choices stay uppercase
+        choices=MODEL_CHOICES,
+        help="which feature extractor to train (%(choices)s)",
+    )
+    args = parser.parse_args()
+
+    # the encoder decides which Config subclass, and the subclass decides which
+    # architecture knobs exist -- see config/__init__.py
+    config = make_config(args.model)
 
     agent = PPOAgent(config)
 
@@ -24,6 +43,10 @@ def main():
     # and that is what puts the seed actually used into the dump. One file per
     # run, logs/log_<date>_<time>.log, hyperparameters at the top.
     logger = config.build_logger()
+
+    # what was actually built, straight under the hyperparameters that asked
+    # for it: layer by layer, total and trainable parameters, size in MB
+    config.log_model_summary(agent.model, logger)
 
     try:
         # the whole run. One stats dict per iteration comes back; the ones on
