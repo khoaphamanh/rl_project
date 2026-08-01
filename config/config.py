@@ -39,8 +39,16 @@ class Config(Helper):
 
     def __init__(self):
 
-        # default seed
-        self.seed_default = 42
+        # one training run per seed. The unit of a result is this whole list,
+        # not any single run: main.py trains all of them and reports the mean.
+        # A one-element list, [42], is the quick debug run.
+        self.base_seed_list = [42, 0, 92]
+
+        # the seed actually in use -- set_seed() overwrites it per run, and
+        # build_model_name spells it into the checkpoint. Until a run starts it
+        # is the first of the list, so a config that never reaches an agent
+        # (watch.py, a bare load_model) still names a file.
+        self.seed = self.base_seed_list[0]
 
         # fix hyperparameters
         self.input_size = 7 * 7 * 20  # 980, NOT 147: flatten_obs one-hots the
@@ -58,6 +66,7 @@ class Config(Helper):
         # purpose: it is the one width every encoder has, so owning it is what
         # lets an LSTM be widened without dragging the MLP along.
         self.lr = 1e-3
+        self.wd = 0.0  # Adam weight_decay, read in PPOAgent.__init__
 
         self.tbptt_length = "max"
 
@@ -141,7 +150,7 @@ class Config(Helper):
 
         # evaluation: no gradients, no training, COMPLETE episodes only
         self.n_eval_episodes = 50  # played to their own end, never truncated
-        self.eval_seed = 10_000  # fixed and far from seed_default, so the same
+        self.eval_seed = 10_000  # fixed and far from every training seed, so the same
         #                          50 mazes are replayed at every evaluation.
         #                          That removes the maze draw as a source of
         #                          noise -- but NOT the action sampling, which
@@ -156,8 +165,54 @@ class Config(Helper):
         #                                  evaluate(deterministic=True)
         #                                  overrides this for one call.
 
+        # ----- HPO ---------------------------------------------------------
+        # one trial = one hyperparameter draw, trained once per base_seed_list
+        # entry, so a trial costs len(base_seed_list) full runs.
+        self.n_trials = 10  # testing only; a real search wants 25-40 per encoder
+
+        # the search space. Every "name" MUST be an attribute set above, and it
+        # must be set on the config BEFORE PPOAgent is built -- the agent copies
+        # each one into its own attribute in __init__ and never looks back.
+        #
+        # The keys are optuna's own: suggest_float(name, low, high, step=, log=),
+        # suggest_int(name, low, high, step=, log=), suggest_categorical(name,
+        # choices). "type" is the only key that is not optuna's -- it picks
+        # which suggest_* to call, and defaults to "float".
+        #
+        # step ONLY on log=False entries: suggest_float raises if given both.
+        # Each range is a whole number of steps wide, or optuna lowers "high"
+        # to the nearest one and warns.
+        #
+        # The four encoder configs APPEND their own architecture knobs to this
+        # list in _configure_model(), which runs below.
+        self.search_space = [
+            {"name": "lr", "low": 1e-5, "high": 1e-2, "log": True},
+            {"name": "entropy_coef", "low": 1e-4, "high": 1e-1, "log": True},
+            {"name": "wd", "low": 0.00001, "high": 0.5, "log": True},
+            {"name": "value_coef", "low": 0.1, "high": 1.0, "log": True},
+            {"name": "gamma", "low": 0.95, "high": 0.9995, "step": 0.0001, "log": False},
+            {
+                "name": "gae_lambda",
+                "low": 0.90,
+                "high": 0.99,
+                "step": 0.005,
+                "log": False,
+            },
+            {"name": "clip_eps", "low": 0.1, "high": 0.3, "step": 0.01, "log": False},
+            {
+                "name": "n_epochs",
+                "type": "int",
+                "low": 2,
+                "high": 10,
+                "step": 1,
+                "log": False,
+            },
+        ]
+
         # where a trained model is written
-        self.dir_pretrained_model = os.path.join("agents", "pretrained_model")
+        self.dir_pretrained_model = os.path.join(
+            "agents", "pretrained_model_feature_extractor"
+        )
 
         # ----- the encoder, filled by the subclass -----------------------
         # ConfigMLP / ConfigLSTM / ConfigGRU / ConfigTransformer override this
@@ -165,26 +220,19 @@ class Config(Helper):
         # needs. Called HERE, near the end, for two reasons that decide the
         # ordering:
         #   - AFTER worker_steps exists, because the transformer's
-        #     max_seq_length is derived from it;
-        #   - BEFORE name_model, because build_model_name() spells
-        #     recurrent_model, which does not exist until this runs.
+        #     max_seq_length is derived from it.
         self._configure_model()
 
-        # ppo_GRU_MiniGrid-MemoryS11-v0.pth -- BOTH THE ENCODER AND THE ENV ARE
-        # IN THE NAME, because both change what the weights mean. One fixed
-        # ppo_feature_extractor.pth would have every run overwrite the last;
-        # keying on the encoder alone still lets a MemoryS11 run land on top of
-        # a finished DoorKey run of the same encoder, which is what nearly
-        # happened here with three checkpoints sitting under three envs.
-        #
-        # Spelled by helper.build_model_name(), not by an f-string here, so
-        # watch.py cannot end up with a different idea of the filename.
-        # Relative, like logs/, so everything is written under the repo root --
-        # which means python must be run FROM the repo root.
-        self.name_model = self.build_model_name()
-        self.path_model = os.path.join(self.dir_pretrained_model, self.name_model)
-        # the directory itself is made by helper.build_model_path(), at save
-        # time, not here
+    # PROPERTIES, not attributes: self.seed is not the run's real seed until
+    # set_seed() runs, which happens after __init__. Read-only -- to move the
+    # file, set dir_pretrained_model (or seed) and these follow.
+    @property
+    def name_model(self):
+        return self.build_model_name()
+
+    @property
+    def path_model(self):
+        return os.path.join(self.dir_pretrained_model, self.name_model)
 
     def _configure_model(self):
         """Set recurrent_model and this encoder's architecture knobs.
@@ -204,8 +252,9 @@ class Config(Helper):
     def set_seed(self, env=None, seed=None):
         """Seed every source of randomness and return the seed that was used.
 
-        seed=None falls back to self.seed_default, so set_seed() with no
-        argument is always reproducible.
+        seed=None falls back to base_seed_list[0], so set_seed() with no
+        argument is always reproducible. Normally the seed IS passed --
+        PPOAgent(config, seed=s) hands over one seed of base_seed_list.
 
         The CUDA calls are no-ops on a machine without a GPU. They stay in so
         the exact same config also reproduces on a machine that has one.
@@ -217,7 +266,7 @@ class Config(Helper):
         from the seeded state instead of restarting it.
         """
         if seed is None:
-            seed = self.seed_default
+            seed = self.base_seed_list[0]
         self.seed = seed
 
         # affects subprocesses only (the parallel workers), not this process

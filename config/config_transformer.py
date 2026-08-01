@@ -14,6 +14,11 @@ class ConfigTransformer(Config):
     feature_extractor module docstring and helper.build_extractor.
     """
 
+    # derived, so setting d_model (or d_ff_mult) is enough and d_ff follows
+    @property
+    def d_ff(self):
+        return self.d_ff_mult * self.d_model
+
     def _configure_model(self):
         self.recurrent_model = "TRANSFORMER"
 
@@ -49,7 +54,9 @@ class ConfigTransformer(Config):
         #   is the smallest stack that is still really a transformer. Set to 1
         #   here anyway for the cheapest possible first test; raise it to 2 once
         #   the rollout-cache fix makes the memory number trustworthy.
-        self.d_ff = 4 * self.d_model  # 256, the ratio the original paper uses
+        self.d_ff_mult = 4  # the ratio the original paper uses. A MULTIPLIER and
+        #   not d_ff itself, because d_ff is a property below: tuning d_model
+        #   would otherwise leave a stale d_ff sized for the old width.
 
         self.p_drop = 0.0  # NOT a free choice. PPO compares log_probs recorded
         #   during the rollout against log_probs recomputed during the update.
@@ -57,6 +64,57 @@ class ConfigTransformer(Config):
         #   the ratio pi_new / pi_old is noise before any learning happens --
         #   and nothing in this project calls model.eval(), so a nonzero value
         #   would be live during both passes. Leave at 0.0.
+
+        # APPENDED to Config's shared space, never replacing it. p_drop and
+        # max_seq_length are absent on purpose -- see the comments on each.
+        #
+        # d_model AND n_heads ARE COUPLED: MultiHeadAttention asserts
+        # d_model % n_heads == 0, optuna samples the two independently, and it
+        # has no way to express a constraint between them. So every width one
+        # can propose must divide by every head count the other can, which
+        # means d_model's step must be a multiple of lcm(n_heads choices).
+        #
+        #     n_heads 2, 4, 6, 8   lcm 24   d_model step 24   ->  7 x 4 =  28
+        #     n_heads 2, 4         lcm  4   d_model step  4   -> 37 x 2 =  74
+        #
+        # The second is taken here: a fine grid on the width, which decides
+        # capacity, bought with head counts, which mostly decide how that same
+        # width is sliced up. Put 6 and 8 heads back and d_model's step MUST
+        # return to 24 -- a step of 4 would hand the assert 52 / 6.
+        self.search_space += [
+            {
+                "name": "hidden_size",
+                "type": "int",
+                "low": 32,
+                "high": 256,
+                "step": 8,
+                "log": False,
+            },
+            {
+                "name": "d_model",
+                "type": "int",
+                "low": 48,
+                "high": 192,
+                "step": 4,
+                "log": False,
+            },
+            {
+                "name": "n_heads",
+                "type": "int",
+                "low": 2,
+                "high": 4,
+                "step": 2,
+                "log": False,
+            },
+            {
+                "name": "n_layers_transformer",
+                "type": "int",
+                "low": 1,
+                "high": 4,
+                "step": 1,
+                "log": False,
+            },
+        ]
 
         self.max_seq_length = self.worker_steps  # also NOT free. The positional
         #   codes and the causal mask are built once, this long, and forward

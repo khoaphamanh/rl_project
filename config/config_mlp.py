@@ -27,3 +27,23 @@ class ConfigMLP(Config):
         #   observation and the hidden_size output. build_extractor passes this
         #   to MLP(input_size, hidden_size, n_layers_mlp); the LSTM and GRU take
         #   no such depth argument, which is why it lives here and not in Config.
+
+        # APPENDED to Config's shared space, never replacing it
+        self.search_space += [
+            {
+                "name": "hidden_size",
+                "type": "int",
+                "low": 32,
+                "high": 256,
+                "step": 8,
+                "log": False,
+            },
+            {
+                "name": "n_layers_mlp",
+                "type": "int",
+                "low": 1,
+                "high": 4,
+                "step": 1,
+                "log": False,
+            },
+        ]

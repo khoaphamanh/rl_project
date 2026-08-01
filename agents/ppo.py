@@ -127,15 +127,18 @@ class PPOAgent:
         # ONE optimizer over model.parameters(): the encoder and both heads.
         # That is what makes the shared encoder shared -- it is stepped by the
         # sum of all three loss terms, not by any one of them.
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.lr)
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=config.lr, weight_decay=config.wd
+        )
 
         # the observation each worker is currently looking at. It survives
         # between rollouts, because a game usually is not finished when the
         # T steps run out -- the next rollout continues it.
         self.obs = np.zeros((self.n_workers, *self.obs_shape), dtype=np.uint8)
         for w, env in enumerate(self.envs):
-            # a different seed per worker, otherwise all W games are identical
-            obs, _ = env.reset(seed=self.seed + w)
+            # a different seed per worker, otherwise all W games are identical.
+            # * 1000 so two base seeds can never claim overlapping blocks
+            obs, _ = env.reset(seed=self.seed * 1000 + w)
             self.obs[w] = obs["image"]
 
         # the hidden state carries over between rollouts for the same reason
@@ -881,7 +884,8 @@ class PPOAgent:
 
         CHECKPOINTING happens on report iterations only, and only when
         eval_success_rate BEATS every earlier one. config.save_model writes
-        agents/pretrained_model/ppo_<encoder>.pth -- weights, optimizer state,
+        agents/pretrained_model_feature_extractor/ppo_<seed>_<encoder>_<env>.pth
+        -- weights, optimizer state,
         and the four attributes that decide the architecture, so
         config.load_model can refuse a file that does not match the config.
         config.watch_agent() then plays it back in a window.

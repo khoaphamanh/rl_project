@@ -21,3 +21,15 @@ class ConfigLSTM(Config):
         #   costs 4h^2 weights against the GRU's 3h^2 -- so if the ablation is
         #   meant to be parameter-matched rather than width-matched, this is the
         #   number that moves. Equal across encoders = matched on width.
+
+        # APPENDED to Config's shared space, never replacing it
+        self.search_space += [
+            {
+                "name": "hidden_size",
+                "type": "int",
+                "low": 32,
+                "high": 256,
+                "step": 8,
+                "log": False,
+            },
+        ]

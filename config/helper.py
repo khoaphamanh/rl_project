@@ -12,7 +12,8 @@ config.something and can read config's own attributes directly:
     config.build_extractor()   the encoder named by config.recurrent_model
     config.build_logger()      logs/log_<date>_<time>.log, hyperparameters first
     config.log_model_summary() torchinfo's table: layers, params, size in MB
-    config.build_model_path()  agents/pretrained_model/, created, + the filename
+    config.build_model_path()  agents/pretrained_model_feature_extractor/,
+                               created, + the filename
     config.save_model()        weights + the architecture they belong to
     config.load_model()        the same, back into a built model, checked
     config.zero_hidden()       h_0 (and c_0) full of zeros
@@ -232,10 +233,19 @@ class Helper:
         for key, value in vars(self).items():
             logger.info(f"  {key:<24}{value}")
 
-        # @property, so not in vars(self) -- but they decide what was built
+        # @property, so not in vars(self) -- but they decide what was built.
+        # hasattr because d_ff exists on the transformer config only.
         logger.info("  " + "-" * 40)
-        for key in ("device", "is_recurrent", "is_lstm"):
-            logger.info(f"  {key:<24}{getattr(self, key)}")
+        for key in (
+            "device",
+            "is_recurrent",
+            "is_lstm",
+            "d_ff",
+            "name_model",
+            "path_model",
+        ):
+            if hasattr(self, key):
+                logger.info(f"  {key:<24}{getattr(self, key)}")
 
         logger.info(bar)
 
@@ -307,46 +317,58 @@ class Helper:
         return info
 
     def build_model_name(self):
-        """ppo_<ENCODER>_<env>.pth -- the ONE place the filename is spelled.
+        """ppo_<seed>_<ENCODER>_<env>.pth -- the ONE place the filename is spelled.
 
-            ppo_GRU_MiniGrid-DoorKey-8x8-v0.pth
-            ppo_MLP_MiniGrid-MemoryS7-v0.pth
+            ppo_42_GRU_MiniGrid-DoorKey-8x8-v0.pth
+            ppo_0_MLP_MiniGrid-MemoryS7-v0.pth
 
-        BOTH halves are in the name because both change what the weights mean.
-        The encoder decides the architecture; the env decides what the agent
-        was trained to do, and a DoorKey policy loaded against MemoryS11 is not
-        a worse agent, it is a meaningless one.
+        ALL THREE halves are in the name because all three change what the
+        weights mean. The encoder decides the architecture; the env decides
+        what the agent was trained to do, and a DoorKey policy loaded against
+        MemoryS11 is not a worse agent, it is a meaningless one; the seed
+        decides WHICH RUN this is, and two seeds of the same encoder on the
+        same env are two independent samples that must not share a file.
 
-        Keying on the encoder alone -- what this used to do -- meant a GRU run
-        on MemoryS11 silently overwrote a GRU run on DoorKey. train_agent()
-        saves on every improvement and starts each run from best_success =
-        -1.0, so the first evaluation of the new run, however bad, lands on top
-        of a finished result from the old one. Nothing warns, because the
-        filename is the only thing that ever distinguished them.
+        Each of the three was added after the corresponding collision. Keying
+        on the encoder alone meant a GRU run on MemoryS11 silently overwrote a
+        GRU run on DoorKey. Keying on encoder + env still meant every seed of a
+        multi-seed run overwrote the one before it -- and a seeded study is
+        exactly what makes a result reportable, so that one destroys the whole
+        point of running three. train_agent() saves on every improvement and
+        starts each run from best_success = -1.0, so the first evaluation of
+        the new run, however bad, lands on top of a finished result from the
+        old one. Nothing warns, because the filename is the only thing that
+        ever distinguished them.
 
-        It is a METHOD, not an attribute set in Config.__init__, so that both
-        halves are read WHEN IT IS CALLED. That is what lets watch.py override
-        recurrent_model from the command line and get the matching file --
-        an f-string evaluated once in __init__ would still be spelling the
-        encoder that was set at import time.
+        It is a METHOD, not an attribute set in Config.__init__, so that all
+        three parts are read WHEN IT IS CALLED. That is what lets watch.py
+        override recurrent_model from the command line and get the matching
+        file -- and, for the seed, it is not optional: self.seed does not hold
+        the run's real seed until set_seed() has run, which PPOAgent.__init__
+        does AFTER the config exists. An f-string evaluated once in __init__
+        would spell seed_default for every run ever. See Config.name_model,
+        which is a property for the same reason.
 
         The replace() is for gymnasium's namespaced ids ("ALE/Pong-v5"), which
         MiniGrid does not use but which would otherwise put a directory
         separator in the middle of a filename and fail confusingly.
         """
         env = self.name_env.replace("/", "-")
-        return f"ppo_{self.recurrent_model.upper()}_{env}.pth"
+        return f"ppo_{self.seed}_{self.recurrent_model.upper()}_{env}.pth"
 
     def build_model_path(self):
-        """agents/pretrained_model/ppo_<encoder>.pth, with the directory made.
+        """pretrained_model_feature_extractor/ppo_<seed>_<encoder>_<env>.pth,
+        with the directory made.
 
         The path itself is decided in Config (dir_pretrained_model +
-        name_model); this only creates the directory and hands the path back,
-        the same split build_logger uses for logs/.
+        name_model, both live -- name_model is a property); this only creates
+        the directory and hands the path back, the same split build_logger
+        uses for logs/.
 
         Call it right before torch.save. Making the directory at import time
-        instead would litter agents/pretrained_model/ into every checkout that
-        merely imports the config without ever training anything.
+        instead would litter agents/pretrained_model_feature_extractor/ into
+        every checkout that merely imports the config without ever training
+        anything.
         """
         os.makedirs(self.dir_pretrained_model, exist_ok=True)
         return self.path_model

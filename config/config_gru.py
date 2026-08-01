@@ -21,3 +21,15 @@ class ConfigGRU(Config):
         #   MLP's h^2, so equal values across the four encoders match them on
         #   WIDTH, not on parameter count. Change this one to match parameters
         #   instead -- but say which you did, the comparison depends on it.
+
+        # APPENDED to Config's shared space, never replacing it
+        self.search_space += [
+            {
+                "name": "hidden_size",
+                "type": "int",
+                "low": 32,
+                "high": 256,
+                "step": 8,
+                "log": False,
+            },
+        ]
