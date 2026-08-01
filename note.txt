@@ -1609,8 +1609,12 @@ WHAT IS STILL NOT DONE
    separate gaps, in the order they will hurt:
 
      - no checkpointing. A 1000-iteration run that crashes at 900 is lost
-       entirely, and there is no way to evaluate a trained policy later
-       (torch.save of model + optimizer state, every n_iterations_report).
+       entirely, and there is no way to evaluate a trained policy later.
+       The DESTINATION now exists - config.path_model is
+       agents/pretrained_model/ppo_<encoder>.pth and config.build_model_path()
+       makes the directory - but nothing calls torch.save yet. The missing
+       piece is in train_agent(): keep the best eval_success_rate seen and
+       save model + optimizer state whenever it improves.
      - the log file is TEXT, not data. build_logger() records what was run
        and what it printed, which is enough to read a run back but not to
        plot one. The history is exactly what a csv / tensorboard / wandb
@@ -1633,4 +1637,4 @@ WHAT IS STILL NOT DONE
    iteration they are whatever that single iteration happened to see - with
    episodes near 0, return_mean is meaningless. A mean over the last
    n_iterations_report entries of history would be the honest column. The
-   eval_* ones do not have this problem: they are 20 complete episodes.
+   eval_* ones do not have this problem: they are 50 complete episodes.

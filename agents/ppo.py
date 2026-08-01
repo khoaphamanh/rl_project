@@ -108,6 +108,11 @@ class PPOAgent:
         self.eval_seed = config.eval_seed
         self.eval_deterministic = config.eval_deterministic
 
+        # checkpointing. The config owns the path and the file format, the
+        # same way it owns the env and the encoder -- this is a bound method,
+        # not a path string, so nothing here has to know where it writes.
+        self.save_model = config.save_model
+
         # one independent game per worker, each with its own layout and cue.
         # config.build_env(), never gym.make: the wrappers are part of what the
         # env IS, and evaluate() must build the same thing.
@@ -874,6 +879,13 @@ class PPOAgent:
         which is the entire reason evaluate() exists. Merged raw, the eval
         number would silently overwrite the training one.
 
+        CHECKPOINTING happens on report iterations only, and only when
+        eval_success_rate BEATS every earlier one. config.save_model writes
+        agents/pretrained_model/ppo_<encoder>.pth -- weights, optimizer state,
+        and the four attributes that decide the architecture, so
+        config.load_model can refuse a file that does not match the config.
+        config.watch_agent() then plays it back in a window.
+
         logger comes from config.build_logger() and is optional: without one
         the report goes to stdout and nowhere else, with one it also lands in
         logs/log_<date>_<time>.log under the hyperparameters that produced it.
@@ -902,6 +914,8 @@ class PPOAgent:
         )
 
         history = []
+        best_success = -1.0  # -1, not 0: even a policy that never scores gets
+        #                      written once, so a file always exists afterwards
 
         for i in range(n_iterations):
             stats = self.train()
@@ -942,6 +956,23 @@ class PPOAgent:
                     f"{stats['eval_return_mean']:>8.3f}"
                     f" +- {stats['eval_return_std']:<5.3f}"
                 )
+
+                # KEEP THE BEST, NOT THE LAST. The policy is not monotone --
+                # a KL spike can take it from 1.00 back to 0.52 in one report
+                # interval -- so whatever iteration n_iterations-1 happens to
+                # be is a lottery ticket, not a result. Saving on improvement
+                # means the file holds the best policy the run ever had, and
+                # the FINAL printed row can be compared against it.
+                if stats["eval_success_rate"] > best_success:
+                    best_success = stats["eval_success_rate"]
+                    path = self.save_model(
+                        self.model,
+                        self.optimizer,
+                        iteration=i,
+                        eval_success_rate=best_success,
+                        eval_return_mean=stats["eval_return_mean"],
+                    )
+                    log(f"{'':>5} saved  {path}  (best so far {best_success:.2f})")
 
             history.append(stats)
 

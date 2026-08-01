@@ -29,15 +29,17 @@ class Config(Helper):
 
         # model hyperparameters
         self.hidden_size = 64
-        self.recurrent_model = "GRU"  # or "LSTM"
+        self.recurrent_model = "TRANSFORMER"  # or "LSTM", "MLP", "TRANSFORMER", "GRU"
         self.n_layers_mlp = 3
         self.lr = 1e-3
 
         self.tbptt_length = "max"
 
         # env
-        self.name_env = "MiniGrid-MemoryS11-v0"
-        self.force_cue_visible = True  # wrap the env in StartInCueView, which
+        self.name_env = (
+            "MiniGrid-MemoryS11-v0"  # "MiniGrid-MemoryS11-v0""MiniGrid-DoorKey-8x8-v0"
+        )
+        self.force_cue_visible = False  # wrap the env in StartInCueView, which
         #   spawns the agent at (1, height//2) instead of a random x along the
         #   hallway. MiniGrid's own MemoryEnv shows the cue from x = 1 ONLY, so
         #   without this it is unobservable in 7 of 8 episodes -- and an
@@ -45,7 +47,7 @@ class Config(Helper):
         #   what makes the ablation an ablation. See helper.StartInCueView.
 
         # sampling: W games played in parallel, T steps each per iteration
-        self.n_workers = 8  # W
+        self.n_workers = 16  # W
 
         # T = the env's OWN time limit, 5 * size^2 (245 on S7, 605 on S11),
         # read off the env instead of typed in. NOT a free choice.
@@ -78,6 +80,48 @@ class Config(Helper):
         # different things under the same word is a trap. This one counts steps.
         self.n_total_steps = self.n_workers * self.worker_steps  # W * T
 
+        # ------------------------------------------------------------------
+        # transformer only -- read by build_extractor when recurrent_model is
+        # "TRANSFORMER", ignored otherwise. Down here rather than up beside
+        # hidden_size because max_seq_length is derived from worker_steps,
+        # which is only known above.
+        #
+        # SMALL ON PURPOSE: a first test of the encoder, not a tuned run.
+        # Measured on DoorKey-8x8, one fwd+bwd over mini_batch_size=4
+        # sequences of L=640, it is CHEAPER than the GRU beside it:
+        #
+        #     GRU                                200,832 params     97 ms
+        #     Transformer d_model=64, 2 layers   166,912 params     74 ms
+        #     Transformer d_model=128, 4 layers  926,912 params    279 ms
+        #
+        # A GRU walks 640 steps strictly one after another; attention does all
+        # 640 in one matmul. What does bite is that attention is quadratic in
+        # L, so the third line above is where it stops being free.
+        # ------------------------------------------------------------------
+        self.d_model = 64  # the width the attention stack runs at. Independent
+        #   of hidden_size -- fc_out projects d_model -> hidden_size -- but set
+        #   equal to it here so the test adds no width anywhere and the
+        #   comparison against the GRU stays honest.
+        self.n_heads = 4  # must DIVIDE d_model. 64 / 4 = 16 numbers per head.
+        self.n_layers_transformer = 1  # one layer is a single lookup and cannot
+        #   compose two of them ("find the cue" then "relate it to here"), so
+        #   2 is the smallest stack that is still a transformer.
+        self.d_ff = 4 * self.d_model  # 256, the ratio the original paper uses
+
+        self.p_drop = 0.0  # NOT a free choice. PPO compares log_probs recorded
+        #   during the rollout against log_probs recomputed during the update.
+        #   Dropout makes the same observation give two different answers, so
+        #   the ratio pi_new / pi_old is noise before any learning happens --
+        #   and nothing in this project calls model.eval(), so a nonzero value
+        #   would be live during both passes. Leave at 0.0.
+
+        self.max_seq_length = self.worker_steps  # also NOT free. The positional
+        #   codes and the causal mask are built once, this long, and forward
+        #   raises on anything longer. split_pad_mask pads to L = the longest
+        #   unbroken stretch of steps, which is at most T -- so tying this to
+        #   worker_steps makes it follow the env instead of being one more
+        #   number to remember to change per maze size.
+
         # advantage estimation
         self.gamma = 0.99  # discount: how far ahead a reward still counts
         self.gae_lambda = 0.95  # 0 = TD(0), low variance / high bias
@@ -104,7 +148,7 @@ class Config(Helper):
         #                        pi_new has drifted too far. None = off.
 
         # training length
-        self.n_iterations = 1000  # sample -> update, this many times
+        self.n_iterations = 500  # sample -> update, this many times
         self.n_iterations_report = 100  # every this many iterations, run a full
         #                                evaluate() and print a line. NOT every
         #                                iteration: 50 unsolved episodes cost up
