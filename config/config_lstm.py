@@ -14,7 +14,7 @@ class ConfigLSTM(Config):
     """
 
     def _configure_model(self):
-        self.recurrent_model = "LSTM"
+        self.feature_extractor = "LSTM"
 
         self.hidden_size = 64  # width of h AND of c, and the size handed to
         #   fc_actor / fc_critic. An LSTM carries two states of this width and
@@ -22,14 +22,18 @@ class ConfigLSTM(Config):
         #   meant to be parameter-matched rather than width-matched, this is the
         #   number that moves. Equal across encoders = matched on width.
 
-        # APPENDED to Config's shared space, never replacing it
+        # the LSTM's only architecture knob, appended to the shared PPO ones.
+        #
+        # A STEPPED INT RANGE, 32..512 in steps of 8: 61 candidate widths, so
+        # the search can land between the powers of two. The step keeps it from
+        # wasting trials on differences no training run could resolve.
+        #
+        # IDENTICAL low/high/step TO THE OTHER THREE ENCODERS, so a difference
+        # in the width the search settles on is a difference between the
+        # encoders and not between four differently-shaped grids. Note the
+        # LSTM carries TWO states of this width and costs 4h^2 weights, the
+        # most of the four -- at the top of this range that is the biggest
+        # model in the ablation.
         self.search_space += [
-            {
-                "name": "hidden_size",
-                "type": "int",
-                "low": 32,
-                "high": 256,
-                "step": 8,
-                "log": False,
-            },
+            {"type": "int", "name": "hidden_size", "low": 32, "high": 512, "step": 8},
         ]

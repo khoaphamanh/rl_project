@@ -1,8 +1,7 @@
 """
 Watch a trained policy play. The viewer half of main.py.
 
-main.py trains and writes
-agents/pretrained_model_feature_extractor/ppo_<seed>_<encoder>_<env>.pth. This
+main.py trains and writes agents/pretrained_model/ppo_<encoder>_<env>.pth. This
 opens that file in a pygame window and plays it on the eval mazes. The controls
 come in two rows that mean the same thing at two scales: the top one moves
 within an episode (a step at a time), the bottom one moves between episodes (a

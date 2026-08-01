@@ -14,7 +14,7 @@ class ConfigMLP(Config):
     """
 
     def _configure_model(self):
-        self.recurrent_model = "MLP"
+        self.feature_extractor = "MLP"
 
         self.hidden_size = 64  # width of every hidden layer, and the size the
         #   encoder hands to fc_actor / fc_critic. Owned per encoder, not
@@ -28,22 +28,20 @@ class ConfigMLP(Config):
         #   to MLP(input_size, hidden_size, n_layers_mlp); the LSTM and GRU take
         #   no such depth argument, which is why it lives here and not in Config.
 
-        # APPENDED to Config's shared space, never replacing it
+        # the MLP's own knobs, appended to the shared PPO ones in Config.
+        #
+        # hidden_size is a STEPPED INT RANGE, 32..512 in steps of 8 -- 61
+        # candidate widths rather than a handful of powers of two. The step is
+        # what keeps that from being silly: it stops the sampler spending
+        # trials on the difference between 97 and 98, which no training run
+        # could resolve at this noise level, while still letting it land
+        # somewhere the powers of two would have skipped entirely.
+        #
+        # THE SAME low/high/step IS USED FOR ALL FOUR ENCODERS, on purpose. If
+        # the search settles the MLP at 96 and the GRU at 320, that is a fact
+        # about the encoders; if they had been given different grids it would
+        # only be a fact about the grids.
         self.search_space += [
-            {
-                "name": "hidden_size",
-                "type": "int",
-                "low": 32,
-                "high": 256,
-                "step": 8,
-                "log": False,
-            },
-            {
-                "name": "n_layers_mlp",
-                "type": "int",
-                "low": 1,
-                "high": 4,
-                "step": 1,
-                "log": False,
-            },
+            {"type": "int", "name": "hidden_size", "low": 32, "high": 512, "step": 8},
+            {"type": "int", "name": "n_layers_mlp", "low": 1, "high": 4},
         ]

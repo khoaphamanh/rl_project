@@ -9,16 +9,29 @@ config.something and can read config's own attributes directly:
     config.is_lstm             True only for LSTM (it has a cell state too)
     config.build_env()         one MiniGrid game, wrapped as the config asks
     config.env_max_steps       that env's own time limit, 5 * size^2
-    config.build_extractor()   the encoder named by config.recurrent_model
+    config.build_extractor()   the encoder named by config.feature_extractor
     config.build_logger()      logs/log_<date>_<time>.log, hyperparameters first
     config.log_model_summary() torchinfo's table: layers, params, size in MB
-    config.build_model_path()  agents/pretrained_model_feature_extractor/,
-                               created, + the filename
+    config.build_model_path()  the encoder's directory, created, + the filename
     config.save_model()        weights + the architecture they belong to
     config.load_model()        the same, back into a built model, checked
     config.zero_hidden()       h_0 (and c_0) full of zeros
     config.reset_hidden_of()   zero the hidden state of ONE worker
     config.watch_agent()       a pygame window that plays a saved policy
+
+    config.run_with_batch_size_fallback(fn, sizes, logger)
+                               fn(size) at the largest size that fits in memory
+
+And, for agents/hpo_ppo.py only -- everything a study needs that is DECIDED BY
+the config rather than by the search:
+
+    config.suggest_from_search_space(trial)   config.search_space -> params
+    config.apply_params(params)               params -> config attributes
+    config.build_hpo_dir()                    hpo/, and the trial dirs under it
+    config.copy_best_trial(study)             winner's files -> best_trial/
+    config.hpo_optimize(...)                  resume-aware study.optimize
+    config.summary_hpo(...)                   the final table
+    config.save_sampler / load_sampler        the TPE state, pickled
 
 Plus two standalone classes, imported directly rather than through config:
 
@@ -29,8 +42,11 @@ None of this knows what an advantage, a ratio or a clip is. Swapping GRU for
 LSTM is a change here and in the config, never in the agent.
 """
 
+import gc
+import json
 import logging
 import os
+import shutil
 from datetime import datetime
 
 import gymnasium as gym
@@ -59,12 +75,30 @@ class Helper:
     @property
     def is_recurrent(self):
         """Does the encoder carry a hidden state between timesteps?"""
-        return self.recurrent_model.upper() in ("LSTM", "GRU")
+        return self.feature_extractor.upper() in ("LSTM", "GRU")
 
     @property
     def is_lstm(self):
         """An LSTM needs (h, c). A GRU needs only h. An MLP needs neither."""
-        return self.recurrent_model.upper() == "LSTM"
+        return self.feature_extractor.upper() == "LSTM"
+
+    @property
+    def path_model(self):
+        """The checkpoint this config currently points at.
+
+        DERIVED ON EVERY READ, not stored in __init__, because
+        dir_pretrained_model moves: hpo_ppo.py points it at hpo/trial_7/ for
+        the duration of a trial, and ConfigNoHPO points it at no_hpo/. A path
+        frozen at construction would send every trial's checkpoint back to
+        whichever directory was set at that moment, and thirty trials would
+        overwrite one file -- they all share an encoder, an env and a seed, so
+        the filename cannot tell them apart. The DIRECTORY is what separates
+        them.
+
+        name_model is still a plain attribute: the encoder and the env are
+        fixed once the config is built.
+        """
+        return os.path.join(self.dir_pretrained_model, self.name_model)
 
     # ------------------------------------------------------------------
     # builders
@@ -120,13 +154,13 @@ class Helper:
         return max_steps
 
     def build_extractor(self):
-        """MLP / LSTM / GRU / TRANSFORMER, picked by self.recurrent_model.
+        """MLP / LSTM / GRU / TRANSFORMER, picked by self.feature_extractor.
 
         All four take (batch, seq_len, 7, 7, 3) and give back
         (batch, seq_len, hidden_size), so the agent never has to care
         which one it got.
         """
-        name = self.recurrent_model.upper()
+        name = self.feature_extractor.upper()
 
         if name == "MLP":
             return MLP(self.input_size, self.hidden_size, self.n_layers_mlp)
@@ -158,7 +192,7 @@ class Helper:
                 max_seq_length=self.max_seq_length,
             )
 
-        raise ValueError(f"unknown recurrent_model {self.recurrent_model!r}")
+        raise ValueError(f"unknown feature_extractor {self.feature_extractor!r}")
 
     def build_logger(self, log_dir="logs", name="rl_project"):
         """One log file per run: logs/log_<date>_<time>.log, hyperparameters first.
@@ -233,23 +267,170 @@ class Helper:
         for key, value in vars(self).items():
             logger.info(f"  {key:<24}{value}")
 
-        # @property, so not in vars(self) -- but they decide what was built.
-        # hasattr because d_ff exists on the transformer config only.
+        # @property, so not in vars(self) -- but they decide what was built and
+        # where it lands
         logger.info("  " + "-" * 40)
-        for key in (
-            "device",
-            "is_recurrent",
-            "is_lstm",
-            "d_ff",
-            "name_model",
-            "path_model",
-        ):
-            if hasattr(self, key):
-                logger.info(f"  {key:<24}{getattr(self, key)}")
+        for key in ("device", "is_recurrent", "is_lstm", "name_model", "path_model"):
+            logger.info(f"  {key:<24}{getattr(self, key)}")
 
         logger.info(bar)
 
         return logger
+
+    # ------------------------------------------------------------------
+    # running at the largest batch size that fits
+    #
+    # The point of this section: mini_batch_size stops being a number you have
+    # to know the machine to choose. The config names CANDIDATES, largest
+    # first, and whatever is running here tries them in order until one does
+    # not run out of memory. A laptop and a GPU box then run the same config
+    # file and neither needs it edited.
+    # ------------------------------------------------------------------
+    def _iter_error_chain(self, error):
+        """The error, and everything it was raised from or during.
+
+        Needed because an OOM does not always arrive as itself. torchinfo, for
+        one, catches the OOM from its probe forward pass and re-raises a
+        generic RuntimeError("Failed to run torchinfo ...") whose own message
+        no longer says anything about memory -- the real cause survives only on
+        __cause__ / __context__. Checking the top-level message alone would
+        miss it and turn a recoverable OOM into a crashed run.
+
+        The seen set is not decoration: __context__ chains can form a cycle
+        (raise A, handle it, raise B, handle THAT and re-raise A), and without
+        it this loops forever.
+        """
+        seen = set()
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            yield error
+            error = error.__cause__ or error.__context__
+
+    def _is_oom(self, error):
+        """Is this -- or anything it wraps -- an out-of-memory error?
+
+        THREE SHAPES, because torch raises a different one per situation:
+
+            torch.cuda.OutOfMemoryError        the modern CUDA one. Note it is
+                                               a SUBCLASS of RuntimeError, so
+                                               the except clause below catching
+                                               RuntimeError already covers it;
+                                               it is named separately for
+                                               clarity, not for reach.
+            RuntimeError("... out of memory")  older / edge CUDA builds
+            RuntimeError("... DefaultCPUAllocator: can't allocate memory")
+                                               the CPU one, which is what this
+                                               machine would ever actually hit
+
+        Matching on message text is not elegant, and it is what torch gives us.
+        """
+        for err in self._iter_error_chain(error):
+            if isinstance(err, torch.cuda.OutOfMemoryError):
+                return True
+            if isinstance(err, RuntimeError):
+                text = str(err).lower()
+                if "out of memory" in text:
+                    return True
+                # the CPU allocator's wording. Matched on the allocator's NAME
+                # as well as the phrase, because the phrase is the part torch
+                # has reworded before ("can't" / "cannot") and the class name
+                # in the message is what has stayed put.
+                if "can't allocate memory" in text or "cannot allocate memory" in text:
+                    return True
+                if "defaultcpuallocator" in text or "alloc_cpu.cpp" in text:
+                    return True
+        return False
+
+    def _clear_traceback_chain(self, error):
+        """Drop the traceback of the error and of every cause it wraps.
+
+        NOT a tidiness step -- the retry depends on it. A traceback holds every
+        frame it passed through, and those frames hold the failed attempt's
+        tensors. Keep the traceback and that memory is still referenced when
+        the next, smaller batch size is tried, so the smaller one runs out of
+        memory in exactly the same place and the fallback walks all the way
+        down its candidate list failing for a reason it created itself.
+        """
+        for err in self._iter_error_chain(error):
+            err.__traceback__ = None
+
+    def _free_memory(self):
+        """Give the allocator back whatever the failed attempt left behind."""
+        gc.collect()
+        if torch.cuda.is_available():
+            # python freeing a tensor returns it to torch's caching allocator,
+            # not to the driver. Without this the memory is free as far as
+            # torch is concerned and still unavailable to anything else.
+            torch.cuda.empty_cache()
+
+    def run_with_batch_size_fallback(self, run_fn, batch_size, logger=None):
+        """Call run_fn(size) at the largest size that does not run out of memory.
+
+            size_used, result = config.run_with_batch_size_fallback(
+                lambda bs: agent.learn(batch, bs), config.mini_batch_size, logger
+            )
+
+        batch_size may be a single int -- in which case there is nothing to
+        fall back to and this is just a call -- or a list/tuple of candidates,
+        which are sorted DESCENDING and deduplicated, so the order they are
+        written in the config does not matter.
+
+        Returns (size_used, whatever run_fn returned). Raises the last OOM if
+        every candidate runs out.
+
+        ONLY OOM IS CAUGHT. Everything else -- a shape bug, a KeyboardInterrupt,
+        optuna's TrialPruned -- propagates untouched. That matters most for
+        pruning: catching it here would turn "stop this trial" into "retry this
+        trial smaller", and the study would never prune anything.
+
+        THE HONEST COST OF A MID-RUN RETRY. run_fn is called again from the
+        top, and if the first attempt already stepped the optimizer on some
+        minibatches those steps are NOT undone -- the retry re-walks the same
+        rollout, so a few sequences get updated twice. That is a real, small
+        distortion of one iteration. It is accepted because the alternative is
+        losing the run, and it can happen at most once per run: the resolved
+        size is written back to self.mini_batch_size, so every later iteration
+        starts from the size that is already known to fit.
+        """
+        if isinstance(batch_size, (list, tuple)):
+            candidates = sorted({int(b) for b in batch_size}, reverse=True)
+        else:
+            candidates = [int(batch_size)]
+
+        # print() when there is no logger, so this is usable from a scratch
+        # script and from a real run without a branch at every call site
+        say = logger.info if logger is not None else print
+        warn = logger.warning if logger is not None else print
+        fail = logger.error if logger is not None else print
+
+        last_error = None
+
+        for i, bs in enumerate(candidates):
+            # reclaim whatever the PREVIOUS failed attempt left referenced,
+            # before asking for more
+            self._free_memory()
+            try:
+                if len(candidates) > 1:
+                    say(f"trying batch size {bs}  (candidate {i + 1}/{len(candidates)})")
+                return bs, run_fn(bs)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as error:
+                if not self._is_oom(error):
+                    raise
+                self._clear_traceback_chain(error)
+                last_error = error
+                if i + 1 < len(candidates):
+                    warn(
+                        f"out of memory at batch size {bs}, "
+                        f"falling back to {candidates[i + 1]}"
+                    )
+                else:
+                    fail(
+                        f"out of memory at batch size {bs}, "
+                        f"no smaller one left to try"
+                    )
+
+        self._free_memory()
+        raise last_error
 
     def log_model_summary(self, model, logger=None, batch_size=None, seq_len=8):
         """torchinfo's table for the built model, into the log file.
@@ -301,74 +482,114 @@ class Helper:
 
         if batch_size is None:
             # the update's batch counts SEQUENCES, which is what a forward
-            # pass during optimization actually receives
+            # pass during optimization actually receives. Now a LIST of
+            # candidates, so the probe goes through the same fallback the real
+            # update does -- see below.
             batch_size = self.mini_batch_size
 
+        # THE PROBE RUNS THROUGH THE FALLBACK TOO, for two reasons. It is a
+        # real forward pass and can genuinely run out of memory on a wide
+        # transformer, and a crash HERE would kill a run before a single
+        # iteration -- over a table that is only ever informational. And since
+        # mini_batch_size is now a list, `input_size=(a_list, ...)` would not
+        # even be a valid shape.
+        #
+        # It does NOT decide what training uses: train() resolves its own size
+        # against the real update, which allocates far more than this does.
+        def probe(bs):
+            return summary(
+                model,
+                input_size=(bs, seq_len, 7, 7, 3),
+                dtypes=[torch.uint8],
+                verbose=0,
+            )
+
+        batch_size, info = self.run_with_batch_size_fallback(probe, batch_size, logger)
         shape = (batch_size, seq_len, 7, 7, 3)
-        info = summary(model, input_size=shape, dtypes=[torch.uint8], verbose=0)
 
         write = logger.info if logger is not None else print
         write("")
-        write(f"MODEL SUMMARY  {self.recurrent_model.upper()}  (probe input {shape})")
+        write(f"MODEL SUMMARY  {self.feature_extractor.upper()}  (probe input {shape})")
         for line in str(info).splitlines():
             write(f"  {line}")
         write("")
 
         return info
 
+    @property
+    def name_model(self):
+        """build_model_name(), re-read every time. See the property path_model.
+
+        A PROPERTY and not an attribute frozen in Config.__init__, because the
+        name now carries the seed and the seed is not known until set_seed()
+        runs -- which happens inside PPOAgent.__init__, after the config is
+        built. Frozen at construction, all three seeds of a run would share one
+        filename and the third would be the only one left on disk.
+        """
+        return self.build_model_name()
+
     def build_model_name(self):
         """ppo_<seed>_<ENCODER>_<env>.pth -- the ONE place the filename is spelled.
 
-            ppo_42_GRU_MiniGrid-DoorKey-8x8-v0.pth
-            ppo_0_MLP_MiniGrid-MemoryS7-v0.pth
+            ppo_0_GRU_MiniGrid-DoorKey-8x8-v0.pth
+            ppo_26_MLP_MiniGrid-MemoryS7-v0.pth
 
-        ALL THREE halves are in the name because all three change what the
-        weights mean. The encoder decides the architecture; the env decides
-        what the agent was trained to do, and a DoorKey policy loaded against
-        MemoryS11 is not a worse agent, it is a meaningless one; the seed
-        decides WHICH RUN this is, and two seeds of the same encoder on the
-        same env are two independent samples that must not share a file.
+        ALL THREE PARTS change what the weights mean.
 
-        Each of the three was added after the corresponding collision. Keying
-        on the encoder alone meant a GRU run on MemoryS11 silently overwrote a
-        GRU run on DoorKey. Keying on encoder + env still meant every seed of a
-        multi-seed run overwrote the one before it -- and a seeded study is
-        exactly what makes a result reportable, so that one destroys the whole
-        point of running three. train_agent() saves on every improvement and
-        starts each run from best_success = -1.0, so the first evaluation of
-        the new run, however bad, lands on top of a finished result from the
-        old one. Nothing warns, because the filename is the only thing that
-        ever distinguished them.
+        The encoder decides the architecture; the env decides what the agent
+        was trained to do, and a DoorKey policy loaded against MemoryS11 is not
+        a worse agent, it is a meaningless one.
 
-        It is a METHOD, not an attribute set in Config.__init__, so that all
-        three parts are read WHEN IT IS CALLED. That is what lets watch.py
-        override recurrent_model from the command line and get the matching
-        file -- and, for the seed, it is not optional: self.seed does not hold
-        the run's real seed until set_seed() has run, which PPOAgent.__init__
-        does AFTER the config exists. An f-string evaluated once in __init__
-        would spell seed_default for every run ever. See Config.name_model,
-        which is a property for the same reason.
+        The SEED is in there because a result is seed_list as a whole -- three
+        runs, deliberately -- and they are otherwise the same encoder on the
+        same env, so without it the three would be one filename written three
+        times and only the last would survive. That in turn would make the
+        spread over seeds, which is the actual uncertainty about a config,
+        impossible to go back and inspect.
+
+        self.seed is set by set_seed(), which PPOAgent.__init__ calls. Before
+        that has happened -- watch.py, which builds a config and loads a
+        checkpoint without ever training -- it falls back to seed_list[0], so
+        `python watch.py GRU` finds the first seed's file with no argument.
+
+        Keying on the encoder alone -- what this used to do -- meant a GRU run
+        on MemoryS11 silently overwrote a GRU run on DoorKey. train_agent()
+        saves on every improvement and starts each run from best_success =
+        -1.0, so the first evaluation of the new run, however bad, lands on top
+        of a finished result from the old one. Nothing warns, because the
+        filename is the only thing that ever distinguished them.
+
+        It is a METHOD, not an attribute set in Config.__init__, so that both
+        halves are read WHEN IT IS CALLED. That is what lets watch.py override
+        feature_extractor from the command line and get the matching file --
+        an f-string evaluated once in __init__ would still be spelling the
+        encoder that was set at import time.
 
         The replace() is for gymnasium's namespaced ids ("ALE/Pong-v5"), which
         MiniGrid does not use but which would otherwise put a directory
         separator in the middle of a filename and fail confusingly.
         """
         env = self.name_env.replace("/", "-")
-        return f"ppo_{self.seed}_{self.recurrent_model.upper()}_{env}.pth"
+        seed = getattr(self, "seed", self.seed_list[0])
+        return f"ppo_{seed}_{self.feature_extractor.upper()}_{env}.pth"
 
     def build_model_path(self):
-        """pretrained_model_feature_extractor/ppo_<seed>_<encoder>_<env>.pth,
-        with the directory made.
+        """dir_pretrained_model/ppo_<encoder>_<env>.pth, with the directory made.
 
-        The path itself is decided in Config (dir_pretrained_model +
-        name_model, both live -- name_model is a property); this only creates
-        the directory and hands the path back, the same split build_logger
-        uses for logs/.
+        The path itself is the path_model property (dir_pretrained_model +
+        name_model); this only creates the directory and hands the path back,
+        the same split build_logger uses for logs/.
 
         Call it right before torch.save. Making the directory at import time
-        instead would litter agents/pretrained_model_feature_extractor/ into
-        every checkout that merely imports the config without ever training
-        anything.
+        instead would litter agents/pretrained_model_*/ into every checkout
+        that merely imports a config without ever training anything -- which is
+        why hpo/, no_hpo/ and the trial directories appear only once something
+        is actually saved into them.
+
+        WHICH directory this is depends on who is running: the encoder's top
+        level normally, hpo/trial_<n>/ inside a trial, no_hpo/ under
+        ConfigNoHPO. It reads dir_pretrained_model every call, so redirecting
+        that one attribute is all any of them has to do.
         """
         os.makedirs(self.dir_pretrained_model, exist_ok=True)
         return self.path_model
@@ -381,7 +602,7 @@ class Helper:
         the weights it carries the FOUR attributes that decide the
         architecture:
 
-            recurrent_model  GRU / LSTM / MLP   -> different modules entirely
+            feature_extractor  GRU / LSTM / MLP   -> different modules entirely
             hidden_size                         -> every layer width
             input_size                          -> the encoder's first layer
             name_env                            -> which game it can play
@@ -403,7 +624,7 @@ class Helper:
 
         checkpoint = {
             "model": model.state_dict(),
-            "recurrent_model": self.recurrent_model,
+            "feature_extractor": self.feature_extractor,
             "hidden_size": self.hidden_size,
             "input_size": self.input_size,
             "name_env": self.name_env,
@@ -454,7 +675,7 @@ class Helper:
         if isinstance(checkpoint, dict) and "model" in checkpoint:
             state = checkpoint["model"]
 
-            for key in ("recurrent_model", "hidden_size", "input_size", "name_env"):
+            for key in ("feature_extractor", "hidden_size", "input_size", "name_env"):
                 if key in checkpoint and getattr(self, key) != checkpoint[key]:
                     raise ValueError(
                         f"{path} was trained with {key}={checkpoint[key]!r}, but "
@@ -468,6 +689,405 @@ class Helper:
 
         model.load_state_dict(state)
         return checkpoint
+
+    # ------------------------------------------------------------------
+    # HPO -- everything a study needs that the CONFIG decides
+    #
+    # The split with agents/hpo_ppo.py is the same one as everywhere else in
+    # this file: what to search over, where it is written and how it resumes
+    # are config questions and live here; what a trial actually DOES -- train
+    # three seeds and score them -- is the agent's, and lives there.
+    #
+    # optuna and joblib are imported INSIDE these methods, never at module
+    # level, so that a checkout without them still trains, watches and scores.
+    # A search is one way to use this project, not a dependency of it.
+    # ------------------------------------------------------------------
+    def suggest_from_search_space(self, trial):
+        """config.search_space -> {name: value} drawn for this trial.
+
+        Each entry is a dict passed almost verbatim to trial.suggest_*; "type"
+        picks the method and everything else is forwarded, so step=, log= and
+        choices= work without this function knowing they exist. Adding a knob
+        is a line in a config file, never a change here.
+
+        The dict is COPIED before "type" is popped. Without that, the first
+        trial would strip "type" out of the config's own list and every
+        following trial would silently fall through to the float default --
+        a bug that only appears from trial 1 onwards, and only for int and
+        categorical knobs.
+        """
+        params = {}
+
+        for spec in self.search_space:
+            spec = dict(spec)
+            kind = spec.pop("type", "float")
+
+            if kind == "int":
+                params[spec["name"]] = trial.suggest_int(**spec)
+            elif kind == "categorical":
+                params[spec["name"]] = trial.suggest_categorical(**spec)
+            else:
+                params[spec["name"]] = trial.suggest_float(**spec)
+
+        return params
+
+    @property
+    def score_name(self):
+        """"mean_minus_std(return_mean)" -- what the study actually maximizes.
+
+        Spelled out wherever a value is printed, because "0.42" alone does not
+        say whether the across-seed spread has already been subtracted from it.
+        """
+        rule = getattr(self, "hpo_aggregation", "mean")
+        if rule == "mean_minus_std":
+            weight = getattr(self, "hpo_lambda", 1.0)
+            return f"mean_minus_{weight:g}std({self.hpo_objective})"
+        return f"{rule}({self.hpo_objective})"
+
+    def aggregate_scores(self, values):
+        """The per-seed metrics -> the one number the study maximizes.
+
+        Which rule is used is config.hpo_aggregation:
+
+            "mean"            plain average over seeds
+            "mean_minus_std"  average minus the spread ACROSS SEEDS
+
+        THE STD HERE IS OVER SEEDS. It is the run-to-run spread -- "does this
+        config work every time, or only sometimes?" -- and NOT the spread over
+        the eval episodes inside one run, which is a different quantity that
+        this function never sees. evaluate() reports that one as return_std,
+        and it must not be substituted here: for a bimodal return it is a
+        function of the mean itself, so subtracting it would score a policy
+        that succeeds 20% of the time BELOW one that never succeeds at all.
+
+        ddof=0, so a single seed gives std 0 rather than nan. That matters for
+        pruning, where this is called on a running list that starts at length
+        one: the first report is then simply the raw metric. Every trial is
+        equally optimistic at that step, so the comparison stays fair.
+
+        Returns a float. Raises on an unknown rule rather than silently
+        falling back to the mean -- a typo in hpo_aggregation would otherwise
+        run a whole study under an objective nobody chose.
+        """
+        values = np.asarray(values, dtype=float)
+        rule = getattr(self, "hpo_aggregation", "mean")
+
+        if rule == "mean":
+            return float(values.mean())
+        if rule == "mean_minus_std":
+            weight = getattr(self, "hpo_lambda", 1.0)
+            return float(values.mean() - weight * values.std())
+
+        raise ValueError(
+            f"unknown hpo_aggregation {rule!r}. Use 'mean' or 'mean_minus_std'."
+        )
+
+    def apply_params(self, params):
+        """Write a trial's draw onto this config. Returns self, for chaining.
+
+        MUST BE CALLED BEFORE PPOAgent(config). The agent copies every value it
+        needs out of the config in __init__ -- lr and wd into the optimizer,
+        hidden_size and d_model into the encoder it builds -- and never reads
+        the config again. Applied after the agent exists, a trial would train
+        the DEFAULT hyperparameters and report them under the drawn ones, which
+        is worse than crashing: the study would run to completion and its
+        results would be meaningless.
+
+        The hasattr check turns a typo in search_space into an error at the top
+        of the first trial, rather than a run that quietly tunes nothing
+        because setattr happily creates any attribute it is given.
+        """
+        for name, value in params.items():
+            if not hasattr(self, name):
+                raise AttributeError(
+                    f"search_space names {name!r}, which is not an attribute of "
+                    f"{type(self).__name__}. Every tuned name has to exist on "
+                    f"the config already -- otherwise this would set a new "
+                    f"attribute that nothing reads, and the trial would train "
+                    f"the untuned defaults while reporting the tuned params."
+                )
+            setattr(self, name, value)
+
+        return self
+
+    # ----- where a study writes -------------------------------------------
+    def build_hpo_dir(self):
+        """Make hpo/ and hand it back."""
+        os.makedirs(self.dir_hpo, exist_ok=True)
+        return self.dir_hpo
+
+    def dir_hpo_trial(self, number):
+        """hpo/trial_7/ -- where trial 7's checkpoint goes.
+
+        ONE DIRECTORY PER TRIAL, because every trial writes the identical
+        filename: name_model is built from the encoder and the env, both of
+        which are fixed for the whole study. Thirty trials would be one file,
+        thirty times overwritten, and copy_best_trial would have nothing to
+        copy. The trial number cannot go in the FILENAME instead -- watch.py
+        and load_model rebuild that name from the config alone and have no
+        trial number to put in it.
+        """
+        return os.path.join(self.dir_hpo, f"trial_{number}")
+
+    @property
+    def dir_hpo_best_trial(self):
+        """hpo/best_trial/ -- a copy of whichever trial won."""
+        return os.path.join(self.dir_hpo, "best_trial")
+
+    def build_hpo_trial_dir(self, number):
+        """dir_hpo_trial(n), created."""
+        path = self.dir_hpo_trial(number)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def build_hpo_best_trial_dir(self):
+        """dir_hpo_best_trial, created."""
+        os.makedirs(self.dir_hpo_best_trial, exist_ok=True)
+        return self.dir_hpo_best_trial
+
+    def copy_best_trial(self, study, logger=None):
+        """Copy the winning trial's files into best_trial/, and its params beside them.
+
+        A COPY, not a pointer or a symlink, so best_trial/ is still readable
+        after trial_12/ is deleted to reclaim space -- which is the normal
+        thing to do with thirty of them.
+
+        THE TARGET IS EMPTIED FIRST. A resumed study can pick a NEW winner, and
+        writing the new one's files over the old one's leaves any file the new
+        trial did not happen to write sitting there from the previous winner --
+        a best_trial/ that is half one run and half another, with nothing
+        saying so.
+
+        Returns the path, or None if no trial has completed yet.
+        """
+        say = logger.info if logger is not None else print
+
+        try:
+            best = study.best_trial
+        except ValueError:
+            # optuna RAISES here rather than returning None when nothing has
+            # finished -- an empty study, or one whose every trial failed
+            say("no completed trial yet, nothing to copy into best_trial/")
+            return None
+
+        source = self.dir_hpo_trial(best.number)
+        if not os.path.isdir(source):
+            say(f"trial {best.number} has no directory at {source}, nothing to copy")
+            return None
+
+        target = self.dir_hpo_best_trial
+        if os.path.isdir(target):
+            shutil.rmtree(target)
+        os.makedirs(target, exist_ok=True)
+
+        for name in sorted(os.listdir(source)):
+            src = os.path.join(source, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(target, name))
+
+        # what the search FOUND, written beside what it produced. Without this
+        # the directory holds a .pth whose hyperparameters are recoverable only
+        # by cross-referencing the trial number against the csv.
+        self.save_json(
+            os.path.join(target, "best_params.json"),
+            {
+                "feature_extractor": self.feature_extractor,
+                "name_env": self.name_env,
+                "objective": self.hpo_objective,
+                "aggregation": getattr(self, "hpo_aggregation", "mean"),
+                "score_name": self.score_name,
+                "direction": self.hpo_direction,
+                "best_trial": best.number,
+                "best_value": best.value,
+                "best_params": best.params,
+                "user_attrs": best.user_attrs,
+                "copied_from": source,
+            },
+        )
+
+        say(f"best trial {best.number} (value {best.value}) copied to {target}")
+        return target
+
+    # ----- resuming --------------------------------------------------------
+    def save_sampler(self, sampler, path=None):
+        """Pickle the TPE sampler. Called after every trial -- see path_hpo_sampler."""
+        import joblib
+
+        if path is None:
+            path = self.path_hpo_sampler
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        joblib.dump(sampler, path)
+        return path
+
+    def load_sampler(self, path=None):
+        """The pickled sampler, or None if there is not one yet."""
+        import joblib
+
+        if path is None:
+            path = self.path_hpo_sampler
+        if not os.path.exists(path):
+            return None
+        return joblib.load(path)
+
+    # ----- reporting -------------------------------------------------------
+    def save_json(self, path, data):
+        """Write data as indented json. default=str so numpy scalars survive."""
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as handle:
+            json.dump(data, handle, indent=2, default=str)
+        return path
+
+    def csv_study_export(self, study, path_csv=None):
+        """Every trial as one csv row: params, value, state, duration, user attrs.
+
+        Called at the START of each trial rather than at the end of the study,
+        so an interrupted search still leaves a readable table of how far it
+        got -- which is exactly when one is wanted.
+
+        Needs pandas (optuna's trials_dataframe does). Missing it is not worth
+        failing a study over, so it is caught and reported.
+        """
+        if path_csv is None:
+            path_csv = self.path_hpo_csv
+
+        os.makedirs(os.path.dirname(path_csv) or ".", exist_ok=True)
+        try:
+            study.trials_dataframe().to_csv(path_csv, index=False)
+        except ImportError:
+            return None
+        return path_csv
+
+    def print_separate_lines(self, logger, n=10):
+        for _ in range(n):
+            logger.info("=" * 78)
+
+    def callback_optuna_report_function(self, kind_training, logger, study, trial):
+        """One line per finished trial, plus the best so far.
+
+        Passed to study.optimize(callbacks=[...]), so it runs after EVERY
+        trial including pruned and failed ones -- which is the point: a study
+        that silently drops trials is one you cannot debug afterwards.
+        """
+        logger.info(
+            f"HPO {kind_training}: trial {trial.number} finished "
+            f"({trial.state.name}) value {trial.value} params {trial.params}"
+        )
+        try:
+            logger.info(
+                f"  best so far: trial {study.best_trial.number} "
+                f"value {study.best_value} params {study.best_params}"
+            )
+        except ValueError:
+            # best_trial RAISES when nothing has completed. Common and fine
+            # early on, or if the first trials were pruned.
+            logger.info("  best so far: none, no trial has completed yet")
+        logger.info("-" * 78)
+
+    # ----- the loop --------------------------------------------------------
+    def hpo_optimize(self, study, n_trials, objective, logger, kind_training):
+        """study.optimize, but resume-aware. Safe to run repeatedly.
+
+        TWO THINGS IT ADDS over calling study.optimize directly.
+
+        1. BUDGET IS WHAT IS LEFT, not n_trials again. Re-running a study that
+           already did 12 of 30 runs 18 more, not 30 more. The count is over
+           COMPLETE + PRUNED only, so a trial that CRASHED does not spend
+           budget -- a machine that ran out of memory or was killed gets that
+           trial back rather than paying for the interruption.
+
+        2. THE INTERRUPTED TRIAL IS RE-QUEUED. If the last trial is FAIL or
+           still marked RUNNING (what a hard kill leaves behind), its exact
+           params go back on the queue with enqueue_trial, so the run that was
+           lost is the run that is retried -- rather than the sampler drawing
+           somewhere else and that point never being measured. This is the
+           mechanism that makes a crash cost time and not coverage.
+
+        Returns the number of trials this call actually ran.
+        """
+        import optuna
+
+        states = (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED)
+        done = study.get_trials(deepcopy=False, states=list(states))
+        remaining = n_trials - len(done)
+
+        if remaining <= 0:
+            logger.info(
+                f"{len(done)} of {n_trials} trials already done, nothing to run."
+            )
+            return 0
+
+        self.print_separate_lines(logger)
+        logger.info(f"Start HPO {kind_training} with {remaining} remaining trials")
+
+        last = study.trials[-1] if study.trials else None
+        if last is not None and last.state in (
+            optuna.trial.TrialState.FAIL,
+            optuna.trial.TrialState.RUNNING,
+        ):
+            # .params is empty if it died before suggesting anything, in which
+            # case there is nothing to repeat and the sampler just draws again
+            if last.params:
+                logger.info(
+                    f"trial {last.number} is {last.state.name} -- "
+                    f"re-queueing its params: {last.params}"
+                )
+                study.enqueue_trial(last.params)
+
+        study.optimize(
+            objective,
+            n_trials=remaining,
+            callbacks=[
+                lambda study, trial: self.callback_optuna_report_function(
+                    kind_training, logger, study, trial
+                )
+            ],
+        )
+        return remaining
+
+    def summary_hpo(self, logger, study, path_csv=None):
+        """The closing table: counts by state, then the winner. Returns it, or None."""
+        import optuna
+
+        self.csv_study_export(study, path_csv)
+
+        trials = study.trials
+        counted = {state: 0 for state in optuna.trial.TrialState}
+        for trial in trials:
+            counted[trial.state] += 1
+
+        bar = "=" * 78
+        logger.info(bar)
+        logger.info(f"SUMMARY HPO  study {study.study_name}")
+        logger.info(
+            f"  total {len(trials)}   "
+            + "   ".join(
+                f"{state.name.lower()} {n}" for state, n in counted.items() if n
+            )
+        )
+        logger.info(f"  csv   {path_csv or self.path_hpo_csv}")
+        logger.info(bar)
+
+        try:
+            best = study.best_trial
+        except ValueError:
+            logger.info("no trial completed -- there is no best trial to report")
+            self.print_separate_lines(logger)
+            return None
+
+        logger.info(f"BEST  trial {best.number}   {self.score_name} {best.value}")
+        for key, value in best.params.items():
+            logger.info(f"    {key:<24}{value}")
+        # NOT the number to quote as the result. It is the maximum of n_trials
+        # noisy measurements, so it is biased upward by the selection itself
+        # (the winner's curse) -- the clean number is hpo_ppo.final(), which
+        # retrains at these params and scores that.
+        logger.info(
+            "  (this value is the max over trials and is biased upward; "
+            "final() retrains at these params for the number to report)"
+        )
+        self.print_separate_lines(logger)
+
+        return best
 
     # ------------------------------------------------------------------
     # hidden state
@@ -639,7 +1259,7 @@ class Helper:
 
         screen = pygame.display.set_mode((win_w, win_h))
         pygame.display.set_caption(
-            f"{self.recurrent_model.upper()} on {self.name_env}"
+            f"{self.feature_extractor.upper()} on {self.name_env}"
         )
         clock = pygame.time.Clock()
 
@@ -1301,7 +1921,7 @@ def _draw_viewer_sidebar(
         y += 7
 
     # ---- what is loaded -------------------------------------------------
-    put(f"{config.recurrent_model.upper()}  on  {config.name_env}", "head", _VIEW_HEAD)
+    put(f"{config.feature_extractor.upper()}  on  {config.name_env}", "head", _VIEW_HEAD)
     trained = checkpoint.get("iteration")
     scored = checkpoint.get("eval_success_rate")
     if trained is not None or scored is not None:

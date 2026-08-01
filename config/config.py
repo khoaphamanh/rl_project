@@ -35,20 +35,32 @@ class Config(Helper):
     # Set by each subclass in _configure_model(). Named here so is_recurrent
     # and build_model_name have an attribute to read, and so a stray Config()
     # fails in the hook below rather than later on a None.upper().
-    recurrent_model = None
+    #
+    # A STRING -- "MLP", "LSTM", "GRU", "TRANSFORMER" -- and NOT the encoder
+    # itself. Network.feature_extractor in models/model.py carries the same
+    # name for the BUILT MODULE, which is what config.build_extractor()
+    # returns:
+    #
+    #     config.feature_extractor     "GRU"      the choice
+    #     network.feature_extractor    GRU(...)   the thing that choice built
+    #
+    # Both spellings are correct on their own object; only this one has an
+    # .upper().
+    feature_extractor = None
 
     def __init__(self):
 
-        # one training run per seed. The unit of a result is this whole list,
-        # not any single run: main.py trains all of them and reports the mean.
-        # A one-element list, [42], is the quick debug run.
-        self.base_seed_list = [42, 0, 92]
-
-        # the seed actually in use -- set_seed() overwrites it per run, and
-        # build_model_name spells it into the checkpoint. Until a run starts it
-        # is the first of the list, so a config that never reaches an agent
-        # (watch.py, a bare load_model) still names a file.
-        self.seed = self.base_seed_list[0]
+        # THE SEEDS. A result is this whole list, not any one entry: a single
+        # PPO run on a sparse-reward MiniGrid task can land anywhere, and two
+        # seeds of the SAME config routinely differ by more than two different
+        # encoders do. Anything that reports a number -- main_no_hpo.py, and
+        # every HPO trial -- runs all three and reports the spread.
+        #
+        # Every trial in a study runs this SAME list, deliberately not a seed
+        # derived per trial: two trials then differ only in hyperparameters,
+        # so the comparison between them is not also a comparison of two
+        # different draws of mazes.
+        self.seed_list = [0, 26, 98]
 
         # fix hyperparameters
         self.input_size = 7 * 7 * 20  # 980, NOT 147: flatten_obs one-hots the
@@ -59,14 +71,17 @@ class Config(Helper):
         #   and then no encoder can read the cue, so all three score alike.
         #   See feature_extractor.flatten_obs for the measurements.
 
-        # model hyperparameters shared by every encoder. recurrent_model,
+        # model hyperparameters shared by every encoder. feature_extractor,
         # hidden_size and the per-architecture knobs (n_layers_mlp, d_model,
         # n_heads, ...) are NOT here -- each subclass sets its own in
         # _configure_model(). hidden_size in particular is per-encoder on
         # purpose: it is the one width every encoder has, so owning it is what
         # lets an LSTM be widened without dragging the MLP along.
         self.lr = 1e-3
-        self.wd = 0.0  # Adam weight_decay, read in PPOAgent.__init__
+        self.wd = 0.0  # Adam's weight_decay. 0.0 = plain Adam, which is what
+        #   this was before it became tunable, so nothing changes until a study
+        #   moves it. Kept small when tuned: PPO's real regularizer is the clip,
+        #   and decay pulls the critic's scale down along with the policy's.
 
         self.tbptt_length = "max"
 
@@ -132,9 +147,22 @@ class Config(Helper):
         # how hard each rollout is reused
         self.n_epochs = 3  # passes over the SAME batch. The whole reason the
         #                    clip exists: after pass 1 the data is off-policy.
-        self.mini_batch_size = 4  # DataLoader batch size, counted in SEQUENCES
-        #                           (not timesteps): one sample is one whole
-        #                           padded episode fragment of up to L steps.
+        # DataLoader batch size, counted in SEQUENCES (not timesteps): one
+        # sample is one whole padded episode fragment of up to L steps.
+        #
+        # A LIST OF CANDIDATES, LARGEST FIRST, not a single number. The update
+        # runs at the biggest one that fits in memory: helper's
+        # run_with_batch_size_fallback tries 128, and on an out-of-memory error
+        # frees the allocator and retries at 64, then 32, and so on. That is
+        # what stops the experiment definition from depending on which machine
+        # it happens to run on -- a laptop resolves to something small, a GPU
+        # box to 128, and neither needs this file edited.
+        #
+        # ON THIS MACHINE (no CUDA) nothing realistically OOMs, so the first
+        # candidate is simply used. Note that 128 is not 4: a bigger minibatch
+        # means fewer, less noisy optimizer steps per epoch, which is a real
+        # change to the training dynamics and not just a memory setting.
+        self.mini_batch_size = [128, 64, 32, 16, 8, 4]
         self.target_kl = None  # e.g. 0.015 to abandon the remaining epochs once
         #                        pi_new has drifted too far. None = off.
 
@@ -150,7 +178,7 @@ class Config(Helper):
 
         # evaluation: no gradients, no training, COMPLETE episodes only
         self.n_eval_episodes = 50  # played to their own end, never truncated
-        self.eval_seed = 10_000  # fixed and far from every training seed, so the same
+        self.eval_seed = 10_000  # fixed and far from seed_list, so the same
         #                          50 mazes are replayed at every evaluation.
         #                          That removes the maze draw as a source of
         #                          noise -- but NOT the action sampling, which
@@ -165,77 +193,285 @@ class Config(Helper):
         #                                  evaluate(deterministic=True)
         #                                  overrides this for one call.
 
-        # ----- HPO ---------------------------------------------------------
-        # one trial = one hyperparameter draw, trained once per base_seed_list
-        # entry, so a trial costs len(base_seed_list) full runs.
-        self.n_trials = 10  # testing only; a real search wants 25-40 per encoder
+        self.final_deterministic = False  # the same choice, for the RETRAIN
+        #   that hpo_ppo.final() does after a study. eval_deterministic above
+        #   governs every trial; this one governs the final runs, so the
+        #   expensive-but-noisy search and the cheap-but-clean final report can
+        #   differ if you want them to.
+        #
+        #   ONE MODE PER RUN, AND IT COVERS EVERY METRIC. Whichever flag
+        #   applies is written onto the config before the agent is built, so
+        #   the periodic evaluations that build the learning curve AND the
+        #   closing evaluation both use it. return_mean, success_rate and aulc
+        #   are therefore always measured the same way as each other -- there
+        #   is no longer any combination of settings where the curve is sampled
+        #   and its endpoint is argmax, which is a comparison of two different
+        #   things dressed up as one metric.
+        #
+        #   False (the default) keeps final() comparable to the study it
+        #   summarises: score_retrained and best_value_in_study are then the
+        #   same kind of number, and the gap between them measures the winner's
+        #   curse rather than a change of measuring instrument.
+        #
+        #   True gives the fully reproducible number -- fixed mazes AND no
+        #   action sampling -- which is what a results table wants. Safe here
+        #   in a way it is not during a search, because these policies are
+        #   finished: argmax only deadlocks on half-trained ones.
 
-        # the search space. Every "name" MUST be an attribute set above, and it
-        # must be set on the config BEFORE PPOAgent is built -- the agent copies
-        # each one into its own attribute in __init__ and never looks back.
+        # ----- the search, when there is one -----------------------------
+        # Read by agents/hpo_ppo.py. Ignored entirely by main.py, which trains
+        # whatever the config already says -- so a project that never runs a
+        # study never has to care that these exist.
+        self.n_trials = 30  # how many hyperparameter draws the study gets.
+        #   Budget is counted in COMPLETE + PRUNED trials, so a trial that
+        #   crashes does not spend one and is retried on the next run.
+        self.seed_hpo = 42  # seeds the TPE SAMPLER ONLY -- which points in the
+        #   search space get proposed, and in what order. It is NOT a training
+        #   seed and never reaches the env or the weight init: those come from
+        #   seed_list above, which every trial shares. Fixing it is what makes
+        #   a resumed or repeated study propose the same sequence of trials.
+        self.hpo_direction = "maximize"  # of the score defined by the next two
+
+        # THE SCORE IS BUILT IN TWO STEPS, and they operate on two genuinely
+        # different kinds of variation. Keeping them as separate settings is
+        # what stops those two being confused:
         #
-        # The keys are optuna's own: suggest_float(name, low, high, step=, log=),
-        # suggest_int(name, low, high, step=, log=), suggest_categorical(name,
-        # choices). "type" is the only key that is not optuna's -- it picks
-        # which suggest_* to call, and defaults to "float".
+        #   hpo_objective     ONE NUMBER PER TRAINING RUN (per seed)
+        #   hpo_aggregation   how the len(seed_list) of those become one score
         #
-        # step ONLY on log=False entries: suggest_float raises if given both.
-        # Each range is a whole number of steps wide, or optuna lowers "high"
-        # to the nearest one and warns.
+        # Concretely, with seed_list = [0, 26, 98]:
         #
-        # The four encoder configs APPEND their own architecture knobs to this
-        # list in _configure_model(), which runs below.
+        #   run seed 0  -> trains -> evaluate() plays n_eval_episodes on the
+        #                  eval_seed mazes -> return_mean_0, success_rate_0
+        #   run seed 26 -> ...                                  -> ..._26
+        #   run seed 98 -> ...                                  -> ..._98
+        #   score = aggregate(metric_0, metric_26, metric_98)
+        #
+        # So "mean" IS mean(mean(eval of 0), mean(eval of 26), mean(eval of
+        # 98)) -- the mean composes, because a mean of equal-sized means is
+        # the mean of the pool. STD DOES NOT COMPOSE THAT WAY, which is the
+        # whole reason hpo_aggregation is spelled out below.
+        self.hpo_objective = "return_mean"
+        #   "return_mean"   what the env actually paid, averaged over the
+        #                   eval episodes. What "the reward" means here.
+        #   "success_rate"  fraction that reached the goal. Cleaner than
+        #                   return -- it does not mix in how fast the agent
+        #                   walked -- but read off ONE evaluation, whose own
+        #                   noise is about +-0.06 at n_eval_episodes = 50.
+        #   "aulc"          area under the learning curve: the mean of the
+        #                   eval success rates over the whole run. Rewards
+        #                   learning FAST and STAYING there, where a final
+        #                   score cannot tell a policy that solved the task at
+        #                   iteration 50 from one that solved it at 450.
+
+        self.hpo_aggregation = "mean_minus_std"
+        #   "mean"            the plain average over seeds.
+        #   "mean_minus_std"  average MINUS the spread ACROSS SEEDS. Prefers a
+        #                     config that works every time over one that scores
+        #                     high on average by working brilliantly on one
+        #                     seed and failing on another -- which, on a task
+        #                     this bimodal, is a real and common way to win a
+        #                     search by luck.
+        #
+        self.hpo_lambda = 1.0  # THE LAMBDA in  score = mean - lambda * std,
+        #   where both the mean and the std are taken ACROSS SEEDS. Read by
+        #   helper.aggregate_scores, and ignored entirely when hpo_aggregation
+        #   is "mean" -- there is no penalty term to weight in that case.
+        #
+        #       lambda = 0.0   identical to hpo_aggregation = "mean"
+        #       lambda = 0.5   spread as a tiebreak
+        #       lambda = 1.0   the strict reading of "mean minus std"
+        #
+        #   READ THIS BEFORE LEAVING IT AT 1.0. With three seeds, a config that
+        #   works on exactly ONE of them scores NEGATIVE at lambda = 1, i.e.
+        #   BELOW a config that never works at all:
+        #
+        #       [0, x, 0]  ->  mean x/3,  std x*sqrt(2)/3  ->  -0.138 x
+        #       [0, 0, 0]  ->  mean 0,    std 0            ->   0
+        #
+        #   That is measured, not hypothetical -- an early trial here scored
+        #   -0.0118 on [0.0, 0.0855, 0.0] while a dead trial scored 0.0. Early
+        #   in a study almost everything is near zero, so this can steer the
+        #   sampler AWAY from the first configs that show any life at all.
+        #
+        #   The sign flips at lambda = 1/sqrt(2) ~ 0.707, so any value below
+        #   that keeps "one seed worked" ahead of "nothing worked" while still
+        #   penalising spread. 0.5 is the safe choice if the study looks like
+        #   it is avoiding the promising region; 1.0 is the strict reading of
+        #   "mean minus std" and is kept as the default because it is what was
+        #   asked for. With a task that gets solved reliably, the two agree.
+
+        # THE STD IS ACROSS SEEDS, NEVER ACROSS EVAL EPISODES, and that is not
+        # a detail. The within-run spread of a bimodal return (0 on failure,
+        # ~0.9 on success) is pinned at about 0.9*sqrt(p(1-p)) -- a function of
+        # the success rate itself, carrying no independent information. Worse,
+        # subtracting it is actively perverse: at p = 0 it gives 0 - 0 = 0,
+        # while at p = 0.2 it gives 0.18 - 0.36 = -0.18, so a policy that
+        # learned something would score BELOW one that learned nothing. The
+        # across-seed spread has no such pathology: it is 0 for any config that
+        # behaves the same way every time, whatever its score.
+
+        # WHICH KNOBS THE STUDY TURNS. Filled per encoder in _configure_model()
+        # -- an MLP has no n_heads to tune -- as a list of dicts passed
+        # straight through to trial.suggest_*:
+        #
+        #     {"type": "float", "name": "lr", "low": 1e-5, "high": 1e-2,
+        #      "log": True}
+        #
+        # "type" is popped, everything else is forwarded verbatim, so any
+        # argument optuna's suggest_int / suggest_float / suggest_categorical
+        # accepts (step=, log=, choices=) works with no change to the helper.
+        # Every "name" must already be an attribute of the config -- apply_params
+        # raises otherwise, which turns a typo into an immediate error instead
+        # of a silently untuned run.
+        #
+        # THESE ARE THE KNOBS EVERY ENCODER HAS. Each subclass APPENDS its own
+        # architecture knobs in _configure_model() below -- an MLP has no
+        # n_heads to tune -- so the shared PPO half is written once here rather
+        # than copied into four files that would then drift apart.
+        #
+        # WHAT IS DELIBERATELY NOT IN HERE. gamma, because on a task that pays
+        # once at the end, lowering it changes what "solved" means rather than
+        # how well it is solved. n_workers / worker_steps, because they set how
+        # much experience a trial gets and a search would simply buy the best
+        # score with compute. n_iterations, for the same reason.
         self.search_space = [
-            {"name": "lr", "low": 1e-5, "high": 1e-2, "log": True},
-            {"name": "entropy_coef", "low": 1e-4, "high": 1e-1, "log": True},
-            {"name": "wd", "low": 0.00001, "high": 0.5, "log": True},
-            {"name": "value_coef", "low": 0.1, "high": 1.0, "log": True},
-            {"name": "gamma", "low": 0.95, "high": 0.9995, "step": 0.0001, "log": False},
+            # the one that matters most, and the one worth the log scale: the
+            # useful range spans three orders of magnitude and the interesting
+            # part is near the bottom of it
+            {"type": "float", "name": "lr", "low": 1e-5, "high": 1e-2, "log": True},
+            # exploration. Also log: 0.001 vs 0.01 is the interesting question,
+            # 0.05 vs 0.06 is not
             {
+                "type": "float",
+                "name": "entropy_coef",
+                "low": 1e-4,
+                "high": 1e-1,
+                "log": True,
+            },
+            # how loud the critic is relative to the policy. Too high and the
+            # squared error on returns dominates the SHARED encoder
+            {
+                "type": "float",
+                "name": "value_coef",
+                "low": 0.05,
+                "high": 1.0,
+                "log": True,
+            },
+            # The trust region. Narrow band on purpose -- outside roughly
+            # [0.1, 0.3] this stops being PPO.
+            #
+            # NO log=. Log scale is for ranges spanning ORDERS OF MAGNITUDE,
+            # where the interesting question is 0.0001 vs 0.001; over a single
+            # factor of three it does nothing but tilt the density slightly.
+            # step=0.01 instead: 21 values, which is finer than any training
+            # run at this noise level could tell apart anyway, and it makes
+            # trials land on numbers that are readable in the csv.
+            {
+                "type": "float",
+                "name": "clip_eps",
+                "low": 0.1,
+                "high": 0.3,
+                "step": 0.01,
+            },
+            # GAE's bias/variance knob, likewise near its usable range and
+            # likewise not a log quantity.
+            #
+            # BE AWARE THIS GRID IS NOT UNIFORM IN EFFECT. What lambda controls
+            # is roughly a horizon of 1/(1 - lambda): 0.90 -> 10 steps,
+            # 0.95 -> 20, 0.99 -> 100. So the top of this range is where the
+            # behaviour changes fastest, and equal steps in lambda are not
+            # equal steps in what it does. Sampling log(1 - lambda) uniformly
+            # would fix that, and optuna cannot express it directly -- it would
+            # need a derived attribute the way d_ff is derived from d_model.
+            # Left as a linear grid because 10 values over this range is
+            # already finer than the seeds can resolve.
+            {
+                "type": "float",
                 "name": "gae_lambda",
-                "low": 0.90,
+                "low": 0.9,
                 "high": 0.99,
-                "step": 0.005,
-                "log": False,
+                "step": 0.01,
             },
-            {"name": "clip_eps", "low": 0.1, "high": 0.3, "step": 0.01, "log": False},
-            {
-                "name": "n_epochs",
-                "type": "int",
-                "low": 2,
-                "high": 10,
-                "step": 1,
-                "log": False,
-            },
+            # How hard one rollout is reused before it is too off-policy.
+            # NO step= and no log=: suggest_int already steps by 1, which is
+            # the only sensible granularity for a count of passes.
+            {"type": "int", "name": "n_epochs", "low": 1, "high": 8},
+            # Adam decay, log over a wide range because the honest answer here
+            # is often "none" and 1e-8 is how the search says that
+            {"type": "float", "name": "wd", "low": 1e-8, "high": 1e-2, "log": True},
         ]
-
-        # where a trained model is written
-        self.dir_pretrained_model = os.path.join(
-            "agents", "pretrained_model_feature_extractor"
-        )
 
         # ----- the encoder, filled by the subclass -----------------------
         # ConfigMLP / ConfigLSTM / ConfigGRU / ConfigTransformer override this
-        # to set recurrent_model and whatever architecture knobs their encoder
-        # needs. Called HERE, near the end, for two reasons that decide the
+        # to set feature_extractor and whatever architecture knobs their encoder
+        # needs. Called HERE, near the end, for three reasons that decide the
         # ordering:
         #   - AFTER worker_steps exists, because the transformer's
-        #     max_seq_length is derived from it.
+        #     max_seq_length is derived from it;
+        #   - AFTER search_space, so a subclass can append to it;
+        #   - BEFORE name_model and the directories below, both of which spell
+        #     feature_extractor, which does not exist until this runs.
         self._configure_model()
 
-    # PROPERTIES, not attributes: self.seed is not the run's real seed until
-    # set_seed() runs, which happens after __init__. Read-only -- to move the
-    # file, set dir_pretrained_model (or seed) and these follow.
-    @property
-    def name_model(self):
-        return self.build_model_name()
+        # ----- where things are written ----------------------------------
+        # ONE DIRECTORY PER ENCODER, agents/pretrained_model_GRU/, because
+        # everything below it is named after the encoder and the env and
+        # nothing else -- so two encoders sharing a directory is fine, but two
+        # RUNS of one encoder is not, and there are three kinds of run:
+        #
+        #     pretrained_model_GRU/
+        #         ppo_GRU_<env>.pth      the study's final model (hpo_ppo.final)
+        #         final_GRU_<env>.json   what that retrain scored
+        #         hpo/                   the search itself
+        #             hpo_csv_GRU_<env>.csv    every trial, exported each trial
+        #             hpo_db_GRU_<env>.db      the study, so it can resume
+        #             hpo_sampler_GRU_<env>.pkl the TPE state, likewise
+        #             trial_0/  trial_1/  ...  one checkpoint per trial
+        #             best_trial/              a copy of the winner's
+        #         no_hpo/                config_no_hpo.py's hand-picked run
+        #
+        # Relative, like logs/, so everything lands under the repo root --
+        # which means python must be run FROM the repo root.
+        self.dir_model = os.path.join(
+            "agents", f"pretrained_model_{self.feature_extractor.upper()}"
+        )
 
-    @property
-    def path_model(self):
-        return os.path.join(self.dir_pretrained_model, self.name_model)
+        # what save_model writes to. The DEFAULT is the encoder's top level;
+        # hpo_ppo.py repoints it at hpo/trial_<n>/ for the duration of a trial
+        # and ConfigNoHPO repoints it at no_hpo/. It has to be redirectable
+        # rather than baked into the filename because watch.py and load_model
+        # rebuild the path from the config alone -- they have no trial number.
+        self.dir_pretrained_model = self.dir_model
+        self.dir_hpo = os.path.join(self.dir_model, "hpo")
+
+        # ppo_GRU_MiniGrid-MemoryS11-v0.pth -- BOTH THE ENCODER AND THE ENV ARE
+        # IN THE NAME, because both change what the weights mean. One fixed
+        # ppo_feature_extractor.pth would have every run overwrite the last;
+        # keying on the encoder alone still lets a MemoryS11 run land on top of
+        # a finished DoorKey run of the same encoder, which is what nearly
+        # happened here with three checkpoints sitting under three envs.
+        #
+        # Spelled by helper.build_model_name(), not by an f-string here, so
+        # watch.py cannot end up with a different idea of the filename.
+        # Relative, like logs/, so everything is written under the repo root --
+        # which means python must be run FROM the repo root.
+        # name_model and path_model are PROPERTIES on Helper, not attributes
+        # set here, so both are re-read every time they are asked for:
+        #
+        #   name_model  carries the SEED, which set_seed() only fills in later,
+        #               inside PPOAgent.__init__
+        #   path_model  carries the DIRECTORY, which hpo_ppo.py repoints at
+        #               hpo/trial_7/ per trial and ConfigNoHPO at no_hpo/
+        #
+        # Frozen here instead, every trial and every seed would keep writing to
+        # whatever name and directory happened to be set at construction.
+        #
+        # The directory itself is made by helper.build_model_path(), at save
+        # time, not here.
 
     def _configure_model(self):
-        """Set recurrent_model and this encoder's architecture knobs.
+        """Set feature_extractor and this encoder's architecture knobs.
 
         Overridden by ConfigMLP / ConfigLSTM / ConfigGRU / ConfigTransformer.
         Config itself is abstract, so building one directly stops here with a
@@ -245,16 +481,80 @@ class Config(Helper):
         raise NotImplementedError(
             "Config is abstract -- build a ConfigMLP / ConfigLSTM / ConfigGRU / "
             "ConfigTransformer, or call make_config('MLP'). Each one fills in "
-            "recurrent_model and its own encoder hyperparameters in "
+            "feature_extractor and its own encoder hyperparameters in "
             "_configure_model()."
         )
+
+    # ------------------------------------------------------------------
+    # the study's name and its files
+    #
+    # Properties, not attributes, for the same reason build_model_name() is a
+    # method: watch.py and hpo_ppo.py can set feature_extractor from the
+    # command line, and a name frozen in __init__ would still spell whichever
+    # encoder was set at import time.
+    # ------------------------------------------------------------------
+    @property
+    def name_hpo(self):
+        """GRU_MiniGrid-DoorKey-8x8-v0 -- the stem every HPO file is built on.
+
+        Both halves are in it for the same reason they are in the checkpoint
+        name: a study is over ONE encoder on ONE env, and two of them sharing
+        a csv would be two different experiments in one table.
+        """
+        env = self.name_env.replace("/", "-")
+        return f"{self.feature_extractor.upper()}_{env}"
+
+    @property
+    def name_study(self):
+        """The study_name inside the sqlite file.
+
+        Distinct from the file name because one .db CAN hold several studies;
+        keying it on encoder + env means load_if_exists=True resumes the right
+        one even if the databases are ever merged.
+        """
+        return f"ppo_{self.name_hpo}"
+
+    @property
+    def path_hpo_csv(self):
+        """Every trial as a table, rewritten at the START of each trial.
+
+        Written by csv_study_export. A csv only at the end would be a csv you
+        never get when a study is interrupted, which is precisely when you want
+        to see how far it got.
+        """
+        return os.path.join(self.dir_hpo, f"hpo_csv_{self.name_hpo}.csv")
+
+    @property
+    def path_hpo_db(self):
+        """The study itself, as a SQLAlchemy URL (not a plain path).
+
+        This is what makes a study resumable: optuna keeps every trial, its
+        params and its state here, so a crashed run picks up its remaining
+        budget instead of starting over.
+        """
+        path = os.path.join(self.dir_hpo, f"hpo_db_{self.name_hpo}.db")
+        return "sqlite:///" + path
+
+    @property
+    def path_hpo_sampler(self):
+        """The TPE sampler, pickled after every trial.
+
+        SEPARATE FROM THE DATABASE AND NOT OPTIONAL. The db holds what the
+        study has TRIED; this holds what the sampler has LEARNED. Resume
+        without it and optuna rebuilds a fresh TPESampler(seed=seed_hpo),
+        which re-draws its n_startup_trials random probes -- so a study
+        resumed at trial 25 spends the next 10 trials exploring at random
+        instead of exploiting what the first 25 already showed.
+        """
+        return os.path.join(self.dir_hpo, f"hpo_sampler_{self.name_hpo}.pkl")
 
     def set_seed(self, env=None, seed=None):
         """Seed every source of randomness and return the seed that was used.
 
-        seed=None falls back to base_seed_list[0], so set_seed() with no
-        argument is always reproducible. Normally the seed IS passed --
-        PPOAgent(config, seed=s) hands over one seed of base_seed_list.
+        seed=None falls back to self.seed_list[0], so set_seed() with no
+        argument is always reproducible. Anything that reports a RESULT should
+        pass each of seed_list in turn instead of relying on that default --
+        one seed is an anecdote on these tasks.
 
         The CUDA calls are no-ops on a machine without a GPU. They stay in so
         the exact same config also reproduces on a machine that has one.
@@ -266,7 +566,7 @@ class Config(Helper):
         from the seeded state instead of restarting it.
         """
         if seed is None:
-            seed = self.base_seed_list[0]
+            seed = self.seed_list[0]
         self.seed = seed
 
         # affects subprocesses only (the parallel workers), not this process

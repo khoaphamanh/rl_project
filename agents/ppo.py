@@ -96,8 +96,19 @@ class PPOAgent:
         self.max_grad_norm = config.max_grad_norm
 
         self.n_epochs = config.n_epochs  # passes over one rollout
-        self.mini_batch_size = config.mini_batch_size  # sequences per minibatch
         self.target_kl = config.target_kl  # None = never stop early
+
+        # sequences per minibatch, as a LIST OF CANDIDATES largest first. The
+        # first call to train() resolves it to the biggest one that fits in
+        # memory and writes that single number back here, so every later
+        # iteration starts from a size already known to work rather than
+        # re-discovering it. See config.run_with_batch_size_fallback.
+        self.mini_batch_size = config.mini_batch_size
+        self.run_with_batch_size_fallback = config.run_with_batch_size_fallback
+
+        # set by train_agent(); the fallback logs which size it settled on, and
+        # without this that line would go to stdout only and miss the log file
+        self.logger = None
 
         # the run. Defaults only -- train_agent() takes overrides
         self.n_iterations = config.n_iterations  # train() calls
@@ -136,9 +147,8 @@ class PPOAgent:
         # T steps run out -- the next rollout continues it.
         self.obs = np.zeros((self.n_workers, *self.obs_shape), dtype=np.uint8)
         for w, env in enumerate(self.envs):
-            # a different seed per worker, otherwise all W games are identical.
-            # * 1000 so two base seeds can never claim overlapping blocks
-            obs, _ = env.reset(seed=self.seed * 1000 + w)
+            # a different seed per worker, otherwise all W games are identical
+            obs, _ = env.reset(seed=self.seed + w)
             self.obs[w] = obs["image"]
 
         # the hidden state carries over between rollouts for the same reason
@@ -668,8 +678,16 @@ class PPOAgent:
             drop_last=False, because n_seq is small and a dropped tail is a
             dropped episode, not a rounding error
 
+        COLLECTING AND LEARNING ARE SPLIT. Everything after the rollout lives
+        in learn(), because that half may have to be run more than once: the
+        config names a LIST of minibatch sizes and the update runs at the
+        largest that fits in memory, retrying smaller on an OOM. The rollout is
+        collected once either way -- a retry must not resample, or the retried
+        iteration would be training on different data than the one that failed.
+
         Returns one flat stats dict: sample()'s episode numbers, plus every
-        loss term and diagnostic averaged over the updates that actually ran.
+        loss term and diagnostic averaged over the updates that actually ran,
+        plus the mini_batch_size that turned out to fit.
 
         Called once per iteration by train_agent(), which is what main.py
         actually drives. Call it directly only to run a single iteration by
@@ -680,13 +698,56 @@ class PPOAgent:
         buf["advantages"], buf["returns"] = self.gae(buf)
         batch = self.split_pad_mask(buf)
 
+        # ---- learn, at the largest minibatch that fits -------------------
+        # The whole update is handed over as a callable so it can be RETRIED at
+        # a smaller size if it runs out of memory. Only OOM is caught; anything
+        # else propagates. On the first iteration mini_batch_size is still the
+        # candidate list and the result is a single number, which is written
+        # back -- so this searches once per run, not once per iteration.
+        self.mini_batch_size, (epochs_run, logs) = self.run_with_batch_size_fallback(
+            lambda mini_batch_size: self.learn(batch, mini_batch_size),
+            self.mini_batch_size,
+            self.logger,
+        )
+
+        # recorded because it is a hyperparameter the MACHINE chose, not the
+        # config: two runs of one config on two machines can differ here, and
+        # without this line the log would not say so
+        stats["mini_batch_size"] = self.mini_batch_size
+        stats["epochs_run"] = epochs_run
+        stats["updates"] = len(logs)
+        for k in logs[0]:
+            stats[k] = float(np.mean([d[k] for d in logs]))
+
+        return stats
+
+    def learn(self, batch, mini_batch_size):
+        """The update half of one iteration: n_epochs passes over one rollout.
+
+        Split out of train() so it can be CALLED AGAIN at a smaller minibatch
+        size when it runs out of memory -- that retry is what
+        run_with_batch_size_fallback does, and it needs a function it can call
+        more than once.
+
+        Takes mini_batch_size as an ARGUMENT rather than reading
+        self.mini_batch_size, for the same reason: the fallback has to be able
+        to pass a different one without mutating the agent first.
+
+        Returns (epochs_run, logs): how many passes actually ran, and one info
+        dict per optimizer step.
+
+        Nothing here is undone if it raises partway through. A retry re-walks
+        the same rollout, so any minibatch the first attempt already stepped on
+        is stepped on twice -- see run_with_batch_size_fallback, which explains
+        why that is accepted.
+        """
         # rebuilt every iteration: a new rollout means a new number of
         # sequences, so this dataset is genuinely a different one each time.
         # num_workers stays 0 -- the data is already tensors in memory, and
         # subprocesses would only add overhead and break the seeding.
         loader = DataLoader(
             SequenceDataset(batch),
-            batch_size=self.mini_batch_size,
+            batch_size=mini_batch_size,
             shuffle=True,  # reshuffles on every new iteration of the loader,
             #                which is exactly once per epoch below
             drop_last=False,
@@ -694,7 +755,6 @@ class PPOAgent:
 
         logs = []
 
-        # ---- learn -----------------------------------------------------
         for epoch in range(self.n_epochs):
             for mb in loader:
                 loss, info = self.minibatch_loss(mb)
@@ -720,12 +780,7 @@ class PPOAgent:
             if self.target_kl is not None and logs[-1]["approx_kl"] > self.target_kl:
                 break
 
-        stats["epochs_run"] = epoch + 1
-        stats["updates"] = len(logs)
-        for k in logs[0]:
-            stats[k] = float(np.mean([d[k] for d in logs]))
-
-        return stats
+        return epoch + 1, logs
 
     # ------------------------------------------------------------------
     # evaluation
@@ -884,8 +939,7 @@ class PPOAgent:
 
         CHECKPOINTING happens on report iterations only, and only when
         eval_success_rate BEATS every earlier one. config.save_model writes
-        agents/pretrained_model_feature_extractor/ppo_<seed>_<encoder>_<env>.pth
-        -- weights, optimizer state,
+        agents/pretrained_model/ppo_<encoder>.pth -- weights, optimizer state,
         and the four attributes that decide the architecture, so
         config.load_model can refuse a file that does not match the config.
         config.watch_agent() then plays it back in a window.
@@ -906,6 +960,10 @@ class PPOAgent:
         # the logger's StreamHandler already echoes to the terminal, so this
         # is a swap, not an addition: exactly one copy either way
         log = print if logger is None else logger.info
+
+        # so train() -> run_with_batch_size_fallback reports which minibatch
+        # size it settled on into the log file and not only to stdout
+        self.logger = logger
 
         # a separate blank record, not "\n" inside the header: a newline in
         # the middle of a log record puts the file's timestamp prefix on the
@@ -975,6 +1033,10 @@ class PPOAgent:
                         iteration=i,
                         eval_success_rate=best_success,
                         eval_return_mean=stats["eval_return_mean"],
+                        # the size that actually fit on this machine, so the
+                        # checkpoint records what it was trained with rather
+                        # than the candidate list the config asked for
+                        mini_batch_size=self.mini_batch_size,
                     )
                     log(f"{'':>5} saved  {path}  (best so far {best_success:.2f})")
 
