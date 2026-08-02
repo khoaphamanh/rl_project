@@ -6,27 +6,32 @@ Entry point for the SEARCH. Tunes PPO with ONE encoder, named on the command lin
     python main.py LSTM
     python main.py TRANSFORMER
 
-WITH NO FLAGS THAT IS THE WHOLE JOB: the search, and then the final retrain at
-the params it found. Two phases, one command --
+WITH NO FLAGS THAT IS THE WHOLE JOB: the search, and then the report on what
+it found. Two phases, one command --
 
     1. hpo()     n_trials draws, each trained once per seed in seed_list,
                  pruned and resumable       -> hpo/trial_<n>/
                  the winner copied out of it -> hpo/best_trial/
-    2. final()   ONE retrain at the winning params, which is the number that
-                 goes in the writeup        -> hpo/final/
+    2. final()   scores the winner's SAVED runs in both eval modes and writes
+                 the report                 -> hpo/best_trial/
 
-Each of those three directories holds one checkpoint per seed plus the two
-learning-curve figures drawn from them, in .html and .svg. final/ also holds
-final_<ENC>_<env>.json, the report. See the agents/hpo_ppo.py docstring for
-the whole tree.
+Each directory holds one checkpoint per seed plus the two learning-curve
+figures drawn from them, in .html and .svg; best_trial/ also holds
+best_params.json and final_<ENC>_<env>.json, the report. See the
+agents/hpo_ppo.py docstring for the whole tree.
+
+PHASE 2 TRAINS NOTHING. It used to retrain at the winning params into its own
+hpo/final/ -- three more runs, same encoder, same env, same seeds, same
+hyperparameters as the trial already on disk. See HPOPPO.final for what that
+second sample was worth and why it is gone.
 
 The flags exist only to run one phase without the other, which is what you
 want when a study is already finished or when you mean to inspect it first:
 
     python main.py GRU --trials 10     a shorter study than config.n_trials
-    python main.py GRU --final-only    skip the search; retrain at the best
-                                       params already in the study
-    python main.py GRU --search-only   search, but do not retrain
+    python main.py GRU --final-only    skip the search; report on the best
+                                       trial already in the study
+    python main.py GRU --search-only   search, but do not write the report
 
 The encoder is the only argument because it is the only thing that changes
 between runs of the ablation. make_config(name) builds the matching Config
@@ -104,10 +109,9 @@ def main():
     if not args.final_only:
         hpo.hpo()
 
-    # PHASE 2: the number to report. Runs unless explicitly skipped.
-    # NOT study.best_value, which is the maximum of n_trials noisy
-    # measurements and biased upward by the selection itself -- this retrains
-    # at the winning params and scores that. See HPOPPO.final.
+    # PHASE 2: the report. Runs unless explicitly skipped. Loads the winning
+    # trial's checkpoints and scores them in both eval modes -- no training.
+    # See HPOPPO.final, including what is given up by not retraining.
     if not args.search_only:
         hpo.final()
 

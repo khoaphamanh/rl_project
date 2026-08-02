@@ -29,7 +29,7 @@ WHAT IS DIFFERENT FROM config.py. Only three things:
       iterates it would act on a search that is not happening.
     - dir_pretrained_model points at pretrained_model_<ENC>/no_hpo/, PARALLEL
       to hpo/ rather than inside it, so a hand-picked run and the study's
-      final model never land on the same filename. They would otherwise:
+      winning trial never land on the same filename. They would otherwise:
       same encoder, same env, same seeds, same name.
     - the values are the pre-HPO ones, spelled out rather than inherited.
 
@@ -40,7 +40,6 @@ checkpoint format, watch.py -- is unchanged and does not know the difference.
 import os
 
 from config.config import Config
-
 
 # THE ONE LINE YOU EDIT to switch encoder: MLP / LSTM / GRU / TRANSFORMER.
 # main_no_hpo.py can override it from the command line; this stays the default
@@ -129,8 +128,6 @@ class ConfigNoHPO(Config):
         self.max_grad_norm = 0.5
 
         self.n_epochs = 3  # passes over the SAME rollout
-        self.mini_batch_size = [128, 64, 32, 16, 8, 4]  # candidates, largest
-        #   first -- the update runs at the biggest one that fits in memory
         self.target_kl = None  # e.g. 0.015 to stop early. None = off.
 
         # ==============================================================

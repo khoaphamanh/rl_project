@@ -162,7 +162,7 @@ class Config(Helper):
         # candidate is simply used. Note that 128 is not 4: a bigger minibatch
         # means fewer, less noisy optimizer steps per epoch, which is a real
         # change to the training dynamics and not just a memory setting.
-        self.mini_batch_size = [128, 64, 32, 16, 8, 4]
+        self.mini_batch_size = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4]
         self.target_kl = None  # e.g. 0.015 to abandon the remaining epochs once
         #                        pi_new has drifted too far. None = off.
 
@@ -192,31 +192,25 @@ class Config(Helper):
         #                                  repeated until the time limit).
         #                                  evaluate(deterministic=True)
         #                                  overrides this for one call.
-
-        self.final_deterministic = False  # the same choice, for the RETRAIN
-        #   that hpo_ppo.final() does after a study. eval_deterministic above
-        #   governs every trial; this one governs the final runs, so the
-        #   expensive-but-noisy search and the cheap-but-clean final report can
-        #   differ if you want them to.
         #
-        #   ONE MODE PER RUN, AND IT COVERS EVERY METRIC. Whichever flag
-        #   applies is written onto the config before the agent is built, so
-        #   the periodic evaluations that build the learning curve AND the
-        #   closing evaluation both use it. return_mean, success_rate and aulc
-        #   are therefore always measured the same way as each other -- there
-        #   is no longer any combination of settings where the curve is sampled
-        #   and its endpoint is argmax, which is a comparison of two different
-        #   things dressed up as one metric.
+        #   ONE MODE PER RUN, AND IT COVERS EVERY METRIC. Whatever this says is
+        #   read by PPOAgent before training starts, so the periodic
+        #   evaluations that build the learning curve AND the run's closing
+        #   number both use it. return_mean and success_rate are therefore
+        #   always measured the same way as each other -- there is no
+        #   combination of settings where the curve is sampled and its endpoint
+        #   is argmax, which would be a comparison of two different things
+        #   dressed up as one metric.
         #
-        #   False (the default) keeps final() comparable to the study it
-        #   summarises: score_retrained and best_value_in_study are then the
-        #   same kind of number, and the gap between them measures the winner's
-        #   curse rather than a change of measuring instrument.
-        #
-        #   True gives the fully reproducible number -- fixed mazes AND no
-        #   action sampling -- which is what a results table wants. Safe here
-        #   in a way it is not during a search, because these policies are
-        #   finished: argmax only deadlocks on half-trained ones.
+        #   THERE IS NO SEPARATE final_deterministic ANY MORE. It used to pick
+        #   the mode for the retrain that hpo_ppo.final() ran; final() no
+        #   longer trains anything, and both main_no_hpo.py and final() now
+        #   report BOTH modes side by side -- one taken from the run's own
+        #   curve, the other measured once at the end. Neither has to be chosen
+        #   in advance, and seeing the two together is the point: on this task
+        #   they can disagree completely, e.g. a policy that solves 100% of the
+        #   eval mazes when sampled and 0% under argmax, which is an argmax
+        #   deadlock and a real property of the policy rather than a bug.
 
         # ----- the search, when there is one -----------------------------
         # Read by agents/hpo_ppo.py. Ignored entirely by main.py, which trains
@@ -232,12 +226,13 @@ class Config(Helper):
         #   a resumed or repeated study propose the same sequence of trials.
         self.hpo_direction = "maximize"  # of the score defined by the next two
 
-        # THE SCORE IS BUILT IN TWO STEPS, and they operate on two genuinely
-        # different kinds of variation. Keeping them as separate settings is
-        # what stops those two being confused:
+        # THE SCORE IS ONE STRING WITH THREE FIELDS:
         #
-        #   hpo_objective     ONE NUMBER PER TRAINING RUN (per seed)
-        #   hpo_aggregation   how the len(seed_list) of those become one score
+        #     <metric>_<center>_<spread>
+        #
+        #   metric   ONE NUMBER PER TRAINING RUN (per seed)
+        #   center   how the len(seed_list) of those become one number
+        #   spread   what is subtracted from that, weighted by hpo_lambda
         #
         # Concretely, with seed_list = [0, 26, 98]:
         #
@@ -245,40 +240,80 @@ class Config(Helper):
         #                  eval_seed mazes -> return_mean_0, success_rate_0
         #   run seed 26 -> ...                                  -> ..._26
         #   run seed 98 -> ...                                  -> ..._98
-        #   score = aggregate(metric_0, metric_26, metric_98)
+        #   score = center(metric_0, metric_26, metric_98)
+        #           - hpo_lambda * spread(metric_0, metric_26, metric_98)
         #
-        # So "mean" IS mean(mean(eval of 0), mean(eval of 26), mean(eval of
-        # 98)) -- the mean composes, because a mean of equal-sized means is
-        # the mean of the pool. STD DOES NOT COMPOSE THAT WAY, which is the
-        # whole reason hpo_aggregation is spelled out below.
-        self.hpo_objective = "return_mean"
-        #   "return_mean"   what the env actually paid, averaged over the
-        #                   eval episodes. What "the reward" means here.
-        #   "success_rate"  fraction that reached the goal. Cleaner than
+        # So "mean" here IS mean(mean(eval of 0), mean(eval of 26), mean(eval
+        # of 98)) -- the mean composes, because a mean of equal-sized means is
+        # the mean of the pool. STD DOES NOT COMPOSE THAT WAY, and neither
+        # does the median, which is the whole reason the last two fields are
+        # spelled out rather than assumed.
+        #
+        # ONE STRING AND NOT TWO SETTINGS. The metric and the aggregation used
+        # to be hpo_objective and hpo_aggregation, two attributes that could be
+        # edited independently and printed side by side in a log without
+        # anything saying they were halves of one score. config.hpo_metric,
+        # .hpo_center, .hpo_spread and .hpo_aggregation are now all derived
+        # from this -- read-only properties on Helper, see parse_hpo_objective.
+        self.hpo_objective = "return_mean_minus-std"
+        #
+        # FIELD 1, the metric:
+        #   "return"        what the env actually paid, averaged over the eval
+        #    (= return_mean) episodes. What "the reward" means here.
+        #   "success-rate"  fraction that reached the goal. Cleaner than
         #                   return -- it does not mix in how fast the agent
         #                   walked -- but read off ONE evaluation, whose own
         #                   noise is about +-0.06 at n_eval_episodes = 50.
-        #   "aulc"          area under the learning curve: the mean of the
-        #                   eval success rates over the whole run. Rewards
-        #                   learning FAST and STAYING there, where a final
-        #                   score cannot tell a policy that solved the task at
-        #                   iteration 50 from one that solved it at 450.
+        #
+        # BOTH ARE READ OFF THE RUN'S LAST EVALUATION, which is the policy that
+        # was checkpointed -- so the number the study ranks on and the weights
+        # on disk are the same thing. There used to be a third, "aulc", the
+        # mean of the success_rate curve over the whole run, offered as a way
+        # to reward learning FAST rather than merely ending well. It is gone:
+        # a mean over the curve does not depend on the ORDER of its points, so
+        # a run scoring 1, 1, 0 at its report iterations tied with one scoring
+        # 0, 1, 1 -- and only the second one still works at the end. Since the
+        # checkpoint kept is the last iteration's, aulc could crown a trial
+        # whose saved weights had already collapsed. Speed of learning is
+        # visible in the curve plots, which is where it belongs.
+        #
+        # FIELD 2, the center over seeds:
+        #   "mean"          the plain average. Moved a full third by one dead
+        #                   seed out of three.
+        #   "median"        the TYPICAL seed. Unmoved by that dead seed, which
+        #                   is either exactly what you want or exactly what you
+        #                   do not -- see below.
+        #
+        # FIELD 3, the spread over seeds, subtracted:
+        #   "minus-std"     penalise the standard deviation across seeds.
+        #   "minus-iqr"     penalise the interquartile range instead, the
+        #                   robust partner of the median. With three seeds it
+        #                   is an interpolation between two of them, so read it
+        #                   as "a spread", not as a quantile estimate.
+        #   "None"          no penalty: rank on the center alone.
+        #
+        # WHICH PAIR TO USE IS A REAL DECISION, not a formatting preference:
+        #
+        #   return_mean_minus-std          "works on EVERY seed" -- one failure
+        #                                  is punished twice, once through the
+        #                                  mean and once through the std
+        #   success-rate_median_minus-iqr  "works on MOST seeds" -- a single
+        #                                  dead seed of three moves neither term
+        #   success-rate_median_None       "the typical seed solves it", with no
+        #                                  reproducibility term at all
+        #
+        # Examples, all valid: return_mean_minus-std, success-rate_median_None,
+        # return_mean_median_None, success-rate_mean_minus-iqr. Dashes and
+        # underscores are interchangeable; the trailing two fields may be
+        # omitted and default to mean / no penalty. A typo raises rather than
+        # falling back -- it would otherwise cost a whole study.
 
-        self.hpo_aggregation = "mean_minus_std"
-        #   "mean"            the plain average over seeds.
-        #   "mean_minus_std"  average MINUS the spread ACROSS SEEDS. Prefers a
-        #                     config that works every time over one that scores
-        #                     high on average by working brilliantly on one
-        #                     seed and failing on another -- which, on a task
-        #                     this bimodal, is a real and common way to win a
-        #                     search by luck.
+        self.hpo_lambda = 1.0  # THE LAMBDA in  score = center - lambda * spread,
+        #   where both terms are taken ACROSS SEEDS. Read by
+        #   helper.aggregate_scores, and ignored entirely when the objective
+        #   ends in None -- there is no penalty term to weight in that case.
         #
-        self.hpo_lambda = 1.0  # THE LAMBDA in  score = mean - lambda * std,
-        #   where both the mean and the std are taken ACROSS SEEDS. Read by
-        #   helper.aggregate_scores, and ignored entirely when hpo_aggregation
-        #   is "mean" -- there is no penalty term to weight in that case.
-        #
-        #       lambda = 0.0   identical to hpo_aggregation = "mean"
+        #       lambda = 0.0   identical to a "_None" objective
         #       lambda = 0.5   spread as a tiebreak
         #       lambda = 1.0   the strict reading of "mean minus std"
         #
@@ -288,6 +323,10 @@ class Config(Helper):
         #
         #       [0, x, 0]  ->  mean x/3,  std x*sqrt(2)/3  ->  -0.138 x
         #       [0, 0, 0]  ->  mean 0,    std 0            ->   0
+        #
+        #   minus-iqr does not escape this: [0, x, 0] has median 0 and IQR x/2,
+        #   so it scores -x/2, which is worse still. Only "_None" avoids it
+        #   entirely -- at the cost of not penalising spread at all.
         #
         #   That is measured, not hypothetical -- an early trial here scored
         #   -0.0118 on [0.0, 0.0855, 0.0] while a dead trial scored 0.0. Early
@@ -400,6 +439,9 @@ class Config(Helper):
             # Adam decay, log over a wide range because the honest answer here
             # is often "none" and 1e-8 is how the search says that
             {"type": "float", "name": "wd", "low": 1e-8, "high": 1e-2, "log": True},
+            # Gradient clipping norm. Rescales the gradient if it exceeds this.
+            # Log scale because 0.1 vs 1.0 is the interesting question.
+            {"type": "float", "name": "max_grad_norm", "low": 0.1, "high": 2.0, "log": True},
         ]
 
         # ----- the encoder, filled by the subclass -----------------------
@@ -421,14 +463,13 @@ class Config(Helper):
         # RUNS of one encoder is not, and there are three kinds of run:
         #
         #     pretrained_model_GRU/
-        #         ppo_GRU_<env>.pth      the study's final model (hpo_ppo.final)
-        #         final_GRU_<env>.json   what that retrain scored
         #         hpo/                   the search itself
         #             hpo_csv_GRU_<env>.csv    every trial, exported each trial
         #             hpo_db_GRU_<env>.db      the study, so it can resume
         #             hpo_sampler_GRU_<env>.pkl the TPE state, likewise
-        #             trial_0/  trial_1/  ...  one checkpoint per trial
-        #             best_trial/              a copy of the winner's
+        #             trial_0/  trial_1/  ...  one checkpoint per seed, per trial
+        #             best_trial/              a copy of the winner's, plus
+        #                                      final_GRU_<env>.json -- the result
         #         no_hpo/                config_no_hpo.py's hand-picked run
         #
         # Relative, like logs/, so everything lands under the repo root --

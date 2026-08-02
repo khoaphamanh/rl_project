@@ -37,7 +37,10 @@ from config.config_no_hpo import ConfigNoHPO, FEATURE_EXTRACTOR
 
 
 def run_one(model_name, seed):
-    """One split: train this encoder from this seed. Returns its scores."""
+    """One split: train this encoder from this seed. Returns its scores.
+
+    Reports the finished policy TWICE -- sampled and argmax -- see below.
+    """
     # a fresh config per run. PPOAgent copies every value out of it in
     # __init__, and train() writes the resolved mini_batch_size back into it,
     # so sharing one across seeds would carry state between runs.
@@ -57,25 +60,43 @@ def run_one(model_name, seed):
     try:
         history = agent.train_agent(logger=logger)
 
-        # the clean final number: argmax instead of sampling, so it is fully
-        # reproducible. Early in training this deadlocks -- at the END of a
-        # run it is the honest score.
+        # ---- the two FINAL blocks ------------------------------------
         #
-        # A SECOND EVALUATION ON PURPOSE, unlike hpo_ppo.run_split. The curve
-        # below was measured in whatever mode config.eval_deterministic names
-        # (sampled by default); this one is argmax, which is a different
-        # question about the same weights. The study path deliberately does
-        # not do this -- it scores the last curve entry, so the number it
-        # ranks on is one that appears in its own log.
-        final = agent.evaluate(deterministic=True)
+        # THE SAME WEIGHTS, MEASURED TWO WAYS, and both are reported because
+        # they routinely disagree -- a policy can solve every eval maze when
+        # sampled and none of them under argmax, which is a greedy deadlock
+        # (one action repeated into the time limit) and a real property of the
+        # policy, not a measurement error.
+        #
+        #   NON-DETERMINISTIC  actions drawn from pi, the way training and
+        #                      every HPO trial measure. This is NOT re-measured:
+        #                      it is the last entry of the run's own curve, so
+        #                      the number printed here is one that appears in
+        #                      the table above. Re-running a sampled evaluation
+        #                      would give a different answer for identical
+        #                      weights, and then the two would quietly disagree.
+        #   DETERMINISTIC      argmax. Fully reproducible -- fixed mazes AND no
+        #                      action sampling -- which is what a results table
+        #                      wants. Early in training it deadlocks; at the END
+        #                      of a run it is an honest second view.
+        #
+        # ONE evaluate() call either way: whichever mode the curve was NOT
+        # measured in is the one measured here. With the default
+        # (eval_deterministic=False) the curve gives sampled and this adds
+        # argmax; flip the config and the roles swap.
+        last = agent.eval_history[-1]
+        fresh = agent.evaluate(deterministic=not config.eval_deterministic)
+        if config.eval_deterministic:
+            argmax, sampled = last, fresh
+        else:
+            sampled, argmax = last, fresh
 
         # the learning CURVE, one entry per report iteration -- 0, 100, 200,
         # 300, 400, 499 at n_iterations=500 and n_iterations_report=100.
-        # Index 0 is dropped from the aulc because it is the untrained policy,
-        # the same floor for every run.
-        curve = [c["success_rate"] for c in agent.eval_history]
-        aulc = float(np.mean(curve[1:] or curve))
-
+        # Printed in full rather than summarised into a single number: the
+        # SHAPE is the information, and any average over it throws away the
+        # order of the points -- 1, 1, 0 and 0, 1, 1 have the same mean and are
+        # not the same run.
         logger.info("")
         logger.info(f"ran {len(history)} iterations")
         logger.info(f"{'iter':>7} {'success':>9} {'timeout':>9} {'return':>9}")
@@ -84,18 +105,41 @@ def run_one(model_name, seed):
                 f"{c['iteration']:>7} {c['success_rate']:>9.3f} "
                 f"{c['timeout_rate']:>9.3f} {c['return_mean']:>9.3f}"
             )
-        logger.info("")
-        logger.info("FINAL (deterministic)")
-        logger.info(f"  success_rate  {final['success_rate']:.3f}")
-        logger.info(f"  timeout_rate  {final['timeout_rate']:.3f}")
-        logger.info(
-            f"  return_mean   {final['return_mean']:.3f} "
-            f"+- {final['return_std']:.3f}"
-        )
-        logger.info(f"  length_mean   {final['length_mean']:.1f}")
-        logger.info(f"  aulc          {aulc:.3f}  over {len(curve)} evaluations")
 
-        return {"seed": seed, "aulc": aulc, "success_rate": final["success_rate"]}
+        def report(title, evaluation, note):
+            logger.info("")
+            logger.info(f"FINAL ({title})   {note}")
+            logger.info(f"  success_rate  {evaluation['success_rate']:.3f}")
+            logger.info(f"  timeout_rate  {evaluation['timeout_rate']:.3f}")
+            logger.info(
+                f"  return_mean   {evaluation['return_mean']:.3f} "
+                f"+- {evaluation['return_std']:.3f}"
+            )
+            logger.info(f"  length_mean   {evaluation['length_mean']:.1f}")
+
+        report(
+            "non-deterministic",
+            sampled,
+            f"iteration {last['iteration']}, straight off the curve above"
+            if not config.eval_deterministic
+            else "re-evaluated, sampled from pi",
+        )
+        report(
+            "deterministic",
+            argmax,
+            "re-evaluated, argmax"
+            if not config.eval_deterministic
+            else f"iteration {last['iteration']}, straight off the curve above",
+        )
+
+        return {
+            "seed": seed,
+            # BOTH, and named for how they were taken. "success_rate" alone
+            # would have to mean one of them, and which one is exactly the
+            # thing worth not guessing about.
+            "success_sampled": sampled["success_rate"],
+            "success_argmax": argmax["success_rate"],
+        }
     finally:
         # the W envs are released even if the run is interrupted with ctrl-c
         agent.close()
@@ -134,15 +178,24 @@ def main():
     # over SEEDS, which is the real uncertainty about this config; the spread
     # over the eval episodes inside one run is not.
     print(f"\n{args.model}  over {len(results)} seeds")
-    print(f"{'seed':>8} {'aulc':>8} {'success':>9}")
+    print(f"{'seed':>8} {'sampled':>9} {'argmax':>9}")
     for r in results:
-        print(f"{r['seed']:>8} {r['aulc']:>8.3f} {r['success_rate']:>9.3f}")
+        print(
+            f"{r['seed']:>8} {r['success_sampled']:>9.3f} "
+            f"{r['success_argmax']:>9.3f}"
+        )
 
-    for key in ("aulc", "success_rate"):
+    # median and IQR beside mean and std, because the same seeds feed both and
+    # they answer different questions -- "the average run" against "the typical
+    # run". On a bimodal task one dead seed of three moves the mean by a third
+    # and the median not at all, and seeing the gap is the point. These are the
+    # same two summaries config.hpo_objective chooses between for a study.
+    for key in ("success_sampled", "success_argmax"):
         vals = [r[key] for r in results]
         print(
-            f"{key:>12}  mean {np.mean(vals):.3f}  std {np.std(vals):.3f}  "
-            f"median {np.median(vals):.3f}"
+            f"{key:>16}  mean {np.mean(vals):.3f}  std {np.std(vals):.3f}  "
+            f"median {np.median(vals):.3f}  "
+            f"iqr {np.percentile(vals, 75) - np.percentile(vals, 25):.3f}"
         )
 
 

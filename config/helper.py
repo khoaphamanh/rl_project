@@ -61,6 +61,133 @@ import minigrid  # noqa: F401
 from models.feature_extractor import MLP, LSTM, GRU, Transformer
 
 
+# ----- what a study maximizes, as ONE string ---------------------------------
+#
+# config.hpo_objective is  <metric>_<center>_<spread>  -- three fields:
+#
+#     return_mean_minus-std           mean over seeds, minus their std
+#     success-rate_median_minus-iqr   median over seeds, minus their IQR
+#     success-rate_median_None        the plain median, nothing subtracted
+#
+# THE METRIC IS ONE NUMBER PER TRAINING RUN, i.e. per seed. The CENTER and the
+# SPREAD say how the len(seed_list) of those become the single number optuna
+# compares, and BOTH ARE TAKEN ACROSS SEEDS -- never across the eval episodes
+# inside one run. That distinction is the reason this is spelled out rather
+# than left to a "std" somewhere: the within-run spread of a bimodal return is
+# pinned at about 0.9*sqrt(p(1-p)), a function of the success rate itself, so
+# subtracting it would score a policy that works 20% of the time BELOW one that
+# never works at all. The across-seed spread is 0 for anything that behaves the
+# same way every time, whatever its score, which is the property that makes it
+# worth penalising.
+#
+# ONE SETTING RATHER THAN TWO. This used to be hpo_objective plus a separate
+# hpo_aggregation, which could disagree with each other in a log ("return_mean"
+# next to "mean_minus_std", and nothing in either saying they belonged to one
+# score). One string cannot be half-updated.
+# BOTH ARE KEYS OF AN eval_history ENTRY, which is what lets the same name be
+# the thing the study ranks on AND the y axis of the learning-curve plots.
+#
+# THERE WAS A THIRD, "aulc" -- the mean of the success_rate curve over the whole
+# run, meant to reward learning fast rather than merely ending well. It is gone
+# because a mean over the curve is PERMUTATION-INVARIANT: a run that scored
+# 1, 1, 0 at its three report iterations gets exactly the same aulc as one that
+# scored 0, 1, 1, and those are not the same run. The second learned and held;
+# the first learned and then collapsed. Worse, the checkpoint kept is the LAST
+# iteration's, so the winning run of that pair would have been the one whose
+# saved weights no longer solve the task -- the score and the file on disk would
+# have described different policies. Ordering is exactly what "learned fast"
+# means, and an average discards it.
+_HPO_METRICS = ("return_mean", "success_rate")
+
+# what the metric field may be written as. "return" alone is accepted because
+# return_mean_minus-std parses its "mean" as the CENTER -- and both readings of
+# that string ("metric return, centred by the mean" and "metric return_mean")
+# mean the same thing, so neither has to win.
+_HPO_METRIC_ALIASES = {
+    "return": "return_mean",
+    "success": "success_rate",
+    "success_rate": "success_rate",
+    "return_mean": "return_mean",
+}
+
+_HPO_CENTERS = ("mean", "median")
+
+# spread -> the penalty subtracted, weighted by config.hpo_lambda. None means
+# no penalty at all, which is what "None" in the string spells.
+_HPO_SPREADS = ("std", "iqr", None)
+
+
+def parse_hpo_objective(objective):
+    """"success-rate_median_minus-iqr" -> ("success_rate", "median", "iqr").
+
+    Returns (metric, center, spread). spread is None for "no penalty".
+
+    PARSED FROM THE RIGHT, because the metric is the only field that can
+    contain an underscore -- return_mean is one name, not two. Dashes and
+    underscores are interchangeable, so success-rate and success_rate are the
+    same field, and the dashes exist only so that a reader can see where one
+    field stops:
+
+        return_mean_minus-std          -> return_mean,  mean,   std
+        success-rate_median_minus-iqr  -> success_rate, median, iqr
+        success-rate_median_None       -> success_rate, median, None
+
+    BOTH TRAILING FIELDS ARE OPTIONAL and default to mean / None, so the old
+    one-field spellings still parse: "return_mean" is the plain mean over
+    seeds. Note that a bare "return_mean" therefore no longer subtracts a std
+    -- write return_mean_minus-std for that, which is what config.py now says.
+
+    Raises ValueError on an unknown field rather than falling back to a
+    default: a typo here would otherwise run a whole study -- hours of
+    training -- under an objective nobody chose, and the log would faithfully
+    report the objective that was asked for.
+    """
+    text = str(objective).strip().lower().replace("-", "_")
+    fields = [field for field in text.split("_") if field]
+    if not fields:
+        raise ValueError(
+            "hpo_objective is empty. Write it as <metric>_<center>_<spread>, "
+            "e.g. return_mean_minus-std, success-rate_median_minus-iqr or "
+            "success-rate_median_None."
+        )
+
+    original = list(fields)
+
+    # ---- the spread, last ------------------------------------------------
+    spread = None
+    if fields[-2:] == ["minus", "std"]:
+        spread, fields = "std", fields[:-2]
+    elif fields[-2:] == ["minus", "iqr"]:
+        spread, fields = "iqr", fields[:-2]
+    elif fields[-1] in ("none", "null"):
+        fields = fields[:-1]
+    elif fields[-1] == "minus" or (len(fields) > 1 and fields[-2] == "minus"):
+        # "..._minus" alone, or "..._minus_something-else"
+        raise ValueError(
+            f"hpo_objective {objective!r}: {'_'.join(original[-2:])!r} is not a "
+            f"spread. Use minus-std, minus-iqr or None."
+        )
+
+    # ---- the center, next-to-last ---------------------------------------
+    center = "mean"
+    if fields and fields[-1] in _HPO_CENTERS:
+        center, fields = fields[-1], fields[:-1]
+
+    # ---- everything left is the metric ----------------------------------
+    metric = "_".join(fields)
+    metric = _HPO_METRIC_ALIASES.get(metric, metric)
+    if metric not in _HPO_METRICS:
+        raise ValueError(
+            f"hpo_objective {objective!r} names the metric {metric or '(nothing)'!r}, "
+            f"which is not one of {list(_HPO_METRICS)}. The format is "
+            f"<metric>_<center>_<spread>, where <center> is one of "
+            f"{list(_HPO_CENTERS)} and <spread> is one of minus-std, minus-iqr "
+            f"or None -- e.g. return_mean_minus-std."
+        )
+
+    return metric, center, spread
+
+
 class Helper:
     """Builders and small utilities shared by anything that reads the config."""
 
@@ -623,6 +750,10 @@ class Helper:
         train_agent's eval_history (a list of dicts of floats), which is how a
         checkpoint carries its own learning curve. It is NOT enough for
         arbitrary objects -- numpy scalars included, so cast with float().
+
+        "params" makes the file SELF-DESCRIBING, which is what lets anything
+        reload it without being told which trial it came from. See
+        searched_params() for why that is not optional.
         """
         path = self.build_model_path()
 
@@ -633,6 +764,7 @@ class Helper:
             "input_size": self.input_size,
             "name_env": self.name_env,
             "force_cue_visible": self.force_cue_visible,
+            "params": self.searched_params(),
         }
         if optimizer is not None:
             checkpoint["optimizer"] = optimizer.state_dict()
@@ -679,7 +811,20 @@ class Helper:
         if isinstance(checkpoint, dict) and "model" in checkpoint:
             state = checkpoint["model"]
 
-            for key in ("feature_extractor", "hidden_size", "input_size", "name_env"):
+            # force_cue_visible IS checked, even though it changes no tensor
+            # shape and so would never raise on its own. It changes what the
+            # agent could SEE: a policy trained with the cue forced into view
+            # every episode, watched on an env where it is visible in one
+            # episode in eight, is being scored on a task it never played.
+            # That is the failure this guard exists to make loud, and it is
+            # the one case of it that a shape check cannot notice.
+            for key in (
+                "feature_extractor",
+                "hidden_size",
+                "input_size",
+                "name_env",
+                "force_cue_visible",
+            ):
                 if key in checkpoint and getattr(self, key) != checkpoint[key]:
                     raise ValueError(
                         f"{path} was trained with {key}={checkpoint[key]!r}, but "
@@ -735,56 +880,122 @@ class Helper:
 
         return params
 
+    # ----- the score: hpo_objective, taken apart -------------------------
+    #
+    # Properties, all four derived from the one string, so there is no second
+    # place for any of this to be set and nothing to keep in sync. See
+    # parse_hpo_objective above for the format.
+    @property
+    def hpo_metric(self):
+        """The PER-SEED key: "return_mean" or "success_rate".
+
+        This is the one that gets looked up in a run's result dict, so it has
+        to be a real key of what hpo_ppo.run_split returns -- which is what
+        parse_hpo_objective checks, at config-build time rather than three
+        hours into a study.
+
+        IT IS ALSO A KEY OF AN eval_history ENTRY, which is what lets the
+        learning-curve plots default their y axis to it: the study ranks on the
+        last point of the very line they draw. That used not to hold -- "aulc"
+        was a summary of the whole curve rather than a point on it, and needed
+        a separate hpo_curve_metric to say what to plot instead. See
+        _HPO_METRICS for why it is gone.
+        """
+        return parse_hpo_objective(self.hpo_objective)[0]
+
+    @property
+    def hpo_center(self):
+        """"mean" or "median" -- how the per-seed metrics are centred."""
+        return parse_hpo_objective(self.hpo_objective)[1]
+
+    @property
+    def hpo_spread(self):
+        """"std", "iqr", or None -- what is subtracted from the center."""
+        return parse_hpo_objective(self.hpo_objective)[2]
+
+    @property
+    def hpo_aggregation(self):
+        """"median_minus-iqr" -- the two aggregation fields, back as one string.
+
+        Read-only and DERIVED, where it used to be a setting of its own. It is
+        kept because the json reports and the best_params.json record it as a
+        field, and because "median_minus-iqr" is more readable in a table than
+        re-deriving it from the objective every time it is printed.
+        """
+        _, center, spread = parse_hpo_objective(self.hpo_objective)
+        return center if spread is None else f"{center}_minus-{spread}"
+
     @property
     def score_name(self):
-        """"mean_minus_std(return_mean)" -- what the study actually maximizes.
+        """"mean_minus_1std(return_mean)" -- what the study actually maximizes.
 
         Spelled out wherever a value is printed, because "0.42" alone does not
-        say whether the across-seed spread has already been subtracted from it.
+        say whether the across-seed spread has already been subtracted from it,
+        nor whether the number is a mean or a median.
         """
-        rule = getattr(self, "hpo_aggregation", "mean")
-        if rule == "mean_minus_std":
-            weight = getattr(self, "hpo_lambda", 1.0)
-            return f"mean_minus_{weight:g}std({self.hpo_objective})"
-        return f"{rule}({self.hpo_objective})"
+        metric, center, spread = parse_hpo_objective(self.hpo_objective)
+        if spread is None:
+            return f"{center}({metric})"
+        weight = getattr(self, "hpo_lambda", 1.0)
+        return f"{center}_minus_{weight:g}{spread}({metric})"
 
     def aggregate_scores(self, values):
         """The per-seed metrics -> the one number the study maximizes.
 
-        Which rule is used is config.hpo_aggregation:
+        Both halves come from config.hpo_objective:
 
-            "mean"            plain average over seeds
-            "mean_minus_std"  average minus the spread ACROSS SEEDS
+            <center>   mean or median of the per-seed values
+            <spread>   std, iqr or nothing, subtracted with weight hpo_lambda
 
-        THE STD HERE IS OVER SEEDS. It is the run-to-run spread -- "does this
-        config work every time, or only sometimes?" -- and NOT the spread over
-        the eval episodes inside one run, which is a different quantity that
-        this function never sees. evaluate() reports that one as return_std,
-        and it must not be substituted here: for a bimodal return it is a
-        function of the mean itself, so subtracting it would score a policy
-        that succeeds 20% of the time BELOW one that never succeeds at all.
+            score = center(values) - hpo_lambda * spread(values)
 
-        ddof=0, so a single seed gives std 0 rather than nan. That matters for
-        pruning, where this is called on a running list that starts at length
-        one: the first report is then simply the raw metric. Every trial is
-        equally optimistic at that step, so the comparison stays fair.
+        THE SPREAD HERE IS OVER SEEDS. It is the run-to-run variation -- "does
+        this config work every time, or only sometimes?" -- and NOT the spread
+        over the eval episodes inside one run, which is a different quantity
+        that this function never sees. evaluate() reports that one as
+        return_std, and it must not be substituted here: for a bimodal return
+        it is a function of the mean itself, so subtracting it would score a
+        policy that succeeds 20% of the time BELOW one that never succeeds.
 
-        Returns a float. Raises on an unknown rule rather than silently
-        falling back to the mean -- a typo in hpo_aggregation would otherwise
-        run a whole study under an objective nobody chose.
+        MEDIAN + IQR IS THE ROBUST PAIR, and on these tasks that is not a
+        stylistic choice. The outcome is bimodal -- a seed either finds the
+        reward or never does -- so with seed_list = [0, 26, 98] one dead seed
+        moves the mean by a third of the score while the median does not move
+        at all. Which behaviour you want is a real decision: mean_minus-std
+        asks for a config that works on EVERY seed, median_minus-iqr asks for
+        one that works on MOST of them.
+
+        WITH THREE SEEDS THE IQR IS NOT A QUANTILE ESTIMATE. numpy interpolates
+        it between two of the three values, so for [0, 0, x] it is x/2 and for
+        [0, x, x] it is x/2 as well -- read it as "a spread", the same way the
+        median+IQR plot is read. It also inherits the sign problem the
+        hpo_lambda comment in config.py describes: at lambda = 1 a config that
+        works on one seed out of three scores BELOW one that never works.
+
+        ddof=0 for the std, so a single value gives 0 rather than nan; the IQR
+        of a single value is 0 for the same reason. That matters for pruning,
+        where this is called on a running list that starts at length one: the
+        first report is then simply the raw metric, and every trial is equally
+        optimistic at that step, so the comparison stays fair.
+
+        Returns a float.
         """
         values = np.asarray(values, dtype=float)
-        rule = getattr(self, "hpo_aggregation", "mean")
+        _, center, spread = parse_hpo_objective(self.hpo_objective)
 
-        if rule == "mean":
-            return float(values.mean())
-        if rule == "mean_minus_std":
-            weight = getattr(self, "hpo_lambda", 1.0)
-            return float(values.mean() - weight * values.std())
+        score = float(np.median(values)) if center == "median" else float(values.mean())
 
-        raise ValueError(
-            f"unknown hpo_aggregation {rule!r}. Use 'mean' or 'mean_minus_std'."
-        )
+        if spread is None:
+            return score
+
+        if spread == "iqr":
+            penalty = float(
+                np.percentile(values, 75) - np.percentile(values, 25)
+            )
+        else:
+            penalty = float(values.std())  # ddof=0 -- see above
+
+        return score - getattr(self, "hpo_lambda", 1.0) * penalty
 
     def apply_params(self, params):
         """Write a trial's draw onto this config. Returns self, for chaining.
@@ -814,6 +1025,43 @@ class Helper:
 
         return self
 
+    def searched_params(self):
+        """The CURRENT value of every name in search_space. The inverse of apply_params.
+
+        apply_params writes a trial's draw onto the config; this reads it back
+        off, so save_model can put it in the checkpoint and anything reloading
+        that checkpoint can put it back. Round-trips:
+
+            config.apply_params(trial.params)
+            ... train, save ...
+            config.apply_params(checkpoint["params"])   # the same architecture
+
+        WHY THE CHECKPOINT NEEDS THIS AT ALL. search_space tunes the
+        ARCHITECTURE, not just the optimiser -- hidden_size for all four
+        encoders, n_layers_mlp for the MLP, d_model / n_heads /
+        n_layers_transformer / d_ff_mult for the transformer. A config built
+        fresh from make_config() carries the DEFAULTS, so building a model from
+        it and loading trial 7's weights into that model is a shape mismatch.
+        load_model catches the hidden_size case (it is in the guard tuple) but
+        n_layers_mlp is not in any checkpoint field at all, and a 2-layer file
+        loaded into a 3-layer model is a raw load_state_dict traceback.
+
+        DERIVED FROM search_space rather than stored when apply_params runs, so
+        there is nothing to keep in sync: whatever the study is searching over
+        is exactly what gets written. Empty under ConfigNoHPO, whose
+        search_space is deliberately [] -- and correctly so, because that
+        config's values are hand-written constants, so rebuilding it already
+        reproduces the architecture its checkpoints were trained with.
+
+        Everything optuna can draw (int, float, categorical) survives
+        torch.load(weights_only=True), which is what save_model needs.
+        """
+        return {
+            entry["name"]: getattr(self, entry["name"])
+            for entry in getattr(self, "search_space", [])
+            if hasattr(self, entry["name"])
+        }
+
     # ----- where a study writes -------------------------------------------
     def build_hpo_dir(self):
         """Make hpo/ and hand it back."""
@@ -835,30 +1083,22 @@ class Helper:
 
     @property
     def dir_hpo_best_trial(self):
-        """hpo/best_trial/ -- a copy of whichever trial won."""
-        return os.path.join(self.dir_hpo, "best_trial")
+        """hpo/best_trial/ -- a copy of whichever trial won, and THE RESULT.
 
-    @property
-    def dir_hpo_final(self):
-        """hpo/final/ -- everything the RETRAIN produces, in one place.
+        One set of runs and nothing else, the same shape as trial_<n>/, which
+        is what lets one loader and one plotter read either without being told
+        which it has -- see load_eval_histories.
 
-        final() writes one checkpoint per seed, a report json and four plot
-        files, which is eight or nine files for a three-seed list. Left in
-        hpo/ they would sit among the study's own csv, db and pkl and among
-        thirty trial_<n>/ directories, and "which of these is the result?"
-        would be answered by reading filenames.
-
-        A DIRECTORY INSTEAD OF A PREFIX, so hpo/ has the same shape at every
-        level: trial_<n>/, best_trial/ and final/ each hold one set of runs
-        and nothing else, and the same loader reads all three. That is what
-        lets plot_hpo() treat them identically -- see load_eval_histories.
-
-        NOT the same thing as best_trial/. That one is a copy of the winning
-        SEARCH trial, weights included; this one is the retrain at those
-        params, which is the number that goes in the writeup. See
-        hpo_ppo.final on why the two differ.
+        THERE IS NO SEPARATE final/ ANY MORE. It used to hold a fresh retrain
+        at the winning params; that retrain trained the same encoder, on the
+        same env, from the same seeds, at the same hyperparameters as the
+        trial already in here, so it cost three full training runs to produce
+        another sample of a run that had already been made. final() now reads
+        THESE checkpoints instead and writes its report json beside them. See
+        hpo_ppo.final for what is lost by that (the retrain was also the one
+        unbiased estimate of the winner's score) and why it is worth it.
         """
-        return os.path.join(self.dir_hpo, "final")
+        return os.path.join(self.dir_hpo, "best_trial")
 
     def build_hpo_trial_dir(self, number):
         """dir_hpo_trial(n), created."""
@@ -871,10 +1111,91 @@ class Helper:
         os.makedirs(self.dir_hpo_best_trial, exist_ok=True)
         return self.dir_hpo_best_trial
 
-    def build_hpo_final_dir(self):
-        """dir_hpo_final, created."""
-        os.makedirs(self.dir_hpo_final, exist_ok=True)
-        return self.dir_hpo_final
+    # ----- pointing a fresh config at ONE saved run ------------------------
+    def select_run(self, trial=None, seed_index=0):
+        """Aim this config at one checkpoint on disk. Returns its path.
+
+        The reader's counterpart to what the trainer does implicitly. A run is
+        identified by exactly two things once the encoder and env are fixed:
+
+            WHICH RUN     the directory   -> dir_pretrained_model
+            WHICH SEED    the filename    -> self.seed, via build_model_name
+
+        so this sets those two attributes and hands back path_model. Nothing
+        is created and nothing is read -- the file may not exist yet, and
+        load_model is what says so.
+
+            trial=None      leave dir_pretrained_model where the config put it.
+                            That is no_hpo/ under ConfigNoHPO and the encoder's
+                            top level otherwise -- i.e. "the run this config
+                            already describes", which is what watch.py wants
+                            when no study is involved.
+            trial="best"    hpo/best_trial/  the winning trial. THE RESULT.
+            trial="final"   the same directory. "final" was the retrain's name
+                            back when there was one; there is no separate
+                            retrain any more, and the accepted alias is what
+                            keeps an old command from failing on a directory
+                            that no longer exists. See dir_hpo_best_trial.
+            trial=7         hpo/trial_7/     one particular draw
+
+        seed_index INDEXES seed_list, it is not the seed itself. seed_list is
+        [0, 26, 98] for a study and whatever ConfigNoHPO says for a hand-picked
+        run, so 1 is a valid choice under one and out of range under the other
+        -- hence the explicit message rather than a bare IndexError from deep
+        inside a property.
+        """
+        if trial is not None:
+            if isinstance(trial, str) and trial.lower() in ("best", "final"):
+                self.dir_pretrained_model = self.dir_hpo_best_trial
+            else:
+                try:
+                    number = int(trial)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"trial={trial!r} is not 'final', 'best' or a trial number"
+                    ) from None
+                self.dir_pretrained_model = self.dir_hpo_trial(number)
+
+        if not 0 <= seed_index < len(self.seed_list):
+            raise IndexError(
+                f"seed index {seed_index} is out of range for seed_list="
+                f"{self.seed_list} ({len(self.seed_list)} seed"
+                f"{'' if len(self.seed_list) == 1 else 's'}, so the valid "
+                f"indices are 0..{len(self.seed_list) - 1}). The index is a "
+                f"position in that list, not the seed value."
+            )
+
+        # build_model_name reads self.seed and falls back to seed_list[0] when
+        # it is unset. Setting it here is what makes the filename name the seed
+        # asked for -- set_seed() is NOT called, because nothing is being
+        # trained and reseeding the process would only change what the viewer
+        # happens to sample.
+        self.seed = self.seed_list[seed_index]
+
+        return self.path_model
+
+    def checkpoint_params(self, path=None):
+        """The hyperparameters a checkpoint was TRAINED with. {} if it has none.
+
+        Opens the file for its "params" entry alone and applies nothing --
+        callers hand the result to apply_params, in that order, BEFORE building
+        the model. See searched_params for why this exists at all.
+
+        Missing key rather than error for anything written before save_model
+        started recording params, and for ConfigNoHPO, whose search_space is
+        empty by design. In both cases {} is right: apply_params({}) is a
+        no-op, which leaves the config's own values in place, which is exactly
+        what those files were trained with.
+        """
+        if path is None:
+            path = self.path_model
+        if not os.path.exists(path):
+            return {}
+
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(checkpoint, dict):
+            return {}
+        return dict(checkpoint.get("params") or {})
 
     def copy_best_trial(self, study, logger=None):
         """Copy the winning trial's files into best_trial/, and its params beside them.
@@ -925,7 +1246,8 @@ class Helper:
                 "feature_extractor": self.feature_extractor,
                 "name_env": self.name_env,
                 "objective": self.hpo_objective,
-                "aggregation": getattr(self, "hpo_aggregation", "mean"),
+                "metric": self.hpo_metric,
+                "aggregation": self.hpo_aggregation,
                 "score_name": self.score_name,
                 "direction": self.hpo_direction,
                 "best_trial": best.number,
@@ -994,9 +1316,8 @@ class Helper:
     # keeps the result in eval_history, which save_model puts INTO the
     # checkpoint. So every .pth in this project carries its own learning
     # curve, and a directory of them -- one per seed -- is a set of curves
-    # over the same x axis, ready to aggregate. trial_<n>/, best_trial/ and
-    # final/ are all exactly that, which is why one loader and one plotter
-    # cover all three.
+    # over the same x axis, ready to aggregate. trial_<n>/ and best_trial/ are
+    # both exactly that, which is why one loader and one plotter cover both.
     #
     # TWO FIGURES, NOT ONE, and deliberately not two bands on one axis. They
     # answer different questions and disagreeing is the interesting case:
@@ -1020,9 +1341,9 @@ class Helper:
         """Every checkpoint in `directory` -> {seed: eval_history}.
 
         Reads the curve straight out of the .pth files, so it works on any of
-        hpo/trial_<n>/, hpo/best_trial/ and hpo/final/ without being told
-        which it is looking at, and it works on a study that finished weeks
-        ago with no log file left.
+        hpo/trial_<n>/ and hpo/best_trial/ without being told which it is
+        looking at, and it works on a study that finished weeks ago with no
+        log file left.
 
         The seed comes from the FILENAME -- ppo_<seed>_<ENC>_<env>.pth, see
         build_model_name -- which is the whole reason the seed is in there.
@@ -1107,18 +1428,18 @@ class Helper:
     ):
         """Two figures from one directory of checkpoints. Returns the paths written.
 
-            hpo/final/curve_return_mean_mean_std.html   .svg
-            hpo/final/curve_return_mean_median_iqr.html .svg
+            hpo/best_trial/curve_return_mean_mean_std.html   .svg
+            hpo/best_trial/curve_return_mean_median_iqr.html .svg
 
-        directory  any of hpo/trial_<n>/, hpo/best_trial/, hpo/final/ -- see
+        directory  either of hpo/trial_<n>/ and hpo/best_trial/ -- see
                    load_eval_histories
-        metric     the y axis, defaulting to config.hpo_objective, so the
-                   plot shows the quantity the study was actually ranked on.
-                   Any key of an eval_history entry works: success_rate,
+        metric     the y axis, defaulting to config.hpo_metric, so the plot
+                   shows the quantity the study was actually ranked on. Any
+                   key of an eval_history entry works: success_rate,
                    return_mean, timeout_rate, length_mean.
         name       what to call this run in the title. Defaults to the
-                   directory's basename, which is already "trial_7",
-                   "best_trial" or "final".
+                   directory's basename, which is already "trial_7" or
+                   "best_trial".
 
         BOTH FORMATS, because they are for different readers. The .html keeps
         the hover and the legend, so the per-seed traces can be switched on
@@ -1141,7 +1462,7 @@ class Helper:
         say = logger.info if logger is not None else print
 
         if metric is None:
-            metric = self.hpo_objective
+            metric = self.hpo_metric
         if name is None:
             name = os.path.basename(os.path.normpath(directory))
 
@@ -1284,22 +1605,22 @@ class Helper:
         return f"rgba({r},{g},{b},{alpha})"
 
     def plot_hpo(self, metric=None, logger=None, include_trials=True):
-        """Plot every trial, the best trial and the final retrain. Returns the paths.
+        """Plot every trial and the best trial. Returns the paths.
 
-        Walks hpo/ and plots whichever of trial_<n>/, best_trial/ and final/
-        actually hold checkpoints, so it is safe to call on a study that is
-        half finished, on one whose trials were pruned, or before final() has
-        run. Re-running overwrites -- the plots are derived from the .pth
-        files and nothing about them is cumulative.
+        Walks hpo/ and plots whichever of trial_<n>/ and best_trial/ actually
+        hold checkpoints, so it is safe to call on a study that is half
+        finished or on one whose trials were pruned. Re-running overwrites --
+        the plots are derived from the .pth files and nothing about them is
+        cumulative.
 
         include_trials=False skips the thirty trial directories and does only
-        best_trial/ and final/, which is the fast version when the individual
-        trials are not what is being looked at.
+        best_trial/, which is the fast version when the individual trials are
+        not what is being looked at.
         """
         say = logger.info if logger is not None else print
 
         if metric is None:
-            metric = self.hpo_objective
+            metric = self.hpo_metric
 
         directories = []
         if include_trials and os.path.isdir(self.dir_hpo):
@@ -1315,7 +1636,7 @@ class Helper:
                 for entry in sorted(trials, key=lambda e: int(e.split("_")[1]))
             ]
 
-        directories += [self.dir_hpo_best_trial, self.dir_hpo_final]
+        directories.append(self.dir_hpo_best_trial)
 
         paths = []
         for directory in directories:
@@ -1605,6 +1926,22 @@ class Helper:
 
         if deterministic is None:
             deterministic = self.eval_deterministic
+
+        # ---- FIRST, the architecture the file was trained with -----------
+        # BEFORE build_env and before build_extractor, both of which read the
+        # config and would otherwise read the DEFAULTS. A tuned checkpoint was
+        # trained at drawn values -- hidden_size for every encoder, plus
+        # n_layers_mlp / d_model / n_heads / n_layers_transformer -- so a
+        # config built fresh from make_config() describes a different network
+        # than the one on disk. Skipping this gives a load_state_dict shape
+        # error at best; the layer-count mismatches are not covered by
+        # load_model's guard at all. A no_hpo checkpoint returns {} and this
+        # is a no-op. See checkpoint_params / searched_params.
+        if path_model is None:
+            path_model = self.path_model
+        params = self.checkpoint_params(path_model)
+        if params:
+            self.apply_params(params)
 
         # ---- the agent -------------------------------------------------
         # render_mode is what makes env.render() give back a picture. Same
