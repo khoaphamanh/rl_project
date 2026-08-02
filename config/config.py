@@ -95,7 +95,7 @@ class Config(Helper):
         #   what makes the ablation an ablation. See helper.StartInCueView.
 
         # sampling: W games played in parallel, T steps each per iteration
-        self.n_workers = 16  # W
+        self.n_workers = 256  # W
 
         # T = the env's OWN time limit, 5 * size^2 (245 on S7, 605 on S11),
         # read off the env instead of typed in. NOT a free choice.
@@ -441,7 +441,13 @@ class Config(Helper):
             {"type": "float", "name": "wd", "low": 1e-8, "high": 1e-2, "log": True},
             # Gradient clipping norm. Rescales the gradient if it exceeds this.
             # Log scale because 0.1 vs 1.0 is the interesting question.
-            {"type": "float", "name": "max_grad_norm", "low": 0.1, "high": 2.0, "log": True},
+            {
+                "type": "float",
+                "name": "max_grad_norm",
+                "low": 0.1,
+                "high": 2.0,
+                "log": True,
+            },
         ]
 
         # ----- the encoder, filled by the subclass -----------------------
