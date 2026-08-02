@@ -60,7 +60,6 @@ import minigrid  # noqa: F401
 
 from models.feature_extractor import MLP, LSTM, GRU, Transformer
 
-
 # ----- what a study maximizes, as ONE string ---------------------------------
 #
 # config.hpo_objective is  <metric>_<center>_<spread>  -- three fields:
@@ -118,7 +117,7 @@ _HPO_SPREADS = ("std", "iqr", None)
 
 
 def parse_hpo_objective(objective):
-    """"success-rate_median_minus-iqr" -> ("success_rate", "median", "iqr").
+    """ "success-rate_median_minus-iqr" -> ("success_rate", "median", "iqr").
 
     Returns (metric, center, spread). spread is None for "no penalty".
 
@@ -538,7 +537,9 @@ class Helper:
             self._free_memory()
             try:
                 if len(candidates) > 1:
-                    say(f"trying batch size {bs}  (candidate {i + 1}/{len(candidates)})")
+                    say(
+                        f"trying batch size {bs}  (candidate {i + 1}/{len(candidates)})"
+                    )
                 return bs, run_fn(bs)
             except (torch.cuda.OutOfMemoryError, RuntimeError) as error:
                 if not self._is_oom(error):
@@ -905,17 +906,17 @@ class Helper:
 
     @property
     def hpo_center(self):
-        """"mean" or "median" -- how the per-seed metrics are centred."""
+        """ "mean" or "median" -- how the per-seed metrics are centred."""
         return parse_hpo_objective(self.hpo_objective)[1]
 
     @property
     def hpo_spread(self):
-        """"std", "iqr", or None -- what is subtracted from the center."""
+        """ "std", "iqr", or None -- what is subtracted from the center."""
         return parse_hpo_objective(self.hpo_objective)[2]
 
     @property
     def hpo_aggregation(self):
-        """"median_minus-iqr" -- the two aggregation fields, back as one string.
+        """ "median_minus-iqr" -- the two aggregation fields, back as one string.
 
         Read-only and DERIVED, where it used to be a setting of its own. It is
         kept because the json reports and the best_params.json record it as a
@@ -927,7 +928,7 @@ class Helper:
 
     @property
     def score_name(self):
-        """"mean_minus_1std(return_mean)" -- what the study actually maximizes.
+        """ "mean_minus_1std(return_mean)" -- what the study actually maximizes.
 
         Spelled out wherever a value is printed, because "0.42" alone does not
         say whether the across-seed spread has already been subtracted from it,
@@ -989,9 +990,7 @@ class Helper:
             return score
 
         if spread == "iqr":
-            penalty = float(
-                np.percentile(values, 75) - np.percentile(values, 25)
-            )
+            penalty = float(np.percentile(values, 75) - np.percentile(values, 25))
         else:
             penalty = float(values.std())  # ddof=0 -- see above
 
@@ -1388,7 +1387,9 @@ class Helper:
         return dict(
             sorted(
                 histories.items(),
-                key=lambda kv: (1, str(kv[0])) if isinstance(kv[0], str) else (0, kv[0]),
+                key=lambda kv: (
+                    (1, str(kv[0])) if isinstance(kv[0], str) else (0, kv[0])
+                ),
             )
         )
 
@@ -1540,7 +1541,9 @@ class Helper:
                     line=dict(color=colour, width=2.5),
                     marker=dict(size=6),
                     name=centre_label,
-                    hovertemplate="iteration %{x}<br>" + metric + " %{y:.3f}<extra></extra>",
+                    hovertemplate="iteration %{x}<br>"
+                    + metric
+                    + " %{y:.3f}<extra></extra>",
                 )
             )
 
@@ -1765,13 +1768,14 @@ class Helper:
         logger.info(f"BEST  trial {best.number}   {self.score_name} {best.value}")
         for key, value in best.params.items():
             logger.info(f"    {key:<24}{value}")
-        # NOT the number to quote as the result. It is the maximum of n_trials
-        # noisy measurements, so it is biased upward by the selection itself
-        # (the winner's curse) -- the clean number is hpo_ppo.final(), which
-        # retrains at these params and scores that.
+        # THE MAXIMUM OF n_trials NOISY MEASUREMENTS, so it is biased upward by
+        # the selection itself -- the winner's curse. final() no longer
+        # retrains, so it reports THIS number rather than an independent
+        # estimate of it; the caveat travels with the value instead of being
+        # cancelled by a second sample. See HPOPPO.final.
         logger.info(
-            "  (this value is the max over trials and is biased upward; "
-            "final() retrains at these params for the number to report)"
+            "  (the max over trials, so biased upward by the selection itself; "
+            "final() reports these same runs and does not re-estimate it)"
         )
         self.print_separate_lines(logger)
 
@@ -2002,9 +2006,7 @@ class Helper:
             ep["probs"] = dist.probs[0, 0].cpu().numpy()
             ep["value"] = float(value[0, 0])
             ep["action"] = (
-                int(ep["probs"].argmax())
-                if deterministic
-                else int(dist.sample()[0, 0])
+                int(ep["probs"].argmax()) if deterministic else int(dist.sample()[0, 0])
             )
 
         def start(move=0, keep_trail=False):
@@ -2082,8 +2084,9 @@ class Helper:
                 # object and exactly 0 for the wrong one, so reward > 0 IS
                 # success. A truncation means it never reached either.
                 ep["outcome"] = (
-                    "SOLVED" if reward > 0 else "WRONG OBJECT"
-                    if terminated else "OUT OF TIME"
+                    "SOLVED"
+                    if reward > 0
+                    else "WRONG OBJECT" if terminated else "OUT OF TIME"
                 )
             else:
                 think()
@@ -2221,7 +2224,14 @@ class Helper:
             )
 
             buttons = _draw_viewer_sidebar(
-                screen, fonts, maze_px, win_h, self, ep, checkpoint, deterministic,
+                screen,
+                fonts,
+                maze_px,
+                win_h,
+                self,
+                ep,
+                checkpoint,
+                deterministic,
                 {
                     "paused": paused,
                     "auto_new": auto_new,
@@ -2352,9 +2362,7 @@ class SequenceDataset(Dataset):
     """
 
     def __init__(self, batch):
-        self.data = {
-            k: (v[0] if k in ("hxs", "cxs") else v) for k, v in batch.items()
-        }
+        self.data = {k: (v[0] if k in ("hxs", "cxs") else v) for k, v in batch.items()}
         self.n_seq = self.data["mask"].shape[0]
 
     def __len__(self):
@@ -2396,30 +2404,53 @@ _VIEW_BAD = (245, 100, 100)
 # still needs nothing but torch/gym; the numbers are in
 # minigrid.core.constants.OBJECT_TO_IDX and have not moved in years.
 _OBJ_NAME = {
-    0: "unseen", 1: "empty", 2: "wall", 3: "floor", 4: "door",
-    5: "key", 6: "ball", 7: "box", 8: "goal", 9: "lava", 10: "agent",
+    0: "unseen",
+    1: "empty",
+    2: "wall",
+    3: "floor",
+    4: "door",
+    5: "key",
+    6: "ball",
+    7: "box",
+    8: "goal",
+    9: "lava",
+    10: "agent",
 }
 _COLOR_NAME = {0: "red", 1: "green", 2: "blue", 3: "purple", 4: "yellow", 5: "grey"}
 
 # channel 1 -> rgb, for the objects that are drawn in their own colour
 _MG_RGB = [
-    (220, 50, 50), (50, 200, 50), (60, 120, 220),
-    (160, 50, 220), (240, 220, 0), (140, 140, 140),
+    (220, 50, 50),
+    (50, 200, 50),
+    (60, 120, 220),
+    (160, 50, 220),
+    (240, 220, 0),
+    (140, 140, 140),
 ]
 _COLOR_DRIVEN = {4, 5, 6, 7}  # door, key, ball, box take the colour channel
 
 # everything else has a fixed display colour
 _OBJ_RGB = {
-    0: (30, 30, 30), 1: (210, 210, 210), 2: (75, 85, 105),
-    3: (185, 175, 145), 8: (0, 200, 80), 9: (255, 90, 0), 10: (255, 50, 50),
+    0: (30, 30, 30),
+    1: (210, 210, 210),
+    2: (75, 85, 105),
+    3: (185, 175, 145),
+    8: (0, 200, 80),
+    9: (255, 90, 0),
+    10: (255, 50, 50),
 }
 _CELL_LABEL = {2: "W", 4: "D", 5: "K", 6: "O", 7: "[]", 8: "G", 9: "!"}
 
 # MiniGrid's Discrete(7). Only the first three matter on MemoryEnv, which is
 # itself worth seeing: a good policy puts almost no mass on the other four.
 _ACTION_NAME = {
-    0: "turn left", 1: "turn right", 2: "forward",
-    3: "pick up", 4: "drop", 5: "toggle", 6: "done",
+    0: "turn left",
+    1: "turn right",
+    2: "forward",
+    3: "pick up",
+    4: "drop",
+    5: "toggle",
+    6: "done",
 }
 _ACTION_USED = (0, 1, 2)  # the ones that do anything in this task
 
@@ -2478,7 +2509,9 @@ def _visible_objects(image):
 
             name = f"{_COLOR_NAME.get(color, '')} {_OBJ_NAME.get(obj, '?')}".strip()
             if obj == 4:
-                name += f" ({['open', 'closed', 'locked'][state] if state < 3 else '?'})"
+                name += (
+                    f" ({['open', 'closed', 'locked'][state] if state < 3 else '?'})"
+                )
             lines.append(f"{name} -- {where}")
 
     return lines or ["nothing but walls in view"]
@@ -2494,8 +2527,10 @@ def _draw_obs_grid(screen, pygame, image, ox, oy, font):
             obj, color, _ = image[col, row]
             rgb = _cell_rgb(obj, color)
             rect = pygame.Rect(
-                ox + col * _VIEW_CELL, oy + row * _VIEW_CELL,
-                _VIEW_CELL - 1, _VIEW_CELL - 1,
+                ox + col * _VIEW_CELL,
+                oy + row * _VIEW_CELL,
+                _VIEW_CELL - 1,
+                _VIEW_CELL - 1,
             )
             pygame.draw.rect(screen, rgb, rect)
 
@@ -2513,16 +2548,21 @@ def _draw_obs_grid(screen, pygame, image, ox, oy, font):
             if label:
                 ink = (20, 20, 20) if _lum(rgb) > 128 else (240, 240, 240)
                 surf = font.render(label, True, ink)
-                screen.blit(surf, (
-                    rect.x + (rect.w - surf.get_width()) // 2,
-                    rect.y + (rect.h - surf.get_height()) // 2,
-                ))
+                screen.blit(
+                    surf,
+                    (
+                        rect.x + (rect.w - surf.get_width()) // 2,
+                        rect.y + (rect.h - surf.get_height()) // 2,
+                    ),
+                )
 
     # the agent always faces "up" in its own view, so the arrow is fixed
     ax = ox + agent_col * _VIEW_CELL + _VIEW_CELL // 2
     ay = oy + agent_row * _VIEW_CELL - 2
     pygame.draw.polygon(screen, _VIEW_HEAD, [(ax, ay - 7), (ax - 5, ay), (ax + 5, ay)])
-    pygame.draw.rect(screen, (110, 110, 110), (ox, oy, n * _VIEW_CELL, n * _VIEW_CELL), 1)
+    pygame.draw.rect(
+        screen, (110, 110, 110), (ox, oy, n * _VIEW_CELL, n * _VIEW_CELL), 1
+    )
 
 
 def _draw_policy(screen, pygame, probs, chosen, x, y, width, font):
@@ -2536,15 +2576,18 @@ def _draw_policy(screen, pygame, probs, chosen, x, y, width, font):
         used = a in _ACTION_USED
         is_next = a == chosen
 
-        label = font.render(f"{_ACTION_NAME[a]:<10}", True,
-                            _VIEW_TEXT if used else (95, 95, 95))
+        label = font.render(
+            f"{_ACTION_NAME[a]:<10}", True, _VIEW_TEXT if used else (95, 95, 95)
+        )
         screen.blit(label, (x, y))
 
         bx = x + 78
         bw = width - 78 - 46
         pygame.draw.rect(screen, (45, 45, 45), (bx, y + 2, bw, 9))
         if p > 0.001:
-            fill = _VIEW_HEAD if is_next else ((120, 170, 220) if used else (80, 80, 80))
+            fill = (
+                _VIEW_HEAD if is_next else ((120, 170, 220) if used else (80, 80, 80))
+            )
             pygame.draw.rect(screen, fill, (bx, y + 2, max(1, int(bw * p)), 9))
 
         pct = font.render(f"{p:5.1%}", True, _VIEW_TEXT if is_next else _VIEW_DIM)
@@ -2566,10 +2609,13 @@ def _draw_button(screen, pygame, rect, label, font, mouse, accent, enabled=True)
         pygame.draw.rect(screen, (34, 34, 34), rect, border_radius=6)
         pygame.draw.rect(screen, (58, 58, 58), rect, 2, border_radius=6)
         surf = font.render(label, True, (78, 78, 78))
-        screen.blit(surf, (
-            rect.x + (rect.w - surf.get_width()) // 2,
-            rect.y + (rect.h - surf.get_height()) // 2,
-        ))
+        screen.blit(
+            surf,
+            (
+                rect.x + (rect.w - surf.get_width()) // 2,
+                rect.y + (rect.h - surf.get_height()) // 2,
+            ),
+        )
         return rect
 
     hot = rect.collidepoint(mouse)
@@ -2579,15 +2625,26 @@ def _draw_button(screen, pygame, rect, label, font, mouse, accent, enabled=True)
 
     ink = (15, 15, 15) if hot else (235, 235, 235)
     surf = font.render(label, True, ink)
-    screen.blit(surf, (
-        rect.x + (rect.w - surf.get_width()) // 2,
-        rect.y + (rect.h - surf.get_height()) // 2,
-    ))
+    screen.blit(
+        surf,
+        (
+            rect.x + (rect.w - surf.get_width()) // 2,
+            rect.y + (rect.h - surf.get_height()) // 2,
+        ),
+    )
     return rect
 
 
 def _draw_viewer_sidebar(
-    screen, fonts, maze_px, win_h, config, ep, checkpoint, deterministic, ui,
+    screen,
+    fonts,
+    maze_px,
+    win_h,
+    config,
+    ep,
+    checkpoint,
+    deterministic,
+    ui,
 ):
     """The whole right-hand panel. Returns {name: pygame.Rect} for every button.
 
@@ -2625,7 +2682,9 @@ def _draw_viewer_sidebar(
         y += 7
 
     # ---- what is loaded -------------------------------------------------
-    put(f"{config.feature_extractor.upper()}  on  {config.name_env}", "head", _VIEW_HEAD)
+    put(
+        f"{config.feature_extractor.upper()}  on  {config.name_env}", "head", _VIEW_HEAD
+    )
     trained = checkpoint.get("iteration")
     scored = checkpoint.get("eval_success_rate")
     if trained is not None or scored is not None:
@@ -2637,7 +2696,8 @@ def _draw_viewer_sidebar(
         put("checkpoint: " + "   ".join(bits), "tiny", _VIEW_DIM)
     put(
         f"actions: {'argmax (deterministic)' if deterministic else 'sampled from pi'}",
-        "tiny", _VIEW_DIM,
+        "tiny",
+        _VIEW_DIM,
     )
     rule()
 
@@ -2645,12 +2705,14 @@ def _draw_viewer_sidebar(
     put(
         f"eval maze {ep['index'] + 1} / {config.n_eval_episodes}"
         f"    seed {config.eval_seed + ep['index']}",
-        "body", _VIEW_TEXT,
+        "body",
+        _VIEW_TEXT,
     )
     put(
         f"step {ep['step']} / {ep['max_steps']}"
         f"    reward {ep['total_reward']:+.3f}",
-        "body", _VIEW_TEXT,
+        "body",
+        _VIEW_TEXT,
     )
 
     if ep["cue"]:
@@ -2658,7 +2720,9 @@ def _draw_viewer_sidebar(
         # at step 0, still on screen at step 40 when only its memory has it
         put(f"CUE AT STEP 0:  {ep['cue']}", "head", (150, 200, 255))
     if ep["done"]:
-        put(ep["outcome"], "big", _VIEW_GOOD if ep["outcome"] == "SOLVED" else _VIEW_BAD)
+        put(
+            ep["outcome"], "big", _VIEW_GOOD if ep["outcome"] == "SOLVED" else _VIEW_BAD
+        )
         if ui["auto_in"] is not None:
             put(f"next maze in {ui['auto_in']:.1f}s", "tiny", _VIEW_DIM)
     elif paused:
@@ -2670,7 +2734,12 @@ def _draw_viewer_sidebar(
     y += 2
     grid_px = 7 * _VIEW_CELL
     _draw_obs_grid(
-        screen, pygame, ep["obs"], sx + (_VIEW_SIDEBAR_W - grid_px) // 2, y, fonts["tiny"]
+        screen,
+        pygame,
+        ep["obs"],
+        sx + (_VIEW_SIDEBAR_W - grid_px) // 2,
+        y,
+        fonts["tiny"],
     )
     y += grid_px + 6
 
@@ -2693,8 +2762,12 @@ def _draw_viewer_sidebar(
     y += 2
     for step_i, action, reward in reversed(ep["history"][-6:]):
         color = _VIEW_GOOD if reward > 0 else _VIEW_TEXT
-        put(f"s{step_i:03d}  {_ACTION_NAME[action]:<10} r={reward:+.3f}", "tiny",
-            color, dy=1)
+        put(
+            f"s{step_i:03d}  {_ACTION_NAME[action]:<10} r={reward:+.3f}",
+            "tiny",
+            color,
+            dy=1,
+        )
 
     # ---- the buttons, pinned to the bottom -------------------------------
     # Three rows: transport, episode, and the one persistent setting at the
@@ -2723,55 +2796,88 @@ def _draw_viewer_sidebar(
     buttons = {
         # greyed out at step 0, where there is nothing behind us to go back to
         "back": _draw_button(
-            screen, pygame, pygame.Rect(col_left, row_top, side, bh),
-            "STEP -1", fonts["head"], mouse, (170, 170, 190),
+            screen,
+            pygame,
+            pygame.Rect(col_left, row_top, side, bh),
+            "STEP -1",
+            fonts["head"],
+            mouse,
+            (170, 170, 190),
             enabled=ep["step"] > 0,
         ),
         # one button, two labels. Green while paused reads as "press to go",
         # which is the state you are in when you have stopped to read the bars.
         "pause": _draw_button(
-            screen, pygame, pygame.Rect(col_mid, row_top, middle, bh),
-            "PLAY" if paused else "PAUSE", fonts["head"], mouse,
+            screen,
+            pygame,
+            pygame.Rect(col_mid, row_top, middle, bh),
+            "PLAY" if paused else "PAUSE",
+            fonts["head"],
+            mouse,
             (120, 230, 140) if paused else (200, 200, 200),
         ),
         # advance exactly one action. Pausing alone is not enough to read a
         # policy: by the time you hit it the step you wanted is already gone,
         # so the useful control is one that moves in single steps.
         "step": _draw_button(
-            screen, pygame, pygame.Rect(col_right, row_top, side, bh),
-            "STEP +1", fonts["head"], mouse, (170, 170, 190),
+            screen,
+            pygame,
+            pygame.Rect(col_right, row_top, side, bh),
+            "STEP +1",
+            fonts["head"],
+            mouse,
+            (170, 170, 190),
             enabled=not ep["done"],
         ),
         # the previous maze of the eval set, wrapping round to 50 from 1. Never
         # disabled: unlike STEP -1, which runs out at step 0, there is always
         # another maze behind this one.
         "last": _draw_button(
-            screen, pygame, pygame.Rect(col_left, row_bottom, side, bh),
-            "LAST GAME", fonts["head"], mouse, (90, 190, 255),
+            screen,
+            pygame,
+            pygame.Rect(col_left, row_bottom, side, bh),
+            "LAST GAME",
+            fonts["head"],
+            mouse,
+            (90, 190, 255),
         ),
         "replay": _draw_button(
-            screen, pygame, pygame.Rect(col_mid, row_bottom, middle, bh),
-            "REPLAY", fonts["head"], mouse, (255, 190, 90),
+            screen,
+            pygame,
+            pygame.Rect(col_mid, row_bottom, middle, bh),
+            "REPLAY",
+            fonts["head"],
+            mouse,
+            (255, 190, 90),
         ),
         "new": _draw_button(
-            screen, pygame, pygame.Rect(col_right, row_bottom, side, bh),
-            "NEW GAME", fonts["head"], mouse, (90, 190, 255),
+            screen,
+            pygame,
+            pygame.Rect(col_right, row_bottom, side, bh),
+            "NEW GAME",
+            fonts["head"],
+            mouse,
+            (90, 190, 255),
         ),
         # a SETTING, not an action: when an episode ends, start the next eval
         # maze on its own after a short pause. Turn it on to watch all 50 go
         # by without touching anything -- which is the fastest way to see
         # WHICH mazes a 0.94 policy is losing.
         "auto": _draw_button(
-            screen, pygame, pygame.Rect(pad, row_toggle, inner, th),
+            screen,
+            pygame,
+            pygame.Rect(pad, row_toggle, inner, th),
             f"AUTO NEW GAME:  {'ON' if ui['auto_new'] else 'OFF'}",
-            fonts["body"], mouse,
+            fonts["body"],
+            mouse,
             (120, 230, 140) if ui["auto_new"] else (120, 120, 130),
         ),
     }
 
     hint = fonts["tiny"].render(
         "SPACE pause   <- -> step   P/N maze   R replay   A auto   Q quit",
-        True, (105, 105, 105),
+        True,
+        (105, 105, 105),
     )
     screen.blit(hint, (pad, row_toggle + th + 8))
 
