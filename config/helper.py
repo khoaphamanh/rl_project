@@ -8,6 +8,7 @@ config.something and can read config's own attributes directly:
     config.is_recurrent        True for LSTM and GRU, False for MLP
     config.is_lstm             True only for LSTM (it has a cell state too)
     config.build_env()         one MiniGrid game, wrapped as the config asks
+    config.build_vector_env()  n of them behind ONE step(), each in a process
     config.env_max_steps       that env's own time limit, 5 * size^2
     config.build_extractor()   the encoder named by config.feature_extractor
     config.build_logger()      logs/log_<date>_<time>.log, hyperparameters first
@@ -52,6 +53,8 @@ from datetime import datetime
 import gymnasium as gym
 import numpy as np
 import torch
+from gymnasium.vector import AsyncVectorEnv, AutoresetMode, SyncVectorEnv
+from minigrid.wrappers import ImgObsWrapper
 from torch.utils.data import Dataset
 
 # looks unused, but importing it is what registers MiniGrid-* with gymnasium.
@@ -253,6 +256,64 @@ class Helper:
 
         return env
 
+    def build_vector_env(self, n_envs):
+        """n_envs games behind ONE step() call. Images only, SAME_STEP reset.
+
+        WHY, when build_env() already works. Stepping W games meant a python
+        loop over W of them, one at a time, on one core -- 10,240 sequential
+        env.step() calls per iteration at W=16, T=640. MiniGrid's step is
+        ~85us of pure python (89% of it inside gen_obs_grid, walking the
+        7x7 view cell by cell), so that loop was over half the run.
+
+        AsyncVectorEnv gives each game its own process and steps them all at
+        once. THE WIN IS NOT n_envs-FOLD, and it is worth knowing why before
+        reading the timing table: gymnasium still sends the action and
+        receives (reward, terminated, truncated, info) down one pipe per
+        worker, in a python loop, so a batched step keeps an O(n_envs) serial
+        part. Measured on 8 cores: 1.5x at n_envs=4, 1.8x at 8, 1.7x at 16,
+        and 0.8x -- SLOWER -- at 32, where the workers outnumber the cores and
+        the processes fight each other. More cores move that ceiling; nothing
+        in this file does.
+
+        async_envs=False falls back to SyncVectorEnv, which is the old python
+        loop wearing the same interface. Keep it for debugging (one process,
+        real tracebacks, no pickling) and for machines where the processes
+        cost more than they save.
+
+        IMAGE OBSERVATIONS ONLY. MiniGrid's observation is a Dict of image,
+        direction and mission, and mission is a MissionSpace, which cannot go
+        into shared memory -- with the full Dict, AsyncVectorEnv raises.
+        shared_memory=False would "work" by pickling a mission string per env
+        per step, forever, for a constant nothing here reads. ImgObsWrapper
+        drops it and obs arrives as one (n_envs, 7, 7, 3) uint8 block written
+        straight into shared memory. Everything in this project already reads
+        obs["image"] and nothing else, so this loses nothing; the wrapper goes
+        on the OUTSIDE, so StartInCueView still applies underneath.
+
+        SAME_STEP autoreset, which is gymnasium's old behaviour and NOT its
+        current default. A worker that finishes at step t returns the final
+        reward together with the first observation of its next episode --
+        exactly what the hand-rolled loop did with env.step() then env.reset().
+        The default, NEXT_STEP, instead burns a whole extra step per episode
+        returning the reset observation with a zero reward and an ignored
+        action: a transition that never happened, which would have to be
+        masked out of the rollout buffer, the advantages and the mask by hand.
+        """
+        # a closure, not a bound method, so the subprocess pickles this and
+        # not the whole Config. gymnasium wraps env_fns in cloudpickle, so a
+        # lambda survives the spawn start method macOS defaults to.
+        def make():
+            return ImgObsWrapper(self.build_env())
+
+        if self.async_envs:
+            return AsyncVectorEnv(
+                [make] * n_envs,
+                shared_memory=True,  # the point of dropping mission, above
+                autoreset_mode=AutoresetMode.SAME_STEP,
+            )
+
+        return SyncVectorEnv([make] * n_envs, autoreset_mode=AutoresetMode.SAME_STEP)
+
     @property
     def env_max_steps(self):
         """The env's own time limit: MemoryEnv sets max_steps = 5 * size^2.
@@ -321,10 +382,16 @@ class Helper:
         raise ValueError(f"unknown feature_extractor {self.feature_extractor!r}")
 
     def build_logger(self, log_dir="logs", name="rl_project"):
-        """One log file per run: logs/log_<date>_<time>.log, hyperparameters first.
+        """One log file per COMMAND: logs/log_<date>_<time>.log, hyperparameters first.
 
-        Called once, from main.py, right after the agent is built. The file
-        name carries the timestamp, so two runs never collide and the
+        Called ONCE per invocation -- main.py builds one for a whole study,
+        main_no_hpo.py one for the whole seed list -- and handed down to
+        everything that runs underneath. Not once per trial or once per seed:
+        a run's cross-seed summary has to land in the same file as the seeds
+        it summarises, or the number the command exists to produce belongs to
+        no file at all.
+
+        The file name carries the timestamp, so two runs never collide and the
         directory sorts chronologically:
 
             logs/log_2026-07-31_14-03-27.log
@@ -338,9 +405,13 @@ class Helper:
         three @property values (device, is_recurrent, is_lstm) are not in
         vars() and are asked for by name.
 
-        Build it AFTER PPOAgent, not before: the agent's __init__ calls
-        set_seed(), which is what puts the actual seed into vars(self). Built
-        first, the dump would show seed_default and no seed.
+        THE DUMP SHOWS seed_list, NOT seed, because this is built before any
+        PPOAgent -- it is set_seed(), called from the agent's __init__, that
+        puts a single resolved seed into vars(self). That is the right way
+        round for a command that trains every seed in the list: one `seed`
+        line would describe whichever agent happened to be built first. Each
+        seed announces itself in the body of the log instead. (Build it after
+        an agent, as a one-seed script might, and `seed` appears too.)
 
         Two handlers, on purpose:
             FileHandler     timestamped, the permanent record
@@ -354,6 +425,21 @@ class Helper:
 
         started = datetime.now()
         path = os.path.join(log_dir, f"log_{started:%Y-%m-%d_%H-%M-%S}.log")
+
+        # _2, _3, ... if that name is taken. The stamp is only accurate to the
+        # second, and this is now built at the TOP of a command rather than
+        # after an agent has been constructed, so two commands started back to
+        # back really can land on the same name -- and a FileHandler opens in
+        # append mode, so the second would silently continue the first, its
+        # hyperparameter dump landing in the middle of someone else's run.
+        # Sub-second precision in the name would fix it too, at the cost of
+        # making every filename harder to read for a case this rare.
+        collision = 1
+        while os.path.exists(path):
+            collision += 1
+            path = os.path.join(
+                log_dir, f"log_{started:%Y-%m-%d_%H-%M-%S}_{collision}.log"
+            )
 
         logger = logging.getLogger(name)
         logger.setLevel(logging.INFO)
@@ -554,9 +640,6 @@ class Helper:
         last_error = None
 
         for i, bs in enumerate(candidates):
-            # reclaim whatever the PREVIOUS failed attempt left referenced,
-            # before asking for more
-            self._free_memory()
             try:
                 if len(candidates) > 1:
                     say(f"trying {what} {bs}  (candidate {i + 1}/{len(candidates)})")
@@ -566,6 +649,20 @@ class Helper:
                     raise
                 self._clear_traceback_chain(error)
                 last_error = error
+
+                # reclaim what the FAILED attempt left referenced, before the
+                # next candidate asks for more. In the except branch and not at
+                # the top of the loop: there is nothing to reclaim before the
+                # first try, and this runs once per ITERATION for the whole run
+                # -- the resolved size is written back, so from iteration 2
+                # onwards there is a single candidate that has never failed.
+                # gc.collect() plus empty_cache() measured 41ms/iteration here
+                # and 92ms on the reporter's box, which was every millisecond
+                # the phase table could not account for. empty_cache() is worse
+                # than its own clock says: it hands the cached blocks back to
+                # the driver, so the next iteration re-cudaMallocs them.
+                self._free_memory()
+
                 if i + 1 < len(candidates):
                     warn(
                         f"out of memory at {what} {bs}, "

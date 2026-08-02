@@ -377,7 +377,6 @@ class HPOPPO:
 
         return best
 
-
     # ------------------------------------------------------------------
     # the number to report
     # ------------------------------------------------------------------
@@ -681,7 +680,9 @@ class HPOPPO:
             f"FINAL ({other_mode})   the same weights, re-evaluated -- "
             f"reported only, never scored"
         )
-        self.logger.info(f"{'seed':>8} {'return':>8} {'success':>9} {'timeout':>9} {'length':>8}")
+        self.logger.info(
+            f"{'seed':>8} {'return':>8} {'success':>9} {'timeout':>9} {'length':>8}"
+        )
         for r in results:
             self.logger.info(
                 f"{r['seed']:>8} {r['argmax_return_mean']:>8.3f} "

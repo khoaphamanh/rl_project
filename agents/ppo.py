@@ -19,16 +19,24 @@ method each:
         clip_loss()       the clipped surrogate, term 1 of 3
         masked_mean()     the only legal reduction once padding exists
 
-    evaluate()        no grad, no training, COMPLETE episodes on a private
-                      env. Never share sample()'s envs: those are mid-episode
+    evaluate()        no grad, no training, COMPLETE episodes on private
+                      envs. Never share sample()'s envs: those are mid-episode
 
 The rollout itself:
 
     for t in 0 .. T-1:
         dist, value, hidden = self.model(obs, hidden)  one step, seq_len = 1
         action = dist.sample()                        sampled, never argmax
-        obs, reward, done = env.step(action)
-        if done: env.reset() and set that worker's hidden state to zero
+        obs, reward, done = envs.step(action)         all W games, ONE call
+        where done: zero that worker's hidden state
+
+ONE call, not a loop over W of them. config.build_vector_env puts each game
+in its own process, because MiniGrid's step is ~85us of python and W * T of
+them in series was over half the run. The reset a done needs is the vector
+env's own (SAME_STEP autoreset), which is why nothing above calls it: the
+observation that comes back with the final reward is already the next
+episode's first. See helper.build_vector_env for what that costs and what it
+does not buy.
 
 Everything is stored as (n_workers, worker_steps, ...), which is the raw
 shape the paper calls the batch: n_total_steps = W * T. The one exception is
@@ -114,6 +122,7 @@ class PPOAgent:
         self.zero_hidden = config.zero_hidden
         self.reset_hidden_of = config.reset_hidden_of
         self.build_env = config.build_env
+        self.build_vector_env = config.build_vector_env
 
         self.gamma = config.gamma  # discount
         self.gae_lambda = config.gae_lambda  # GAE bias/variance knob
@@ -159,12 +168,24 @@ class PPOAgent:
         # anything reading it has to train first. See train_agent().
         self.eval_history = []
 
-        # one independent game per worker, each with its own layout and cue.
-        # config.build_env(), never gym.make: the wrappers are part of what the
-        # env IS, and evaluate() must build the same thing.
-        self.envs = [self.build_env() for _ in range(self.n_workers)]
-        self.n_actions = self.envs[0].action_space.n  # 7
-        self.obs_shape = self.envs[0].observation_space["image"].shape  # (7, 7, 3)
+        # one independent game per worker, each with its own layout and cue,
+        # all W behind a SINGLE step() call. config.build_vector_env(), never
+        # gym.make: the wrappers are part of what the env IS, and evaluate()
+        # must build the same thing.
+        #
+        # single_* is the space of ONE game. envs.observation_space is the
+        # batched (W, 7, 7, 3) version of it, and obs_shape must be the
+        # unbatched one -- it is what the rollout buffer is shaped from and
+        # what the encoder's first layer was built for.
+        self.envs = self.build_vector_env(self.n_workers)
+        self.n_actions = self.envs.single_action_space.n  # 7
+        self.obs_shape = self.envs.single_observation_space.shape  # (7, 7, 3)
+
+        # evaluate()'s own envs, built on first use and kept. Never self.envs:
+        # those are mid-episode and evaluation must not disturb them. Lazy
+        # because a run that only trains never pays for them, and kept because
+        # spawning them costs real time and every episode re-seeds anyway.
+        self.eval_envs = None
 
         # the config decides WHICH encoder, the agent only uses it
         self.model = Network(config.build_extractor(), self.hidden_size, self.n_actions)
@@ -177,14 +198,17 @@ class PPOAgent:
             self.model.parameters(), lr=config.lr, weight_decay=config.wd
         )
 
-        # the observation each worker is currently looking at. It survives
-        # between rollouts, because a game usually is not finished when the
-        # T steps run out -- the next rollout continues it.
-        self.obs = np.zeros((self.n_workers, *self.obs_shape), dtype=np.uint8)
-        for w, env in enumerate(self.envs):
-            # a different seed per worker, otherwise all W games are identical
-            obs, _ = env.reset(seed=self.seed + w)
-            self.obs[w] = obs["image"]
+        # the observation each worker is currently looking at, (W, 7, 7, 3)
+        # uint8. It survives between rollouts, because a game usually is not
+        # finished when the T steps run out -- the next rollout continues it.
+        #
+        # ONE seed per worker, or all W games are the same game. Only this
+        # first reset is seeded: every later one is the vector env's own
+        # autoreset, drawing from the generator this call just seeded, which
+        # is what the per-worker env.reset() did before.
+        self.obs, _ = self.envs.reset(
+            seed=[self.seed + w for w in range(self.n_workers)]
+        )
 
         # the hidden state carries over between rollouts for the same reason
         self.hidden = self.zero_hidden()
@@ -451,52 +475,57 @@ class PPOAgent:
                 buf["log_probs"][:, t] = log_prob[:, 0].cpu()
                 buf["values"][:, t] = value[:, 0].cpu()
 
-            # TWO CLOCKS OVER ONE LOOP. "env_step" is the ENVIRONMENT's own
-            # work -- the step() calls, plus the reset() a done triggers,
-            # since that is env time too and MiniGrid's reset regenerates the
-            # whole maze. "env_loop" is that plus the python around it: the
-            # buffer writes, the episode bookkeeping, the hidden-state reset.
-            # The difference is the part a vectorised env would NOT remove,
-            # which is what makes the two worth separating: if env_loop is far
-            # above env_step the fix is in this file, and if it is not the fix
-            # is to stop stepping W environments one at a time.
+            # TWO CLOCKS OVER ONE TIMESTEP. "env_step" is the ENVIRONMENT's own
+            # work: the single batched step, which under SAME_STEP autoreset
+            # also contains the reset of whichever workers finished -- that is
+            # env time too, and MiniGrid's reset regenerates the whole maze.
+            # "env_loop" is that plus the python around it: the buffer writes,
+            # the episode bookkeeping, the hidden-state reset.
             #
-            # perf_counter around every env.step() costs ~150ns of the ~68us
-            # it measures. Timing the loop only once per timestep would be
-            # cheaper still and could not tell those two apart.
+            # The difference is the part parallelising the envs does NOT
+            # remove, which is what makes the two worth separating: if
+            # env_loop sits far above env_step the fix is in THIS file, and if
+            # it does not the fix is in how the environments are stepped.
             loop_start = time.perf_counter()
-            step_seconds = 0.0
 
-            for w, env in enumerate(self.envs):
-                step_start = time.perf_counter()
-                obs, reward, terminated, truncated, _ = env.step(int(actions[w]))
-                step_seconds += time.perf_counter() - step_start
+            # ONE call, W games. With AsyncVectorEnv the W steps really do
+            # overlap; with SyncVectorEnv this is the old python loop, moved
+            # behind the same interface. Either way the shapes are (W,) and
+            # the code below does not know which it got.
+            step_start = time.perf_counter()
+            obs, rewards, terminations, truncations, _ = self.envs.step(actions)
+            step_seconds = time.perf_counter() - step_start
 
-                done = terminated or truncated
+            # terminated = reached an end state, truncated = ran out of time.
+            # PPO's mask does not care which; both end the episode and both
+            # cut the sequence. (They differ for bootstrapping, but T is the
+            # env's own limit here, so a truncation IS the end of the game.)
+            dones = np.logical_or(terminations, truncations)
 
-                buf["rewards"][w, t] = reward
-                buf["dones"][w, t] = float(done)
+            buf["rewards"][:, t] = torch.from_numpy(rewards).float()
+            buf["dones"][:, t] = torch.from_numpy(dones).float()
 
-                self.ep_return[w] += reward
-                self.ep_length[w] += 1
+            self.ep_return += rewards
+            self.ep_length += 1
 
-                if done:
-                    finished_returns.append(self.ep_return[w])
-                    finished_lengths.append(self.ep_length[w])
-                    self.ep_return[w] = 0.0
-                    self.ep_length[w] = 0
+            # usually empty: at W=16 and T=640 a done happens a few times per
+            # timestep at most, so this loop is skipped almost every step
+            for w in np.flatnonzero(dones):
+                finished_returns.append(self.ep_return[w])
+                finished_lengths.append(self.ep_length[w])
+                self.ep_return[w] = 0.0
+                self.ep_length[w] = 0
 
-                    reset_start = time.perf_counter()
-                    obs, _ = env.reset()  # a fresh game with a fresh cue
-                    step_seconds += time.perf_counter() - reset_start
+                # so the new game cannot remember the old one. The env has
+                # ALREADY reset itself -- obs[w] below is the first
+                # observation of the next episode, not the last of this one
+                self.hidden = self.reset_hidden_of(self.hidden, w)
 
-                    # so the new game cannot remember the old one
-                    self.hidden = self.reset_hidden_of(self.hidden, w)
-
-                self.obs[w] = obs["image"]
+            self.obs = obs
 
             # units = W: both means come out PER ENVIRONMENT STEP, which is
-            # the number that is comparable across n_workers settings
+            # the number that is comparable across n_workers settings and
+            # across the sequential and parallel ways of producing them
             self.timing.setdefault("env_step", [0.0, 0])[0] += step_seconds
             self.timing.setdefault("env_loop", [0.0, 0])[0] += (
                 time.perf_counter() - loop_start
@@ -1087,9 +1116,27 @@ class PPOAgent:
         the reward decays with length. Here every episode runs to its own end,
         so nothing is cut off and nothing is selected for.
 
-        Runs on its OWN env, so self.envs, self.obs and self.hidden are never
+        Runs on its OWN envs, so self.envs, self.obs and self.hidden are never
         touched: training resumes from exactly where it was. Evaluating
         changes nothing, which is the whole point.
+
+        PLAYED IN WAVES, not one episode at a time. The envs are a vector of
+        min(n_episodes, n_workers) slots, and each wave resets all of them and
+        plays until every slot has finished its episode. That is what makes
+        the forward pass a batch instead of a batch of ONE: evaluating
+        serially ran the same network at batch 1, which cost 390us a call
+        against the rollout's 582us at batch 16 -- two thirds of the time for
+        a sixteenth of the work, because the cost of a call this small is the
+        call, not the arithmetic. 50 episodes went from ~28,000 forwards to
+        ~2,500.
+
+        A slot that finishes early keeps stepping -- SAME_STEP autoreset hands
+        it a fresh episode -- and everything it produces after its first done
+        is DISCARDED. So is the surplus when n_episodes is not a multiple of
+        the wave: the last wave fills its spare slots with episodes already
+        scored and throws the second copy away. Both are wasted env steps and
+        neither can bias the result, which is what matters. A wave costs as
+        long as its LONGEST episode either way.
 
         No manual step cap is needed. MiniGrid wraps the env in a TimeLimit,
         so max_steps (245 for MemoryS7) arrives on its own as truncated=True.
@@ -1133,12 +1180,21 @@ class PPOAgent:
             deterministic = self.eval_deterministic
         dev = self.device
 
-        # a private env. Built and closed here so evaluation owns no state
-        # between calls -- there is nothing to carry over, every episode
-        # starts from a reset and a zeroed hidden state. Same builder as the
-        # rollout's, so it carries the same wrappers: evaluating a different
-        # game from the one being trained on would measure nothing.
-        env = self.build_env()
+        # private envs, one SLOT per episode being played at this moment. Same
+        # builder as the rollout's, so they carry the same wrappers:
+        # evaluating a different game from the one being trained on would
+        # measure nothing.
+        #
+        # Built once and kept, because spawning W processes at every report
+        # iteration is not free. Keeping them does not make evaluation
+        # stateful: every wave below begins with an explicitly seeded reset
+        # and a zeroed hidden state, so nothing survives from the last call.
+        n_slots = min(n_episodes, self.n_workers)
+        if self.eval_envs is None or self.eval_envs.num_envs != n_slots:
+            if self.eval_envs is not None:
+                self.eval_envs.close()
+            self.eval_envs = self.build_vector_env(n_slots)
+        envs = self.eval_envs
 
         returns, lengths, successes, timeouts = [], [], [], []
 
@@ -1148,29 +1204,41 @@ class PPOAgent:
 
         # accumulated locally and registered ONCE after the loops, rather than
         # through _timed: this is the innermost loop in the file and _timed
-        # would put two cuda synchronize() calls inside it, tens of thousands
-        # of them per call, which would cost more than the thing being timed.
-        forward_seconds, step_seconds, eval_steps = 0.0, 0.0, 0
+        # would put two cuda synchronize() calls inside it, thousands of them
+        # per call, which would cost more than the thing being timed.
+        forward_seconds, step_seconds = 0.0, 0.0
+        forward_calls, eval_steps = 0, 0
 
-        for i in range(n_episodes):
-            # a fixed seed PER EPISODE INDEX, so episode i is the same maze
-            # and the same cue at every call to evaluate()
+        for first in range(0, n_episodes, n_slots):
+            # a fixed seed PER EPISODE INDEX, so episode i is the same maze and
+            # the same cue at every call to evaluate(). The clip pins the
+            # surplus slots of a short final wave to the last episode -- a
+            # second copy of something already scored, dropped by `counts`.
+            episode = np.minimum(first + np.arange(n_slots), n_episodes - 1)
+
             reset_start = time.perf_counter()
-            obs, _ = env.reset(seed=self.eval_seed + i)
+            obs, _ = envs.reset(seed=[self.eval_seed + int(i) for i in episode])
             step_seconds += time.perf_counter() - reset_start
 
-            # batch of 1, and zeroed HERE: an episode must never begin with
-            # the memory of the one before it
-            hidden = self.zero_hidden(batch_size=1)
+            # zeroed HERE: an episode must never begin with the memory of the
+            # one before it
+            hidden = self.zero_hidden(batch_size=n_slots)
 
-            ep_return, ep_length, terminated, truncated = 0.0, 0, False, False
+            # a slot is live until ITS episode ends. Everything a dead slot
+            # produces after that is ignored -- including the fresh episode
+            # SAME_STEP autoreset immediately starts it on.
+            live = np.ones(n_slots, dtype=bool)
+            counts = first + np.arange(n_slots) < n_episodes
 
-            while not (terminated or truncated):
-                # (7, 7, 3) -> (1, 1, 7, 7, 3): batch 1, seq_len 1, the same
+            ep_return = np.zeros(n_slots)
+            ep_length = np.zeros(n_slots, dtype=np.int64)
+
+            while live.any():
+                # (S, 7, 7, 3) -> (S, 1, 7, 7, 3): seq_len 1, the same
                 # one-step-at-a-time shape the rollout uses
                 forward_start = time.perf_counter()
 
-                obs_t = torch.from_numpy(obs["image"]).to(dev)[None, None]
+                obs_t = torch.from_numpy(obs).to(dev).unsqueeze(1)
 
                 with torch.no_grad():  # nothing here may build a graph
                     dist, _, hidden = self.model(obs_t, hidden)
@@ -1178,41 +1246,49 @@ class PPOAgent:
                         dist.probs.argmax(dim=-1) if deterministic else dist.sample()
                     )
 
-                # int() READS the tensor, which on a GPU means waiting for
+                # .numpy() READS the tensor, which on a GPU means waiting for
                 # every kernel queued above -- so this line is what makes the
                 # clock honest, and it belongs inside the timed region rather
                 # than after it. That is why no explicit synchronize() is
-                # needed here: the work has to land before int() can return.
-                action = int(action[0, 0])
+                # needed here: the work has to land before it can return.
+                actions = action[:, 0].cpu().numpy()
 
                 forward_seconds += time.perf_counter() - forward_start
-                eval_steps += 1
+                forward_calls += 1
+                eval_steps += n_slots
 
                 step_start = time.perf_counter()
-                obs, reward, terminated, truncated, _ = env.step(action)
+                obs, rewards, terminations, truncations, _ = envs.step(actions)
                 step_seconds += time.perf_counter() - step_start
 
-                ep_return += reward
-                ep_length += 1
+                # a dead slot's reward and step must not be counted
+                ep_return += rewards * live
+                ep_length += live
 
-            returns.append(ep_return)
-            lengths.append(ep_length)
-            successes.append(ep_return > 0.0)  # MemoryS7 pays 0 for a wrong door
-            timeouts.append(truncated and not terminated)
+                ending = np.logical_or(terminations, truncations) & live
+                for s in np.flatnonzero(ending):
+                    if counts[s]:
+                        returns.append(float(ep_return[s]))
+                        lengths.append(int(ep_length[s]))
+                        # MemoryS7 pays 0 for a wrong door
+                        successes.append(ep_return[s] > 0.0)
+                        timeouts.append(bool(truncations[s] and not terminations[s]))
+                    live[s] = False
 
         self.model.train()
-        env.close()
 
-        # units = eval_steps for both, so the two means are per environment
-        # step and read on the same scale as the rollout's -- which is the
-        # comparison worth making. The rollout acts at batch W and this acts
-        # at batch 1, on the same network: any gap between the two forward
-        # means is the cost of that, and it is the argument for evaluating
-        # several episodes in parallel rather than one at a time.
+        # units: forward_calls for the forward, so its mean is PER CALL and
+        # reads against act_forward's; eval_steps for the env, so its mean is
+        # PER ENVIRONMENT STEP and reads against env_step's. Both comparisons
+        # are the ones worth making -- the first says what one call costs at
+        # this batch size, the second whether evaluation's envs run as fast as
+        # the rollout's. eval_steps counts the dead slots too: they really are
+        # stepped, and hiding that would make the mean flattering rather than
+        # true.
         self.timing.setdefault("eval_forward", [0.0, 0])
         self.timing.setdefault("eval_step", [0.0, 0])
         self.timing["eval_forward"][0] += forward_seconds
-        self.timing["eval_forward"][1] += eval_steps
+        self.timing["eval_forward"][1] += forward_calls
         self.timing["eval_step"][0] += step_seconds
         self.timing["eval_step"][1] += eval_steps
 
@@ -1485,5 +1561,13 @@ class PPOAgent:
         return history
 
     def close(self):
-        for env in self.envs:
-            env.close()
+        """Shut the environments down. NOT optional any more.
+
+        With async_envs=True these are subprocesses, so an agent that is
+        dropped without this leaks W of them -- and hpo_ppo builds one agent
+        per seed per trial, ninety of them in a study.
+        """
+        self.envs.close()
+        if self.eval_envs is not None:
+            self.eval_envs.close()
+            self.eval_envs = None

@@ -124,10 +124,15 @@ def report_run(logger, eval_history, fresh, curve_deterministic):
     return sampled, argmax
 
 
-def run_one(model_name, seed):
+def run_one(model_name, seed, logger):
     """One split: train this encoder from this seed. Returns its scores.
 
     Reports the finished policy TWICE -- sampled and argmax -- see below.
+
+    The logger is PASSED IN, not built here: one command writes one log, so
+    main() owns it and every seed appends to the same file. Building it here
+    instead would give three seeds three files, and the cross-seed summary --
+    the number the command exists to produce -- would belong to none of them.
     """
     # a fresh config per run. PPOAgent copies every value out of it in
     # __init__, and train() writes the resolved mini_batch_size back into it,
@@ -139,10 +144,13 @@ def run_one(model_name, seed):
     # is what puts the seed into the checkpoint's filename
     agent = PPOAgent(config, seed=seed)
 
-    # AFTER the agent, not before: set_seed() has now run, so the seed actually
-    # used is what lands in the dump. One file per run, handlers cleared each
-    # call, so three seeds give three logs and no duplicated lines.
-    logger = config.build_logger()
+    # a banner, because the seeds now share a file. Without it three runs of
+    # the same encoder read as one long run with the numbers restarting twice.
+    logger.info("")
+    logger.info("-" * 78)
+    logger.info(f"SEED {seed}  --  training {model_name} on {config.name_env}")
+    logger.info("-" * 78)
+
     config.log_model_summary(agent.model, logger)
 
     try:
@@ -173,7 +181,7 @@ def run_one(model_name, seed):
         agent.close()
 
 
-def report_saved(model_name, seed_index, seed):
+def report_saved(model_name, seed_index, seed, logger):
     """Report ONE already-trained run. TRAINS NOTHING, WRITES NOTHING.
 
     The --report-only path. run_one() trains from random weights and overwrites
@@ -193,7 +201,12 @@ def report_saved(model_name, seed_index, seed):
 
     Returns the same dict run_one does, or None if this seed has no usable
     checkpoint -- an interrupted run, or a seed_list that has grown since. The
-    caller reports what it got rather than failing on the whole set.
+    caller reports what it got rather than failing on the whole set. A skipped
+    seed says so THROUGH THE LOGGER, so the file records what was not read as
+    well as what was.
+
+    The logger is passed in for the same reason as run_one's: one command,
+    one log.
     """
     # a fresh config per seed, for the same reason run_one builds one
     config = ConfigNoHPO(model_name)
@@ -202,7 +215,7 @@ def report_saved(model_name, seed_index, seed):
     # no_hpo/. Nothing is read yet -- the file may not exist.
     path = config.select_run(seed_index=seed_index)
     if not os.path.exists(path):
-        print(f"  seed {seed}: no checkpoint at {path}, skipped")
+        logger.info(f"  seed {seed}: no checkpoint at {path}, skipped")
         return None
 
     # {} for a ConfigNoHPO checkpoint, whose search_space is empty by design --
@@ -212,7 +225,6 @@ def report_saved(model_name, seed_index, seed):
     config.apply_params(config.checkpoint_params(path))
 
     agent = PPOAgent(config, seed=seed)
-    logger = config.build_logger()
     try:
         # guards the encoder, the widths, the env AND force_cue_visible against
         # this config, and raises rather than loading a file that does not
@@ -221,7 +233,7 @@ def report_saved(model_name, seed_index, seed):
 
         curve = list(checkpoint.get("eval_history") or [])
         if not curve:
-            print(f"  seed {seed}: {path} holds no eval_history, skipped")
+            logger.info(f"  seed {seed}: {path} holds no eval_history, skipped")
             return None
 
         curve_deterministic = bool(
@@ -237,6 +249,7 @@ def report_saved(model_name, seed_index, seed):
             "seed": seed,
             "success_sampled": sampled["success_rate"],
             "success_argmax": argmax["success_rate"],
+            "logger": logger,
         }
     finally:
         agent.close()
@@ -277,25 +290,36 @@ def main():
     )
     args = parser.parse_args()
 
-    # a throwaway config, built only to read the seed list and echo the
-    # settings. run_one() and report_saved() build their own -- one per seed,
-    # never shared.
+    # a config for the whole command, built to read the seed list, echo the
+    # settings and dump the hyperparameters into the log. run_one() and
+    # report_saved() still build their OWN per seed -- PPOAgent writes the
+    # resolved mini_batch_size back into whichever config it was handed, so
+    # one shared across seeds would carry state between runs.
     config = ConfigNoHPO(args.model)
     seeds = config.seed_list
 
+    # ONE LOG FILE PER COMMAND, the way main.py does it for a study: built
+    # here and handed down, so every seed appends to the same file and it can
+    # be read in order. Built BEFORE any PPOAgent, which means set_seed() has
+    # not run yet and the hyperparameter dump shows seed_list rather than a
+    # single seed -- which is the honest description of a run that trains all
+    # of them. Each seed announces itself in run_one().
+    logger = config.build_logger()
+
     mode = "REPORT ONLY (no training)" if args.report_only else "run"
-    print(f"NO-HPO {mode}: {args.model} on {config.name_env}")
-    print(f"  seeds        {seeds}")
+    logger.info("")
+    logger.info(f"NO-HPO {mode}: {args.model} on {config.name_env}")
+    logger.info(f"  seeds        {seeds}")
     if not args.report_only:
-        print(f"  iterations   {config.n_iterations}")
-    print(f"  checkpoints  {config.dir_pretrained_model}")
+        logger.info(f"  iterations   {config.n_iterations}")
+    logger.info(f"  checkpoints  {config.dir_pretrained_model}")
 
     if args.report_only:
         # a missing seed is skipped, not fatal -- see report_saved
         results = [
             result
             for index, seed in enumerate(seeds)
-            if (result := report_saved(args.model, index, seed)) is not None
+            if (result := report_saved(args.model, index, seed, logger)) is not None
         ]
         if not results:
             raise SystemExit(
@@ -306,20 +330,25 @@ def main():
     else:
         # RETRAINS AND OVERWRITES, every time. train_agent() starts from random
         # weights and saves over whatever was in no_hpo/ already.
-        results = [run_one(args.model, s) for s in seeds]
+        results = [run_one(args.model, s, logger) for s in seeds]
 
-    # PRINTED PER SEED, not only as a mean. On these tasks the outcome tends to
-    # be bimodal -- some seeds find the reward and some never do -- and the
-    # mean of {0.5, 0.5, 0.95} describes no run that happened. The spread is
-    # over SEEDS, which is the real uncertainty about this config; the spread
-    # over the eval episodes inside one run is not.
-    print(f"\n{args.model}  over {len(results)} seed(s)")
-    print(f"{'seed':>8} {'sampled':>9} {'argmax':>9}")
+    # THROUGH THE LOGGER, not print(). This block is the one number the whole
+    # command exists to produce -- the spread over seeds -- and print() sent
+    # it to the terminal only, so the permanent record was the one place it
+    # did not survive. It lands under the seeds it summarises, in the same
+    # file, because there is one file.
+    log = logger.info
+
+    # PER SEED, not only as a mean. On these tasks the outcome tends to be
+    # bimodal -- some seeds find the reward and some never do -- and the mean
+    # of {0.5, 0.5, 0.95} describes no run that happened. The spread is over
+    # SEEDS, which is the real uncertainty about this config; the spread over
+    # the eval episodes inside one run is not.
+    log("")
+    log(f"{args.model}  over {len(results)} seed(s)")
+    log(f"{'seed':>8} {'sampled':>9} {'argmax':>9}")
     for r in results:
-        print(
-            f"{r['seed']:>8} {r['success_sampled']:>9.3f} "
-            f"{r['success_argmax']:>9.3f}"
-        )
+        log(f"{r['seed']:>8} {r['success_sampled']:>9.3f} {r['success_argmax']:>9.3f}")
 
     # median and IQR beside mean and std, because the same seeds feed both and
     # they answer different questions -- "the average run" against "the typical
@@ -328,7 +357,7 @@ def main():
     # same two summaries config.hpo_objective chooses between for a study.
     for key in ("success_sampled", "success_argmax"):
         vals = [r[key] for r in results]
-        print(
+        log(
             f"{key:>16}  mean {np.mean(vals):.3f}  std {np.std(vals):.3f}  "
             f"median {np.median(vals):.3f}  "
             f"iqr {np.percentile(vals, 75) - np.percentile(vals, 25):.3f}"

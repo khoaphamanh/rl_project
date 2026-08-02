@@ -79,7 +79,17 @@ class Network(nn.Module):
 
         # a distribution, not raw logits: PPO needs log_prob() and entropy(),
         # and dist.logits gives the raw numbers back if they are ever wanted
-        return Categorical(logits=logits), value, hidden
+        #
+        # validate_args=False, and it is not a micro-optimization. The default
+        # is True, and torch validates by ending in
+        # "if not torch._is_all_true(valid)" -- a python if on a DEVICE tensor,
+        # which is a full GPU -> CPU round trip that stalls the queue. There is
+        # one in Categorical(...) checking the logits, and another in
+        # dist.log_prob(a) checking the sample. The rollout builds one
+        # distribution per timestep, so leaving it on costs 2 * worker_steps
+        # synchronisations per iteration -- 1,280 at T = 640 -- to re-check
+        # numbers the two lines above just produced.
+        return Categorical(logits=logits, validate_args=False), value, hidden
 
 
 OBS_SHAPE = (7, 7, 3)  # MiniGrid-MemoryS11-v0 partial observation

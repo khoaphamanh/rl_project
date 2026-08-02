@@ -97,6 +97,27 @@ class Config(Helper):
         # sampling: W games played in parallel, T steps each per iteration
         self.n_workers = 256  # W
 
+        # PARALLEL IN W PROCESSES, or only in name? True puts each game in its
+        # own process (AsyncVectorEnv) so one step() call steps all W. False
+        # keeps them in this one (SyncVectorEnv), which is the python loop
+        # this project used to run and is still the right choice for
+        # debugging -- one process, real tracebacks, nothing pickled.
+        #
+        # SET IT FALSE IN A NOTEBOOK, AND IN ANY SCRIPT WITHOUT AN
+        # `if __name__ == "__main__":` GUARD. Where python starts subprocesses
+        # by spawning rather than forking -- macOS and Windows -- each worker
+        # re-imports the module that built the agent, so anything that module
+        # does at import time happens W more times, and a notebook has no
+        # importable module to re-run at all. main.py, main_no_hpo.py and
+        # watch.py all have the guard; nhap.ipynb does not and cannot.
+        #
+        # True is not free and not always faster. See build_vector_env: the
+        # speedup measured 1.8x at W=8 on an 8-core machine and went BELOW 1
+        # at W=32, where the workers outnumber the cores. Check the env_step
+        # row of the timing table on the machine you are actually running on
+        # before assuming either setting is the fast one.
+        self.async_envs = True
+
         # T = the env's OWN time limit, 5 * size^2 (245 on S7, 605 on S11),
         # read off the env instead of typed in. NOT a free choice.
         #
