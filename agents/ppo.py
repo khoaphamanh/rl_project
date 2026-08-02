@@ -227,12 +227,21 @@ class PPOAgent:
                 action = dist.sample()  # (W, 1), sampled -> the policy explores
                 log_prob = dist.log_prob(action)  # (W, 1)
 
-            buf["actions"][:, t] = action[:, 0].cpu()
+            # ONE device -> host copy, then the worker loop indexes THAT.
+            # Not action[w, 0].item() inside the loop: on a GPU every .item()
+            # is a separate synchronisation, a full round trip that stalls the
+            # CPU to fetch a single integer. There are W of them per timestep
+            # and W * T per rollout -- 163,840 at the default 256 x 640, for
+            # data that this line has already brought across in one go.
+            actions = action[:, 0].cpu()
+            buf["actions"][:, t] = actions
+            actions = actions.numpy()
+
             buf["log_probs"][:, t] = log_prob[:, 0].cpu()
             buf["values"][:, t] = value[:, 0].cpu()
 
             for w, env in enumerate(self.envs):
-                obs, reward, terminated, truncated, _ = env.step(action[w, 0].item())
+                obs, reward, terminated, truncated, _ = env.step(int(actions[w]))
                 done = terminated or truncated
 
                 buf["rewards"][w, t] = reward
