@@ -46,12 +46,40 @@ The entry point is main.py in the repo root: it builds the Config and hands
 it to PPOAgent.
 """
 
+import time
+from contextlib import contextmanager
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
 from config.helper import SequenceDataset
 from models.model import Network
+
+
+def format_clock(seconds):
+    """A duration someone WAITS through: 1h 05m 03s / 5m 03s / 42.1s."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    return f"{minutes}m {seconds:02d}s"
+
+
+def format_mean(seconds):
+    """A per-call mean, in whatever unit keeps it readable.
+
+    Separate from format_clock because these live at opposite ends of the
+    scale: one env.step() is tens of microseconds and a whole run is hours,
+    and neither is legible in the other's units.
+    """
+    if seconds < 1e-3:
+        return f"{seconds * 1e6:.1f}us"
+    if seconds < 1.0:
+        return f"{seconds * 1e3:.2f}ms"
+    return f"{seconds:.3f}s"
 
 
 class PPOAgent:
@@ -165,6 +193,186 @@ class PPOAgent:
         self.ep_return = np.zeros(self.n_workers, dtype=np.float64)
         self.ep_length = np.zeros(self.n_workers, dtype=np.int64)
 
+        # {phase: [seconds, units]}, filled by _timed and emptied by
+        # pop_timing(). Accumulates ACROSS iterations, so what train_agent
+        # reports at a report iteration is the mean over every iteration since
+        # the previous one, not one noisy sample of it.
+        self.timing = {}
+
+        # the same, never emptied: every phase of THIS SEED, start to finish.
+        # pop_timing folds each window into it on the way out. Both are per
+        # seed and cannot be otherwise -- one PPOAgent is one seed, and
+        # main_no_hpo builds a new one for each entry of seed_list, so two
+        # seeds can never pool their timings into one misleading average.
+        self.timing_run = {}
+
+    # ------------------------------------------------------------------
+    # where the time goes
+    #
+    # This exists to answer one question -- is the run slow because of the
+    # environment, the acting forward pass, or the update? -- and those three
+    # cannot be told apart from the outside. The report is printed by
+    # train_agent at every report iteration.
+    # ------------------------------------------------------------------
+    def _sync(self):
+        """Wait for the GPU before reading the clock.
+
+        WITHOUT THIS EVERY GPU MEASUREMENT IS A LIE. CUDA kernels are queued
+        asynchronously: the python line returns as soon as the work is
+        submitted, so timing it measures how long it took to ASK, typically a
+        few microseconds, no matter how much arithmetic was actually asked
+        for. The backward pass would then look free and the env loop would
+        look like the whole problem even in a run where it was not.
+
+        A no-op on CPU, where there is no queue to drain.
+        """
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+
+    @contextmanager
+    def _timed(self, phase, units=1):
+        """Add the wall time of this block to self.timing[phase].
+
+        units is what the mean is PER: 1 for a single call, n_workers for a
+        loop that stepped that many environments. So "env_step" reports the
+        cost of one env.step() while "act_forward" reports the cost of one
+        forward pass, and both read naturally off the same table.
+        """
+        self._sync()
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            self._sync()
+            entry = self.timing.setdefault(phase, [0.0, 0])
+            entry[0] += time.perf_counter() - start
+            entry[1] += units
+
+    def pop_timing(self):
+        """Return {phase: (seconds, units)} accumulated so far and reset.
+
+        Reset here rather than in train(), so the caller decides the window it
+        is averaging over. train_agent pops at every report iteration, which
+        makes that window "since the last report".
+
+        Every window is added into self.timing_run on the way out, so nothing
+        is lost by popping: the windows show whether the cost is DRIFTING (an
+        iteration late in a run is slower when episodes end sooner and there
+        are more sequences to pad), the run total shows what the seed
+        actually cost.
+        """
+        collected = {}
+        for key, (seconds, units) in self.timing.items():
+            collected[key] = (seconds, units)
+            total = self.timing_run.setdefault(key, [0.0, 0])
+            total[0] += seconds
+            total[1] += units
+        self.timing = {}
+        return collected
+
+    # (key, label) in print order. An INDENTED label is a phase inside the one
+    # above it, so the shares deliberately overlap: env_step is part of
+    # env_loop, and all four indented rows are part of sample. Reading down
+    # the indentation is how you find the level the time is really at.
+    TIMING_ROWS = (
+        ("sample", "sample (collect)"),
+        ("env_step", "  env.step() + reset()"),
+        ("env_loop", "  the worker loop, all of it"),
+        ("act_forward", "  act forward (no_grad)"),
+        ("act_to_host", "  act -> host copy"),
+        ("gae", "gae"),
+        ("split_pad_mask", "split_pad_mask"),
+        ("update_fwd", "update forward"),
+        ("update_bwd", "update backward + step"),
+    )
+
+    # printed BELOW the rule, because evaluation is not part of an iteration
+    # -- it is the price of measuring one, and it runs only at report
+    # iterations. Its share is therefore against all the training iterations
+    # since the last report: "measuring cost 40% of what training cost".
+    TIMING_ROWS_EVAL = (
+        ("evaluate", "evaluate() (report only)"),
+        ("eval_forward", "  eval forward (no_grad)"),
+        ("eval_step", "  eval env.step() + reset()"),
+    )
+
+    def _log_timing_table(self, log, timing, headline):
+        """The phase table itself. Both callers below share it.
+
+        HOW TO READ IT. "share" is against one whole iteration, so the
+        indented rows do not sum to 100% -- they are nested, not disjoint.
+        env_step is inside env_loop, which is inside sample. The gap between
+        "one whole iteration" and the sum of the unindented rows is python
+        that no timer was put around; the gap between env_loop and env_step is
+        this file's bookkeeping rather than the environment's, and it is the
+        part that vectorising the envs would NOT remove.
+        """
+        if "iteration" not in timing:  # nothing has been timed yet
+            return
+
+        iteration_total, n_iterations = timing["iteration"]
+
+        def row(label, seconds, units):
+            share = 100.0 * seconds / iteration_total if iteration_total else 0.0
+            mean = format_mean(seconds / units) if units else "-"
+            log(f"  {label:<30}{seconds:>9.2f}s {share:>7.1f}% {units:>11} {mean:>10}")
+
+        log("")
+        log(headline)
+        log(f"  {'phase':<30}{'total':>10} {'share':>8} {'calls':>11} {'mean':>10}")
+
+        for key, label in self.TIMING_ROWS:
+            if key in timing:
+                row(label, *timing[key])
+
+        log("  " + "-" * 70)
+        row("one whole iteration", iteration_total, n_iterations)
+
+        for key, label in self.TIMING_ROWS_EVAL:
+            if key in timing:
+                row(label, *timing[key])
+
+    def log_timing(self, log, since_report, since_start):
+        """One window: the iterations since the last report. EMPTIES the timers.
+
+        Every mean is over many iterations rather than one noisy sample of
+        one, and popping is what makes the next window a fresh one. Nothing is
+        lost -- pop_timing folds each window into the per-seed total that
+        log_timing_seed prints at the end.
+        """
+        timing = self.pop_timing()
+        if "iteration" not in timing:
+            return
+
+        iteration_total, n_iterations = timing["iteration"]
+        self._log_timing_table(
+            log,
+            timing,
+            f"TIME  {n_iterations} iterations in {format_clock(since_report)}"
+            f"  --  {format_clock(iteration_total / n_iterations)} per iteration,"
+            f"  {format_clock(since_start)} into the run",
+        )
+
+    def log_timing_seed(self, log, elapsed):
+        """THE WHOLE SEED, one table, printed once when its run ends.
+
+        The windows above show whether the cost drifted; this shows what the
+        seed actually cost and is the one to read when deciding what to
+        change. Call it after the last pop_timing, or the final window is
+        still sitting in self.timing and missing from the total.
+        """
+        if "iteration" not in self.timing_run:
+            return
+
+        iteration_total, n_iterations = self.timing_run["iteration"]
+        self._log_timing_table(
+            log,
+            self.timing_run,
+            f"TIME  SEED {self.seed}, WHOLE RUN:  {n_iterations} iterations in "
+            f"{format_clock(elapsed)}  --  "
+            f"{format_clock(iteration_total / n_iterations)} per iteration",
+        )
+
     # ------------------------------------------------------------------
     # the rollout
     # ------------------------------------------------------------------
@@ -220,28 +428,50 @@ class PPOAgent:
             # (W, 7, 7, 3) -> (W, 1, 7, 7, 3): seq_len = 1 while acting
             obs_t = torch.from_numpy(self.obs).to(self.device).unsqueeze(1)
 
-            with torch.no_grad():  # sampling never needs gradients
-                # the returned hidden is fed straight back in on the next
-                # iteration: that is the agent's memory while it plays
-                dist, value, self.hidden = self.model(obs_t, self.hidden)
-                action = dist.sample()  # (W, 1), sampled -> the policy explores
-                log_prob = dist.log_prob(action)  # (W, 1)
+            with self._timed("act_forward"):
+                with torch.no_grad():  # sampling never needs gradients
+                    # the returned hidden is fed straight back in on the next
+                    # iteration: that is the agent's memory while it plays
+                    dist, value, self.hidden = self.model(obs_t, self.hidden)
+                    action = dist.sample()  # (W, 1), sampled -> policy explores
+                    log_prob = dist.log_prob(action)  # (W, 1)
 
-            # ONE device -> host copy, then the worker loop indexes THAT.
-            # Not action[w, 0].item() inside the loop: on a GPU every .item()
-            # is a separate synchronisation, a full round trip that stalls the
-            # CPU to fetch a single integer. There are W of them per timestep
-            # and W * T per rollout -- 163,840 at the default 256 x 640, for
-            # data that this line has already brought across in one go.
-            actions = action[:, 0].cpu()
-            buf["actions"][:, t] = actions
-            actions = actions.numpy()
+            with self._timed("act_to_host"):
+                # ONE device -> host copy, then the worker loop indexes THAT.
+                # Not action[w, 0].item() inside the loop: on a GPU every
+                # .item() is a separate synchronisation, a full round trip
+                # that stalls the CPU to fetch a single integer. There are W
+                # of them per timestep and W * T per rollout -- 163,840 at the
+                # default 256 x 640, for data this line already brought across
+                # in one go.
+                actions = action[:, 0].cpu()
+                buf["actions"][:, t] = actions
+                actions = actions.numpy()
 
-            buf["log_probs"][:, t] = log_prob[:, 0].cpu()
-            buf["values"][:, t] = value[:, 0].cpu()
+                buf["log_probs"][:, t] = log_prob[:, 0].cpu()
+                buf["values"][:, t] = value[:, 0].cpu()
+
+            # TWO CLOCKS OVER ONE LOOP. "env_step" is the ENVIRONMENT's own
+            # work -- the step() calls, plus the reset() a done triggers,
+            # since that is env time too and MiniGrid's reset regenerates the
+            # whole maze. "env_loop" is that plus the python around it: the
+            # buffer writes, the episode bookkeeping, the hidden-state reset.
+            # The difference is the part a vectorised env would NOT remove,
+            # which is what makes the two worth separating: if env_loop is far
+            # above env_step the fix is in this file, and if it is not the fix
+            # is to stop stepping W environments one at a time.
+            #
+            # perf_counter around every env.step() costs ~150ns of the ~68us
+            # it measures. Timing the loop only once per timestep would be
+            # cheaper still and could not tell those two apart.
+            loop_start = time.perf_counter()
+            step_seconds = 0.0
 
             for w, env in enumerate(self.envs):
+                step_start = time.perf_counter()
                 obs, reward, terminated, truncated, _ = env.step(int(actions[w]))
+                step_seconds += time.perf_counter() - step_start
+
                 done = terminated or truncated
 
                 buf["rewards"][w, t] = reward
@@ -256,11 +486,23 @@ class PPOAgent:
                     self.ep_return[w] = 0.0
                     self.ep_length[w] = 0
 
+                    reset_start = time.perf_counter()
                     obs, _ = env.reset()  # a fresh game with a fresh cue
+                    step_seconds += time.perf_counter() - reset_start
+
                     # so the new game cannot remember the old one
                     self.hidden = self.reset_hidden_of(self.hidden, w)
 
                 self.obs[w] = obs["image"]
+
+            # units = W: both means come out PER ENVIRONMENT STEP, which is
+            # the number that is comparable across n_workers settings
+            self.timing.setdefault("env_step", [0.0, 0])[0] += step_seconds
+            self.timing.setdefault("env_loop", [0.0, 0])[0] += (
+                time.perf_counter() - loop_start
+            )
+            self.timing["env_step"][1] += W
+            self.timing["env_loop"][1] += W
 
         # the bootstrap. The loop ran T times, so it produced V(s_0)..V(s_(T-1))
         # -- T values for T+1 states. self.obs is s_T and no forward pass has
@@ -709,10 +951,20 @@ class PPOAgent:
         actually drives. Call it directly only to run a single iteration by
         hand.
         """
+        # every phase below is timed into self.timing, which train_agent
+        # empties and prints at each report iteration. "iteration" is the
+        # outer clock: the three collect phases and the update should add up
+        # to just under it, and whatever is missing is python that no timer
+        # was put around.
+        iteration_start = time.perf_counter()
+
         # ---- collect ---------------------------------------------------
-        buf, stats = self.sample()
-        buf["advantages"], buf["returns"] = self.gae(buf)
-        batch = self.split_pad_mask(buf)
+        with self._timed("sample"):
+            buf, stats = self.sample()
+        with self._timed("gae"):
+            buf["advantages"], buf["returns"] = self.gae(buf)
+        with self._timed("split_pad_mask"):
+            batch = self.split_pad_mask(buf)
 
         # ---- learn, at the largest minibatch that fits -------------------
         # The whole update is handed over as a callable so it can be RETRIED at
@@ -724,6 +976,10 @@ class PPOAgent:
             lambda mini_batch_size: self.learn(batch, mini_batch_size),
             self.mini_batch_size,
             self.logger,
+            # named, so this cannot be mistaken in the log for the probe
+            # forward torchinfo ran while printing the model summary. THIS is
+            # the one that decides what the run trains with.
+            what="update minibatch size",
         )
 
         # recorded because it is a hyperparameter the MACHINE chose, not the
@@ -734,6 +990,12 @@ class PPOAgent:
         stats["updates"] = len(logs)
         for k in logs[0]:
             stats[k] = float(np.mean([d[k] for d in logs]))
+
+        # closed LAST, so it contains everything above including the retry if
+        # there was one. units = 1: the mean is per iteration.
+        entry = self.timing.setdefault("iteration", [0.0, 0])
+        entry[0] += time.perf_counter() - iteration_start
+        entry[1] += 1
 
         return stats
 
@@ -773,19 +1035,28 @@ class PPOAgent:
 
         for epoch in range(self.n_epochs):
             for mb in loader:
-                loss, info = self.minibatch_loss(mb)
+                # "update_fwd" is the whole forward: the minibatch moved to
+                # the device, the encoder run at seq_len = L, and the three
+                # loss terms. That host -> device copy is part of it on
+                # purpose -- it is the same tensors every epoch and if it
+                # dominates, the fix is to move the batch across once in
+                # train() rather than once per minibatch per epoch.
+                with self._timed("update_fwd"):
+                    loss, info = self.minibatch_loss(mb)
 
-                self.optimizer.zero_grad()  # torch accumulates otherwise
-                loss.backward()  # ONE backward for all three terms
+                with self._timed("update_bwd"):
+                    self.optimizer.zero_grad()  # torch accumulates otherwise
+                    loss.backward()  # ONE backward for all three terms
 
-                # rescale the whole gradient down to max_grad_norm if it is
-                # longer. On a sparse-reward task one lucky episode can produce
-                # a huge gradient; this stops a single step wrecking a policy
-                # that took thousands of iterations to build.
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.max_grad_norm
-                )
-                self.optimizer.step()
+                    # rescale the whole gradient down to max_grad_norm if it
+                    # is longer. On a sparse-reward task one lucky episode can
+                    # produce a huge gradient; this stops a single step
+                    # wrecking a policy that took thousands of iterations to
+                    # build.
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.max_grad_norm
+                    )
+                    self.optimizer.step()
 
                 info["grad_norm"] = float(grad_norm)
                 logs.append(info)
@@ -875,10 +1146,18 @@ class PPOAgent:
         # is the standard contract and costs nothing to honour
         self.model.eval()
 
+        # accumulated locally and registered ONCE after the loops, rather than
+        # through _timed: this is the innermost loop in the file and _timed
+        # would put two cuda synchronize() calls inside it, tens of thousands
+        # of them per call, which would cost more than the thing being timed.
+        forward_seconds, step_seconds, eval_steps = 0.0, 0.0, 0
+
         for i in range(n_episodes):
             # a fixed seed PER EPISODE INDEX, so episode i is the same maze
             # and the same cue at every call to evaluate()
+            reset_start = time.perf_counter()
             obs, _ = env.reset(seed=self.eval_seed + i)
+            step_seconds += time.perf_counter() - reset_start
 
             # batch of 1, and zeroed HERE: an episode must never begin with
             # the memory of the one before it
@@ -889,6 +1168,8 @@ class PPOAgent:
             while not (terminated or truncated):
                 # (7, 7, 3) -> (1, 1, 7, 7, 3): batch 1, seq_len 1, the same
                 # one-step-at-a-time shape the rollout uses
+                forward_start = time.perf_counter()
+
                 obs_t = torch.from_numpy(obs["image"]).to(dev)[None, None]
 
                 with torch.no_grad():  # nothing here may build a graph
@@ -897,7 +1178,20 @@ class PPOAgent:
                         dist.probs.argmax(dim=-1) if deterministic else dist.sample()
                     )
 
-                obs, reward, terminated, truncated, _ = env.step(int(action[0, 0]))
+                # int() READS the tensor, which on a GPU means waiting for
+                # every kernel queued above -- so this line is what makes the
+                # clock honest, and it belongs inside the timed region rather
+                # than after it. That is why no explicit synchronize() is
+                # needed here: the work has to land before int() can return.
+                action = int(action[0, 0])
+
+                forward_seconds += time.perf_counter() - forward_start
+                eval_steps += 1
+
+                step_start = time.perf_counter()
+                obs, reward, terminated, truncated, _ = env.step(action)
+                step_seconds += time.perf_counter() - step_start
+
                 ep_return += reward
                 ep_length += 1
 
@@ -908,6 +1202,19 @@ class PPOAgent:
 
         self.model.train()
         env.close()
+
+        # units = eval_steps for both, so the two means are per environment
+        # step and read on the same scale as the rollout's -- which is the
+        # comparison worth making. The rollout acts at batch W and this acts
+        # at batch 1, on the same network: any gap between the two forward
+        # means is the cost of that, and it is the argument for evaluating
+        # several episodes in parallel rather than one at a time.
+        self.timing.setdefault("eval_forward", [0.0, 0])
+        self.timing.setdefault("eval_step", [0.0, 0])
+        self.timing["eval_forward"][0] += forward_seconds
+        self.timing["eval_forward"][1] += eval_steps
+        self.timing["eval_step"][0] += step_seconds
+        self.timing["eval_step"][1] += eval_steps
 
         return {
             "eval_episodes": n_episodes,
@@ -984,6 +1291,18 @@ class PPOAgent:
         logger comes from config.build_logger() and is optional: without one
         the report goes to stdout and nowhere else, with one it also lands in
         logs/log_<date>_<time>.log under the hyperparameters that produced it.
+        Every record carries its own date and time, in the terminal as well as
+        in the file, so two report rows can be dated and subtracted on sight.
+
+        EVERY REPORT ITERATION ALSO PRINTS A PHASE TABLE, and the end of the
+        run prints one more covering the whole seed -- see log_timing and
+        log_timing_seed. They say how long an iteration took and how that time
+        split between the environment, the acting forward, the update and
+        evaluation. They are there because those cannot be told apart from the
+        outside, and which one dominates decides what is worth changing: a run
+        that is 90% inside env.step() is not made faster by a bigger GPU, a
+        different batch size or a narrower net, only by stepping fewer
+        environments or stepping them in parallel.
 
         Returns the history: one stats dict per iteration, in order. Report
         iterations carry the eval_* keys too, the others do not. That is the
@@ -1004,11 +1323,7 @@ class PPOAgent:
         # size it settled on into the log file and not only to stdout
         self.logger = logger
 
-        # a separate blank record, not "\n" inside the header: a newline in
-        # the middle of a log record puts the file's timestamp prefix on the
-        # blank line and leaves the header unprefixed
-        log("")
-        log(
+        header = (
             f"{'iter':>5} {'eps':>4} {'return':>7} {'len':>6} "
             f"{'entropy':>8} {'v_loss':>9} {'kl':>8} {'clip':>6}"
             f"   |  EVAL  success  timeout   return    std"
@@ -1017,9 +1332,29 @@ class PPOAgent:
         history = []
         eval_history = []  # one entry per REPORT iteration -- see below
 
+        run_started = time.perf_counter()
+        last_report = run_started
+
         for i in range(n_iterations):
             stats = self.train()
             stats["iteration"] = i
+
+            if i == 0:
+                # THE HEADER IS PRINTED HERE, after the first train(), not
+                # before the loop. That first call is the one that resolves
+                # mini_batch_size, and run_with_batch_size_fallback announces
+                # every size it tries -- printed before the loop, the header
+                # would sit ABOVE those lines and the table would open with a
+                # paragraph wedged between its header and its first row.
+                # Delayed by one train() they land where they belong: after
+                # the model summary, before the table.
+                #
+                # a separate blank record, not "\n" inside the header: a
+                # newline in the middle of a log record puts the file's
+                # timestamp prefix on the blank line and leaves the header
+                # unprefixed
+                log("")
+                log(header)
 
             # the last iteration always reports, so the run cannot end on an
             # iteration whose numbers were never measured. THAT is what makes
@@ -1034,7 +1369,14 @@ class PPOAgent:
                 # False the action sampling varies, so the same weights would
                 # give a different number and the printed row and the stored
                 # row would quietly disagree.
-                evaluation = self.evaluate()
+                #
+                # timed, and NOT inside the "iteration" clock: it is not part
+                # of an iteration, it is the price of measuring one. It plays
+                # n_eval_episodes to their own end at batch size 1, which on a
+                # GPU is thousands of round trips for arithmetic that takes no
+                # time at all -- worth seeing rather than assuming.
+                with self._timed("evaluate"):
+                    evaluation = self.evaluate()
 
                 # startswith guard: eval_episodes is already prefixed
                 stats.update(
@@ -1074,7 +1416,19 @@ class PPOAgent:
                     f" +- {stats['eval_return_std']:<5.3f}"
                 )
 
+                # the phase table for the iterations since the LAST report,
+                # printed under the row it belongs to. This empties the
+                # timers, which is what makes the next one a fresh window.
+                now = time.perf_counter()
+                self.log_timing(log, now - last_report, now - run_started)
+                last_report = now
+
             history.append(stats)
+
+        # the whole seed in one table. AFTER the loop, so the last report's
+        # pop_timing has already folded the final window into timing_run --
+        # printed inside the loop it would be short by that window.
+        self.log_timing_seed(log, time.perf_counter() - run_started)
 
         # ---- one checkpoint, at the end --------------------------------
         self.eval_history = eval_history
@@ -1126,6 +1480,7 @@ class PPOAgent:
                 f"iter {peak['iteration']})"
             )
             log(f"saved  {path}")
+            log(f"took   {format_clock(time.perf_counter() - run_started)}")
 
         return history
 

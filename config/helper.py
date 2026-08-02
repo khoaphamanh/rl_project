@@ -380,7 +380,19 @@ class Helper:
         logger.addHandler(file_handler)
 
         stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(logging.Formatter("%(message)s"))
+        # THE SAME FORMAT AS THE FILE, not a bare message. Two reasons: a line
+        # copied out of the terminal carries its own date, and a report row is
+        # datable on sight -- which is how you see that iterations 300..400
+        # took three times as long as 0..100 without waiting for the run to
+        # end. Every record gets the same fixed-width prefix, so the report
+        # table and torchinfo's summary stay aligned; they just start 21
+        # columns further right. Set this back to "%(message)s" for a bare
+        # terminal. (train_agent also prints the elapsed time between report
+        # iterations outright, so the subtraction does not have to be done by
+        # eye -- this is the absolute clock, that is the delta.)
+        stream_handler.setFormatter(
+            logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        )
         logger.addHandler(stream_handler)
 
         bar = "=" * 78
@@ -489,12 +501,22 @@ class Helper:
             # torch is concerned and still unavailable to anything else.
             torch.cuda.empty_cache()
 
-    def run_with_batch_size_fallback(self, run_fn, batch_size, logger=None):
+    def run_with_batch_size_fallback(
+        self, run_fn, batch_size, logger=None, what="batch size"
+    ):
         """Call run_fn(size) at the largest size that does not run out of memory.
 
             size_used, result = config.run_with_batch_size_fallback(
                 lambda bs: agent.learn(batch, bs), config.mini_batch_size, logger
             )
+
+        what NAMES WHAT IS BEING SIZED, and it exists because this runs twice
+        per run over the same candidate list for two unrelated reasons: once
+        for torchinfo's probe forward, which only decides how wide a table to
+        print, and once for the real update, which decides what the run trains
+        with. Identical wording for both put two lines in the log that look
+        like the same event and are not -- and the second is the one that
+        matters.
 
         batch_size may be a single int -- in which case there is nothing to
         fall back to and this is just a call -- or a list/tuple of candidates,
@@ -537,9 +559,7 @@ class Helper:
             self._free_memory()
             try:
                 if len(candidates) > 1:
-                    say(
-                        f"trying batch size {bs}  (candidate {i + 1}/{len(candidates)})"
-                    )
+                    say(f"trying {what} {bs}  (candidate {i + 1}/{len(candidates)})")
                 return bs, run_fn(bs)
             except (torch.cuda.OutOfMemoryError, RuntimeError) as error:
                 if not self._is_oom(error):
@@ -548,13 +568,12 @@ class Helper:
                 last_error = error
                 if i + 1 < len(candidates):
                     warn(
-                        f"out of memory at batch size {bs}, "
+                        f"out of memory at {what} {bs}, "
                         f"falling back to {candidates[i + 1]}"
                     )
                 else:
                     fail(
-                        f"out of memory at batch size {bs}, "
-                        f"no smaller one left to try"
+                        f"out of memory at {what} {bs}, no smaller one left to try"
                     )
 
         self._free_memory()
@@ -632,7 +651,9 @@ class Helper:
                 verbose=0,
             )
 
-        batch_size, info = self.run_with_batch_size_fallback(probe, batch_size, logger)
+        batch_size, info = self.run_with_batch_size_fallback(
+            probe, batch_size, logger, what="probe batch size"
+        )
         shape = (batch_size, seq_len, 7, 7, 3)
 
         write = logger.info if logger is not None else print
