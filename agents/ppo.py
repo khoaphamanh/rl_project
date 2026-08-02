@@ -124,6 +124,13 @@ class PPOAgent:
         # not a path string, so nothing here has to know where it writes.
         self.save_model = config.save_model
 
+        # filled by train_agent(): one dict per REPORT iteration, in order.
+        # At n_iterations=500 and n_iterations_report=100 that is iterations
+        # 0, 100, 200, 300, 400, 499 -- the run's learning curve, kept as data
+        # rather than only printed. Empty until train_agent() has run, so
+        # anything reading it has to train first. See train_agent().
+        self.eval_history = []
+
         # one independent game per worker, each with its own layout and cue.
         # config.build_env(), never gym.make: the wrappers are part of what the
         # env IS, and evaluate() must build the same thing.
@@ -937,20 +944,43 @@ class PPOAgent:
         which is the entire reason evaluate() exists. Merged raw, the eval
         number would silently overwrite the training one.
 
-        CHECKPOINTING happens on report iterations only, and only when
-        eval_success_rate BEATS every earlier one. config.save_model writes
-        agents/pretrained_model/ppo_<encoder>.pth -- weights, optimizer state,
-        and the four attributes that decide the architecture, so
-        config.load_model can refuse a file that does not match the config.
-        config.watch_agent() then plays it back in a window.
+        THE CURVE IS KEPT, NOT JUST PRINTED. Every report iteration's
+        evaluation is appended to self.eval_history as
+
+            {"iteration": i, "success_rate": ..., "timeout_rate": ...,
+             "return_mean": ..., "return_std": ..., "length_mean": ...,
+             "eval_episodes": ...}
+
+        so a finished run holds six of them at n_iterations=500 and
+        n_iterations_report=100 -- iterations 0, 100, 200, 300, 400 and 499.
+        That list is what the ablation plots and what hpo_ppo.run_split scores
+        from, and it goes into the checkpoint too.
+
+        CHECKPOINTING HAPPENS ONCE, AFTER THE LOOP, and it saves the policy the
+        run ENDED with -- not the best one it passed through. Those are
+        different files and the difference matters: "best seen" is the maximum
+        of six noisy measurements, so it is biased upward by the selection
+        itself, and it describes a policy that may have been destroyed by the
+        next KL spike. The last iteration is the one the run actually produced,
+        it is the one the study scores, and saving it is what makes the number
+        in the log and the weights on disk the same thing. If the run peaked
+        and then collapsed, eval_history says so -- and that is a finding about
+        the hyperparameters, not something to paper over by keeping the peak.
+
+        config.save_model writes pretrained_model_<ENC>/.../ppo_<seed>_<ENC>_
+        <env>.pth -- weights, optimizer state, eval_history, and the attributes
+        that decide the architecture, so config.load_model can refuse a file
+        that does not match the config. config.watch_agent() plays it back.
 
         logger comes from config.build_logger() and is optional: without one
         the report goes to stdout and nowhere else, with one it also lands in
         logs/log_<date>_<time>.log under the hyperparameters that produced it.
 
         Returns the history: one stats dict per iteration, in order. Report
-        iterations carry the eval_* keys too, the others do not. The history
-        itself is not written to disk -- that is still open.
+        iterations carry the eval_* keys too, the others do not. That is the
+        PER-ITERATION record, 500 entries of training diagnostics; for the
+        evaluations alone use self.eval_history, which is the same numbers
+        without the 494 rows that have none.
         """
         if n_iterations is None:
             n_iterations = self.n_iterations
@@ -976,25 +1006,41 @@ class PPOAgent:
         )
 
         history = []
-        best_success = -1.0  # -1, not 0: even a policy that never scores gets
-        #                      written once, so a file always exists afterwards
+        eval_history = []  # one entry per REPORT iteration -- see below
 
         for i in range(n_iterations):
             stats = self.train()
             stats["iteration"] = i
 
             # the last iteration always reports, so the run cannot end on an
-            # iteration whose numbers were never measured
+            # iteration whose numbers were never measured. THAT is what makes
+            # "score the last iteration" well defined: iteration
+            # n_iterations-1 is always in eval_history, whether or not
+            # n_iterations_report happens to divide n_iterations.
             report = i % n_iterations_report == 0 or i == n_iterations - 1
 
             if report:
+                # ONE evaluate() call, used twice. Calling it a second time
+                # would not repeat the measurement -- with eval_deterministic
+                # False the action sampling varies, so the same weights would
+                # give a different number and the printed row and the stored
+                # row would quietly disagree.
+                evaluation = self.evaluate()
+
                 # startswith guard: eval_episodes is already prefixed
                 stats.update(
                     {
                         k if k.startswith("eval_") else f"eval_{k}": v
-                        for k, v in self.evaluate().items()
+                        for k, v in evaluation.items()
                     }
                 )
+
+                # THE CURVE. Unprefixed keys, because every entry here is an
+                # evaluation and there is no rollout number beside it to
+                # collide with -- the eval_ prefix only exists in stats, where
+                # both live. "iteration" first, so an entry says WHEN it was
+                # measured and nothing has to be read positionally.
+                eval_history.append({"iteration": i, **evaluation})
 
                 # the training columns are ONE rollout, so they are noisy:
                 # with episodes near 0, return_mean means nothing that
@@ -1019,28 +1065,58 @@ class PPOAgent:
                     f" +- {stats['eval_return_std']:<5.3f}"
                 )
 
-                # KEEP THE BEST, NOT THE LAST. The policy is not monotone --
-                # a KL spike can take it from 1.00 back to 0.52 in one report
-                # interval -- so whatever iteration n_iterations-1 happens to
-                # be is a lottery ticket, not a result. Saving on improvement
-                # means the file holds the best policy the run ever had, and
-                # the FINAL printed row can be compared against it.
-                if stats["eval_success_rate"] > best_success:
-                    best_success = stats["eval_success_rate"]
-                    path = self.save_model(
-                        self.model,
-                        self.optimizer,
-                        iteration=i,
-                        eval_success_rate=best_success,
-                        eval_return_mean=stats["eval_return_mean"],
-                        # the size that actually fit on this machine, so the
-                        # checkpoint records what it was trained with rather
-                        # than the candidate list the config asked for
-                        mini_batch_size=self.mini_batch_size,
-                    )
-                    log(f"{'':>5} saved  {path}  (best so far {best_success:.2f})")
-
             history.append(stats)
+
+        # ---- one checkpoint, at the end --------------------------------
+        self.eval_history = eval_history
+
+        if eval_history:
+            last = eval_history[-1]
+
+            path = self.save_model(
+                self.model,
+                self.optimizer,
+                iteration=last["iteration"],
+                # THE WHOLE CURVE travels with the weights, so a .pth on its
+                # own answers "how did this run get here?" without the log
+                # file beside it. Plain ints and floats in plain dicts, which
+                # is what torch.load(weights_only=True) allows -- see
+                # helper.save_model.
+                eval_history=eval_history,
+                # how those numbers were taken. False means the curve was
+                # measured by SAMPLING the policy, so it is not reproducible
+                # to the digit and should not be compared against an argmax
+                # one -- see evaluate().
+                eval_deterministic=self.eval_deterministic,
+                # the last iteration's headline numbers, flat, because
+                # watch_agent's sidebar reads them and should not have to
+                # know the curve's shape
+                eval_success_rate=last["success_rate"],
+                eval_return_mean=last["return_mean"],
+                # the size that actually fit on this machine, so the
+                # checkpoint records what it was trained with rather than
+                # the candidate list the config asked for
+                mini_batch_size=self.mini_batch_size,
+            )
+
+            # the peak is REPORTED but not saved. A run that ends well below
+            # its best is the KL-spike failure, and seeing the gap is how you
+            # catch it -- but the file has to hold the policy the run
+            # produced, or the study would be ranking one set of weights and
+            # shipping another.
+            peak = max(eval_history, key=lambda e: e["success_rate"])
+            log("")
+            log(
+                f"kept {len(eval_history)} evaluations at iterations "
+                f"{[e['iteration'] for e in eval_history]}"
+            )
+            log(
+                f"final   iter {last['iteration']}  "
+                f"eval success {last['success_rate']:.2f}   "
+                f"(peak was {peak['success_rate']:.2f} at "
+                f"iter {peak['iteration']})"
+            )
+            log(f"saved  {path}")
 
         return history
 

@@ -11,8 +11,14 @@ the params it found. Two phases, one command --
 
     1. hpo()     n_trials draws, each trained once per seed in seed_list,
                  pruned and resumable       -> hpo/trial_<n>/
+                 the winner copied out of it -> hpo/best_trial/
     2. final()   ONE retrain at the winning params, which is the number that
-                 goes in the writeup        -> hpo/final_<ENC>_<env>.json
+                 goes in the writeup        -> hpo/final/
+
+Each of those three directories holds one checkpoint per seed plus the two
+learning-curve figures drawn from them, in .html and .svg. final/ also holds
+final_<ENC>_<env>.json, the report. See the agents/hpo_ppo.py docstring for
+the whole tree.
 
 The flags exist only to run one phase without the other, which is what you
 want when a study is already finished or when you mean to inspect it first:

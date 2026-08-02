@@ -60,15 +60,31 @@ def run_one(model_name, seed):
         # the clean final number: argmax instead of sampling, so it is fully
         # reproducible. Early in training this deadlocks -- at the END of a
         # run it is the honest score.
+        #
+        # A SECOND EVALUATION ON PURPOSE, unlike hpo_ppo.run_split. The curve
+        # below was measured in whatever mode config.eval_deterministic names
+        # (sampled by default); this one is argmax, which is a different
+        # question about the same weights. The study path deliberately does
+        # not do this -- it scores the last curve entry, so the number it
+        # ranks on is one that appears in its own log.
         final = agent.evaluate(deterministic=True)
 
-        # the learning CURVE, not just its last point. Index 0 is dropped
-        # because it is the untrained policy, the same floor for every run.
-        curve = [h["eval_success_rate"] for h in history if "eval_success_rate" in h]
+        # the learning CURVE, one entry per report iteration -- 0, 100, 200,
+        # 300, 400, 499 at n_iterations=500 and n_iterations_report=100.
+        # Index 0 is dropped from the aulc because it is the untrained policy,
+        # the same floor for every run.
+        curve = [c["success_rate"] for c in agent.eval_history]
         aulc = float(np.mean(curve[1:] or curve))
 
         logger.info("")
         logger.info(f"ran {len(history)} iterations")
+        logger.info(f"{'iter':>7} {'success':>9} {'timeout':>9} {'return':>9}")
+        for c in agent.eval_history:
+            logger.info(
+                f"{c['iteration']:>7} {c['success_rate']:>9.3f} "
+                f"{c['timeout_rate']:>9.3f} {c['return_mean']:>9.3f}"
+            )
+        logger.info("")
         logger.info("FINAL (deterministic)")
         logger.info(f"  success_rate  {final['success_rate']:.3f}")
         logger.info(f"  timeout_rate  {final['timeout_rate']:.3f}")

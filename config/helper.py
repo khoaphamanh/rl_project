@@ -616,9 +616,13 @@ class Helper:
         Adam's state is two moment tensors per parameter, so including it
         roughly triples the file.
 
-        **extra goes in verbatim -- iteration=, eval_success_rate= and so on.
-        Keep it to plain numbers and strings: everything here has to survive
-        torch.load(weights_only=True).
+        **extra goes in verbatim -- iteration=, eval_success_rate=,
+        eval_history= and so on. Everything here has to survive
+        torch.load(weights_only=True), which allows numbers, strings, bools,
+        None, and lists / tuples / dicts of those. That is enough for
+        train_agent's eval_history (a list of dicts of floats), which is how a
+        checkpoint carries its own learning curve. It is NOT enough for
+        arbitrary objects -- numpy scalars included, so cast with float().
         """
         path = self.build_model_path()
 
@@ -665,7 +669,7 @@ class Helper:
             raise FileNotFoundError(
                 f"no checkpoint at {path}. Train first and call "
                 f"config.save_model(agent.model) -- train_agent() does this "
-                f"on its own whenever eval_success_rate improves."
+                f"on its own, once, at the end of the run."
             )
 
         # weights_only=True is the safe default in modern torch and everything
@@ -834,6 +838,28 @@ class Helper:
         """hpo/best_trial/ -- a copy of whichever trial won."""
         return os.path.join(self.dir_hpo, "best_trial")
 
+    @property
+    def dir_hpo_final(self):
+        """hpo/final/ -- everything the RETRAIN produces, in one place.
+
+        final() writes one checkpoint per seed, a report json and four plot
+        files, which is eight or nine files for a three-seed list. Left in
+        hpo/ they would sit among the study's own csv, db and pkl and among
+        thirty trial_<n>/ directories, and "which of these is the result?"
+        would be answered by reading filenames.
+
+        A DIRECTORY INSTEAD OF A PREFIX, so hpo/ has the same shape at every
+        level: trial_<n>/, best_trial/ and final/ each hold one set of runs
+        and nothing else, and the same loader reads all three. That is what
+        lets plot_hpo() treat them identically -- see load_eval_histories.
+
+        NOT the same thing as best_trial/. That one is a copy of the winning
+        SEARCH trial, weights included; this one is the retrain at those
+        params, which is the number that goes in the writeup. See
+        hpo_ppo.final on why the two differ.
+        """
+        return os.path.join(self.dir_hpo, "final")
+
     def build_hpo_trial_dir(self, number):
         """dir_hpo_trial(n), created."""
         path = self.dir_hpo_trial(number)
@@ -844,6 +870,11 @@ class Helper:
         """dir_hpo_best_trial, created."""
         os.makedirs(self.dir_hpo_best_trial, exist_ok=True)
         return self.dir_hpo_best_trial
+
+    def build_hpo_final_dir(self):
+        """dir_hpo_final, created."""
+        os.makedirs(self.dir_hpo_final, exist_ok=True)
+        return self.dir_hpo_final
 
     def copy_best_trial(self, study, logger=None):
         """Copy the winning trial's files into best_trial/, and its params beside them.
@@ -956,6 +987,342 @@ class Helper:
         except ImportError:
             return None
         return path_csv
+
+    # ----- plots -----------------------------------------------------------
+    #
+    # WHAT IS PLOTTED. train_agent() evaluates on every report iteration and
+    # keeps the result in eval_history, which save_model puts INTO the
+    # checkpoint. So every .pth in this project carries its own learning
+    # curve, and a directory of them -- one per seed -- is a set of curves
+    # over the same x axis, ready to aggregate. trial_<n>/, best_trial/ and
+    # final/ are all exactly that, which is why one loader and one plotter
+    # cover all three.
+    #
+    # TWO FIGURES, NOT ONE, and deliberately not two bands on one axis. They
+    # answer different questions and disagreeing is the interesting case:
+    #
+    #   mean +- std      what the AVERAGE seed did, and how far the seeds
+    #                    spread around it. Sensitive to one seed that never
+    #                    learns -- which on a sparse-reward MiniGrid task is
+    #                    a common outcome, not an outlier to be discarded.
+    #   median + IQR     what the TYPICAL seed did. Unmoved by that one dead
+    #                    seed, so a median well above the mean is the plot
+    #                    saying "most seeds solved it, one did not".
+    #
+    # With three seeds the IQR is a wide interpolation between two of them --
+    # readable as a spread, not as a quantile estimate. Both figures are drawn
+    # anyway, because the GAP between them is the diagnostic.
+    #
+    # plotly is imported inside these methods, the same as optuna and joblib
+    # above: a checkout without it still trains, searches and scores.
+    # ------------------------------------------------------------------
+    def load_eval_histories(self, directory):
+        """Every checkpoint in `directory` -> {seed: eval_history}.
+
+        Reads the curve straight out of the .pth files, so it works on any of
+        hpo/trial_<n>/, hpo/best_trial/ and hpo/final/ without being told
+        which it is looking at, and it works on a study that finished weeks
+        ago with no log file left.
+
+        The seed comes from the FILENAME -- ppo_<seed>_<ENC>_<env>.pth, see
+        build_model_name -- which is the whole reason the seed is in there.
+
+        Skips silently rather than raising: a file that is not a checkpoint, a
+        checkpoint from before eval_history existed, or a half-written one
+        from a crashed run. An empty dict back means "nothing to plot", which
+        the callers treat as a normal outcome for a pruned trial.
+        """
+        histories = {}
+        if not os.path.isdir(directory):
+            return histories
+
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith(".pth"):
+                continue
+
+            try:
+                checkpoint = torch.load(
+                    os.path.join(directory, name),
+                    map_location="cpu",
+                    weights_only=True,
+                )
+            except Exception:
+                continue
+
+            if not isinstance(checkpoint, dict):
+                continue
+            history = checkpoint.get("eval_history")
+            if not history:
+                continue
+
+            parts = name.split("_")
+            try:
+                seed = int(parts[1])
+            except (IndexError, ValueError):
+                seed = name
+
+            histories[seed] = list(history)
+
+        # ints first and in order, anything unparseable after them
+        return dict(
+            sorted(
+                histories.items(),
+                key=lambda kv: (1, str(kv[0])) if isinstance(kv[0], str) else (0, kv[0]),
+            )
+        )
+
+    @staticmethod
+    def curve_table(histories, metric):
+        """{seed: history} -> (iterations, seeds, values).
+
+        values is (n_iterations, n_seeds) with nan where a seed has no entry
+        at that iteration. Nan rather than a dropped row, because a pruned
+        trial can hold two seeds that both ran the full 500 iterations and one
+        that did not run at all -- and the aggregate should be over the seeds
+        that HAVE a number there, not over a truncated x axis.
+        """
+        by_iteration = {}
+        for seed, history in histories.items():
+            for entry in history:
+                if metric in entry and entry[metric] is not None:
+                    step = int(entry["iteration"])
+                    by_iteration.setdefault(step, {})[seed] = float(entry[metric])
+
+        iterations = sorted(by_iteration)
+        seeds = list(histories)
+        values = np.array(
+            [[by_iteration[i].get(s, np.nan) for s in seeds] for i in iterations],
+            dtype=float,
+        )
+        return iterations, seeds, values
+
+    def plot_eval_curves(
+        self,
+        directory,
+        metric=None,
+        name=None,
+        title=None,
+        logger=None,
+        include_plotlyjs="cdn",
+    ):
+        """Two figures from one directory of checkpoints. Returns the paths written.
+
+            hpo/final/curve_return_mean_mean_std.html   .svg
+            hpo/final/curve_return_mean_median_iqr.html .svg
+
+        directory  any of hpo/trial_<n>/, hpo/best_trial/, hpo/final/ -- see
+                   load_eval_histories
+        metric     the y axis, defaulting to config.hpo_objective, so the
+                   plot shows the quantity the study was actually ranked on.
+                   Any key of an eval_history entry works: success_rate,
+                   return_mean, timeout_rate, length_mean.
+        name       what to call this run in the title. Defaults to the
+                   directory's basename, which is already "trial_7",
+                   "best_trial" or "final".
+
+        BOTH FORMATS, because they are for different readers. The .html keeps
+        the hover and the legend, so the per-seed traces can be switched on
+        one at a time -- they are drawn but start hidden, since three raw
+        curves under a band is unreadable at a glance and invaluable once you
+        are asking why the band is wide. The .svg is vector and static, which
+        is what goes in the report.
+
+        include_plotlyjs is "cdn" on purpose. The alternative inlines ~3 MB of
+        javascript into EVERY file, and a thirty-trial study writes sixty of
+        them -- 180 MB of duplicated library. The cost is that the .html needs
+        a network connection to render; the .svg never does, and that is the
+        one that gets published.
+
+        Returns [] and logs a line if the directory holds no curve -- a pruned
+        trial that died on its first seed is the normal case, not an error.
+        """
+        import plotly.graph_objects as go
+
+        say = logger.info if logger is not None else print
+
+        if metric is None:
+            metric = self.hpo_objective
+        if name is None:
+            name = os.path.basename(os.path.normpath(directory))
+
+        histories = self.load_eval_histories(directory)
+        if not histories:
+            say(f"no eval_history in {directory}, nothing to plot")
+            return []
+
+        iterations, seeds, values = self.curve_table(histories, metric)
+        if not iterations:
+            say(f"no {metric!r} in the curves under {directory}, nothing to plot")
+            return []
+
+        # nan-aware everywhere: a seed missing at one iteration must not turn
+        # the whole row into nan and blank out the plot
+        mean = np.nanmean(values, axis=1)
+        std = np.nanstd(values, axis=1)
+        median = np.nanmedian(values, axis=1)
+        q25 = np.nanpercentile(values, 25, axis=1)
+        q75 = np.nanpercentile(values, 75, axis=1)
+
+        header = (
+            f"{self.feature_extractor.upper()} on {self.name_env}"
+            f"  --  {name}  --  {len(seeds)} seed(s) {list(seeds)}"
+        )
+
+        paths = []
+        for suffix, centre, low, high, centre_label, band_label, colour in (
+            (
+                "mean_std",
+                mean,
+                mean - std,
+                mean + std,
+                "mean over seeds",
+                "+- 1 std",
+                "#2f6fdb",
+            ),
+            (
+                "median_iqr",
+                median,
+                q25,
+                q75,
+                "median over seeds",
+                "IQR (q25 - q75)",
+                "#c2410c",
+            ),
+        ):
+            fig = go.Figure()
+
+            # THE BAND FIRST, so the centre line draws on top of it rather
+            # than under. A filled "toself" polygon: up the upper edge, back
+            # down the lower one reversed.
+            fig.add_trace(
+                go.Scatter(
+                    x=list(iterations) + list(iterations)[::-1],
+                    y=list(high) + list(low)[::-1],
+                    fill="toself",
+                    fillcolor=self._rgba(colour, 0.18),
+                    # mode SPELLED OUT. Left to plotly it defaults to
+                    # "lines+markers" for a trace under 20 points, and the
+                    # polygon is 2 * len(iterations) = 12 -- so the band would
+                    # come out dotted along both edges and its legend swatch
+                    # would carry a marker it does not mean.
+                    mode="lines",
+                    line=dict(width=0),
+                    hoverinfo="skip",
+                    name=band_label,
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=iterations,
+                    y=centre,
+                    mode="lines+markers",
+                    line=dict(color=colour, width=2.5),
+                    marker=dict(size=6),
+                    name=centre_label,
+                    hovertemplate="iteration %{x}<br>" + metric + " %{y:.3f}<extra></extra>",
+                )
+            )
+
+            # the raw seeds, DRAWN BUT HIDDEN. legendonly keeps them out of
+            # the svg and out of the first look, and one click puts them back
+            # -- which is what you want the moment the band looks wrong.
+            for index, seed in enumerate(seeds):
+                fig.add_trace(
+                    go.Scatter(
+                        x=iterations,
+                        y=values[:, index],
+                        mode="lines",
+                        line=dict(color="#8b8b8b", width=1, dash="dot"),
+                        name=f"seed {seed}",
+                        visible="legendonly",
+                        hovertemplate=(
+                            f"seed {seed}<br>iteration %{{x}}<br>"
+                            + metric
+                            + " %{y:.3f}<extra></extra>"
+                        ),
+                    )
+                )
+
+            fig.update_layout(
+                title=dict(
+                    text=(title or f"{metric}  --  {centre_label} and {band_label}")
+                    + f"<br><sub>{header}</sub>"
+                ),
+                xaxis_title="iteration",
+                yaxis_title=metric,
+                template="plotly_white",
+                hovermode="x unified",
+                width=1000,
+                height=560,
+                legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
+                margin=dict(t=110, r=30, b=60, l=70),
+            )
+
+            os.makedirs(directory, exist_ok=True)
+            stem = os.path.join(directory, f"curve_{metric}_{suffix}")
+
+            fig.write_html(f"{stem}.html", include_plotlyjs=include_plotlyjs)
+            paths.append(f"{stem}.html")
+
+            # needs kaleido. It is in requirements.txt, but a missing static
+            # exporter should not lose the html that was just written or kill
+            # a study that is otherwise finished.
+            try:
+                fig.write_image(f"{stem}.svg")
+                paths.append(f"{stem}.svg")
+            except Exception as error:
+                say(f"could not write {stem}.svg ({type(error).__name__}: {error})")
+
+        say(f"plotted {metric} for {name}: {len(paths)} file(s) in {directory}")
+        return paths
+
+    @staticmethod
+    def _rgba(hex_colour, alpha):
+        """'#2f6fdb', 0.18 -> 'rgba(47,111,219,0.18)'. Plotly wants the string."""
+        hex_colour = hex_colour.lstrip("#")
+        r, g, b = (int(hex_colour[i : i + 2], 16) for i in (0, 2, 4))
+        return f"rgba({r},{g},{b},{alpha})"
+
+    def plot_hpo(self, metric=None, logger=None, include_trials=True):
+        """Plot every trial, the best trial and the final retrain. Returns the paths.
+
+        Walks hpo/ and plots whichever of trial_<n>/, best_trial/ and final/
+        actually hold checkpoints, so it is safe to call on a study that is
+        half finished, on one whose trials were pruned, or before final() has
+        run. Re-running overwrites -- the plots are derived from the .pth
+        files and nothing about them is cumulative.
+
+        include_trials=False skips the thirty trial directories and does only
+        best_trial/ and final/, which is the fast version when the individual
+        trials are not what is being looked at.
+        """
+        say = logger.info if logger is not None else print
+
+        if metric is None:
+            metric = self.hpo_objective
+
+        directories = []
+        if include_trials and os.path.isdir(self.dir_hpo):
+            trials = [
+                entry
+                for entry in os.listdir(self.dir_hpo)
+                if entry.startswith("trial_")
+                and os.path.isdir(os.path.join(self.dir_hpo, entry))
+            ]
+            # trial_2 before trial_10: sorted() on the string would not
+            directories += [
+                os.path.join(self.dir_hpo, entry)
+                for entry in sorted(trials, key=lambda e: int(e.split("_")[1]))
+            ]
+
+        directories += [self.dir_hpo_best_trial, self.dir_hpo_final]
+
+        paths = []
+        for directory in directories:
+            paths += self.plot_eval_curves(directory, metric=metric, logger=logger)
+
+        say(f"plot_hpo: {len(paths)} file(s) written under {self.dir_hpo}")
+        return paths
 
     def print_separate_lines(self, logger, n=10):
         for _ in range(n):

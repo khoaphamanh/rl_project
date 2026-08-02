@@ -45,10 +45,30 @@ WHAT IT WRITES, all under agents/pretrained_model_<ENC>/hpo/ :
     hpo_csv_<ENC>_<env>.csv      every trial, rewritten at each trial's start
     hpo_db_<ENC>_<env>.db        the study, so it can resume
     hpo_sampler_<ENC>_<env>.pkl  the TPE state, likewise
-    trial_0/ trial_1/ ...        that trial's checkpoints, ONE PER SEED
-    best_trial/                  a copy of the winner's, + best_params.json
-    ppo_<seed>_<ENC>_<env>.pth   final()'s retrained models
-    final_<ENC>_<env>.json       what that retrain scored
+
+    trial_0/ trial_1/ ...        one directory per trial
+        ppo_<seed>_<ENC>_<env>.pth       ONE PER SEED, curve included
+        curve_<metric>_mean_std.html     + .svg
+        curve_<metric>_median_iqr.html   + .svg
+
+    best_trial/                  a byte copy of whichever trial won
+        (the same files, plus best_params.json)
+
+    final/                       the RETRAIN -- the number to report
+        ppo_<seed>_<ENC>_<env>.pth       one per seed
+        final_<ENC>_<env>.json           every metric, per seed and summarised
+        curve_<metric>_mean_std.html     + .svg
+        curve_<metric>_median_iqr.html   + .svg
+
+THREE DIRECTORIES, ONE SHAPE. trial_<n>/, best_trial/ and final/ each hold one
+set of runs and nothing else, so the same reader covers all three -- which is
+what lets helper.plot_hpo plot them without being told which it has. <metric>
+is config.hpo_objective, the quantity the study was actually ranked on.
+
+The plots come from the CHECKPOINTS, not from the log: train_agent stores its
+eval_history in the .pth, so a directory of them is a set of learning curves
+over a shared x axis. config.plot_hpo() rebuilds every figure from files
+already on disk, which is the fix for a study interrupted before it plotted.
 
 Nothing is written outside hpo/. The sibling no_hpo/ belongs to
 main_no_hpo.py, and the two never collide.
@@ -147,8 +167,26 @@ class HPOPPO:
         onto the config BEFORE the agent is built, so the learning curve and
         the closing evaluation are measured the same way -- see below.
 
-        Returns {"seed", "aulc", "success_rate", "return_mean",
-        "return_std_episodes", "deterministic"}.
+        THE SCORE IS THE LAST ITERATION. train_agent() evaluates on every
+        report iteration and keeps them in agent.eval_history -- iterations
+        0, 100, 200, 300, 400, 499 at the current n_iterations /
+        n_iterations_report -- and this reads the LAST of them. Not the best
+        one the run passed through: that is the maximum of six noisy
+        measurements and biased upward the same way study.best_value is, and
+        it would score a policy that no longer exists by the end of the run.
+        The last entry is also the policy that was checkpointed, so the number
+        the study ranks on and the weights on disk are the same thing.
+
+        There is deliberately NO second evaluate() call here. Iteration
+        n_iterations-1 already evaluated exactly these weights; with
+        eval_deterministic=False a repeat would return a different number for
+        the same policy, and the trial would be scored on something that
+        appears nowhere in its own log.
+
+        Returns {"seed", "iteration", "aulc", "success_rate", "return_mean",
+        "return_std_episodes", "deterministic", "eval_history"}. Everything
+        but the last two is a scalar, which is what final()'s summary and
+        objective()'s user attributes assume.
         """
         config = make_config(self.feature_extractor)
 
@@ -161,11 +199,12 @@ class HPOPPO:
         if trial_number is not None:
             config.dir_pretrained_model = config.build_hpo_trial_dir(trial_number)
         else:
-            # final(): the study's OUTPUT, so it belongs beside the search that
-            # produced it rather than a level up. That keeps
-            # pretrained_model_<ENC>/ to exactly two entries, hpo/ and no_hpo/,
-            # which is what says at a glance how a checkpoint was arrived at.
-            config.dir_pretrained_model = config.build_hpo_dir()
+            # final(): the study's OUTPUT. Its own directory, hpo/final/, for
+            # the same reason each trial has one -- the retrain writes one
+            # checkpoint per seed plus a report and four plots, and loose in
+            # hpo/ those would sit among the study's csv, db and pkl and among
+            # thirty trial_<n>/ directories. See config.dir_hpo_final.
+            config.dir_pretrained_model = config.build_hpo_final_dir()
 
         # ONE EVAL MODE FOR THE WHOLE RUN, set BEFORE the agent is built so it
         # reaches everything. PPOAgent copies eval_deterministic out of the
@@ -183,31 +222,50 @@ class HPOPPO:
 
         agent = PPOAgent(config, seed=seed)
         try:
-            history = agent.train_agent(logger=self.logger)
+            agent.train_agent(logger=self.logger)
 
-            # no deterministic= argument: it uses config.eval_deterministic,
-            # which is the single mode set just above
-            final = agent.evaluate()
+            # one entry per report iteration, in order. train_agent() measured
+            # every one of them under the single mode set above, so nothing in
+            # here was taken with a different instrument.
+            curve = agent.eval_history
 
-            # THE LEARNING CURVE, not just its last point. Index 0 is dropped
-            # because it is essentially the untrained policy -- the same floor
-            # for every trial, so keeping it only adds a constant to every
-            # score and compresses the differences the search is looking for.
-            curve = [h["eval_success_rate"] for h in history if "eval_success_rate" in h]
-            aulc = float(np.mean(curve[1:] or curve))
+            # THE TRIAL'S SCORE. The policy the run ended with, which is the
+            # policy that was saved -- see the docstring.
+            last = curve[-1]
+
+            # THE ONE METRIC THAT IS NOT THE LAST ITERATION, and cannot be:
+            # "area under the learning curve" is a statement about the SHAPE
+            # of the run, so it reads all of the entries by definition. It
+            # answers a different question from success_rate -- how fast, not
+            # how far -- and a trial that reaches 0.9 by iteration 100 beats
+            # one that reaches it at 499 only here.
+            #
+            # Index 0 is dropped because it is essentially the untrained
+            # policy -- the same floor for every trial, so keeping it only
+            # adds a constant to every score and compresses the differences
+            # the search is looking for.
+            success_curve = [float(c["success_rate"]) for c in curve]
+            aulc = float(np.mean(success_curve[1:] or success_curve))
 
             return {
                 "seed": seed,
-                # all three measured under the SAME mode -- see above
+                # which iteration the scalars below were measured at, recorded
+                # so the json cannot be misread as "somewhere in the run"
+                "iteration": int(last["iteration"]),
+                # all four measured under the SAME mode -- see above
                 "aulc": aulc,
-                "success_rate": float(final["success_rate"]),
-                "return_mean": float(final["return_mean"]),
+                "success_rate": float(last["success_rate"]),
+                "return_mean": float(last["return_mean"]),
                 # the spread over EVAL EPISODES within this one run. Recorded
                 # because it describes the run, but deliberately NOT what
                 # mean_minus_std subtracts -- see helper.aggregate_scores.
-                "return_std_episodes": float(final["return_std"]),
+                "return_std_episodes": float(last["return_std"]),
                 # so the csv and the json say how these numbers were taken
                 "deterministic": bool(deterministic),
+                # the whole curve, carried out of the run so final()'s json
+                # holds it. The only non-scalar here, which is why both
+                # objective() and final() name it explicitly below.
+                "eval_history": curve,
             }
         finally:
             # the W envs are released even if this raises or is interrupted --
@@ -251,10 +309,34 @@ class HPOPPO:
                 # optimized: the csv then answers "what would the other
                 # objective have chosen?" without re-running the study, and
                 # the per-seed spread is what says whether a trial's score
-                # means anything at all.
+                # means anything at all. All of these are the LAST ITERATION's
+                # numbers, except aulc.
+                #
+                # eval_history is skipped HERE and re-added below: it is a list
+                # of dicts, and one of those per seed would put an unreadable
+                # blob in every row of the csv.
                 for key, value in result.items():
-                    if key != "seed":
+                    if key not in ("seed", "eval_history"):
                         trial.set_user_attr(f"{key}_seed_{seed}", value)
+
+                # THE CURVE, flattened to one list per seed per metric. This
+                # is what the ablation figure plots, and keeping it in the
+                # study means a finished search can be re-plotted without
+                # re-reading thirty trials' worth of checkpoints. Optuna
+                # serialises user attributes as json, so lists of floats are
+                # fine; lists of dicts would not be worth reading back.
+                history = result["eval_history"]
+                trial.set_user_attr(
+                    "curve_iterations", [int(c["iteration"]) for c in history]
+                )
+                trial.set_user_attr(
+                    f"curve_success_rate_seed_{seed}",
+                    [float(c["success_rate"]) for c in history],
+                )
+                trial.set_user_attr(
+                    f"curve_return_mean_seed_{seed}",
+                    [float(c["return_mean"]) for c in history],
+                )
 
                 # PRUNING HAPPENS BETWEEN SEEDS. The running score is reported
                 # with the seed index as the step, so a draw that is clearly
@@ -302,6 +384,18 @@ class HPOPPO:
         # deleting the other trial directories
         self.config.copy_best_trial(self.study, self.logger)
 
+        # ONE PAIR OF FIGURES PER TRIAL, plus the winner's. Drawn from the
+        # checkpoints, so this runs after copy_best_trial -- best_trial/ has
+        # no .pth in it until then and there would be nothing to plot.
+        #
+        # AFTER the search rather than inside objective(), for two reasons: a
+        # trial's plot is only complete once all its seeds have run, and a
+        # pruned trial would otherwise be plotted from one seed and then never
+        # updated. This also means a study interrupted with ctrl-c leaves no
+        # plots -- re-run with --final-only, or call config.plot_hpo()
+        # directly, and they are rebuilt from the files already on disk.
+        self.config.plot_hpo(logger=self.logger)
+
         return best
 
     # ------------------------------------------------------------------
@@ -316,6 +410,12 @@ class HPOPPO:
         some is that it got the luckiest draw, and the study cannot tell you
         how much of each. Retraining at those params and scoring THAT is the
         clean number, and it is the one that belongs in the writeup.
+
+        EVERYTHING GOES IN hpo/final/ -- the per-seed checkpoints, the report
+        json and the two curve figures. run_split points the checkpoints there
+        (trial_number=None) and this writes the rest beside them, so the
+        result is one directory rather than nine files loose among the study's
+        db, csv, pkl and thirty trial_<n>/ directories.
 
         Writes final_<ENC>_<env>.json next to the checkpoints, with the
         per-seed values kept alongside the mean: on these tasks the outcome is
@@ -356,10 +456,16 @@ class HPOPPO:
         # EVERY metric summarised, not only the searched one, so the json can
         # be read against a different objective later without retraining. All
         # of them were measured under the same eval mode, so they are directly
-        # comparable to each other -- "deterministic" is dropped because it is
-        # a flag, not a measurement.
+        # comparable to each other.
+        #
+        # FOUR KEYS ARE NOT MEASUREMENTS and are dropped: seed and
+        # deterministic are labels, iteration is the same number for every
+        # seed (a mean of it says nothing), and eval_history is a list -- the
+        # curves stay in "results" below, where they can be read as curves
+        # rather than averaged into one.
         summary = {}
-        for key in sorted(set(results[0]) - {"seed", "deterministic"}):
+        skip = {"seed", "deterministic", "iteration", "eval_history"}
+        for key in sorted(set(results[0]) - skip):
             values = [r[key] for r in results]
             summary[key] = {
                 "mean": float(np.mean(values)),
@@ -392,6 +498,13 @@ class HPOPPO:
             "seed_list": self.seed_list,
             "eval_seed": self.config.eval_seed,
             "n_eval_episodes": self.config.n_eval_episodes,
+            # WHAT "the score" IS MEASURED AT. Every scalar above comes from
+            # the last report iteration, and these three say which one that
+            # was -- so the json is readable without also knowing what
+            # config.py said on the day it was written.
+            "n_iterations": self.config.n_iterations,
+            "n_iterations_report": self.config.n_iterations_report,
+            "scored_at_iteration": results[0]["iteration"],
             # how THESE runs were measured, and how the trials were
             "final_deterministic": self.final_deterministic,
             "trials_deterministic": self.config.eval_deterministic,
@@ -399,8 +512,19 @@ class HPOPPO:
             "summary": summary,
         }
 
-        path = os.path.join(self.config.dir_hpo, f"final_{self.config.name_hpo}.json")
+        # beside the checkpoints it describes, not a level up -- run_split has
+        # already pointed the retrain's models at hpo/final/
+        path = os.path.join(
+            self.config.build_hpo_final_dir(), f"final_{self.config.name_hpo}.json"
+        )
         self.config.save_json(path, report)
+
+        # the two curve figures, read back out of the checkpoints that were
+        # just written. Same aggregation over the same seed_list as the table
+        # below, so the plot and the numbers cannot disagree.
+        self.config.plot_eval_curves(
+            self.config.dir_hpo_final, name="final", logger=self.logger
+        )
 
         mode = "argmax" if self.final_deterministic else "sampled"
         self.logger.info("")
@@ -408,6 +532,13 @@ class HPOPPO:
             f"FINAL  {self.feature_extractor} on {self.name_env}   "
             f"(eval: {mode}, {self.config.n_eval_episodes} episodes "
             f"from eval_seed {self.config.eval_seed})"
+        )
+        # says which iteration the table below is, so a row cannot be mistaken
+        # for the best the run ever reached
+        self.logger.info(
+            f"       scored at iteration {results[0]['iteration']} "
+            f"of {self.config.n_iterations}, "
+            f"{len(results[0]['eval_history'])} evaluations kept per seed"
         )
         self.logger.info(f"{'seed':>8} {'return':>8} {'success':>9} {'aulc':>8}")
         for r in results:
