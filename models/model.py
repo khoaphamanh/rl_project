@@ -1,24 +1,6 @@
 """
-Actor-critic network: one shared feature extractor, two linear heads.
-
-The feature extractor is handed in already built, so the same Network works
-with MLP, LSTM or GRU from feature_extractor.py without a single change. That
-is what makes the "With Recurrence" vs "No Recurrence" ablation of the RPPO
-paper (Figure 6) a one-line swap.
-
-    obs  (batch, seq_len, 7, 7, 3)
-              |
-      feature_extractor            MLP / LSTM / GRU   -> also gives back the
-              |                                          hidden state it ended on
-       (batch, seq_len, hidden_size)
-          /              \\
-    fc_actor           fc_critic
-    (n_actions)           (1)
-          |                 |
-    Categorical          value
-
-Both heads read the SAME features, which is what "shared" means: one encoder
-is trained by the sum of the policy loss and the value loss.
+Actor-critic network: one shared feature extractor (MLP/LSTM/GRU), two linear
+heads (actor logits, critic value) reading the same features.
 
 Run with:
     python models/model.py
@@ -35,60 +17,26 @@ except ImportError:  # when run directly: python models/model.py
 
 
 class Network(nn.Module):
-    """Shared-encoder actor-critic.
-
-    feature_extractor : an already initialized MLP, LSTM or GRU
-    hidden_size       : the size that extractor outputs, so the heads match it
-    n_actions         : size of the discrete action space (7 for MiniGrid)
-
-    The extractor is stored as a submodule, so its parameters show up in
-    self.parameters() and one optimizer trains the encoder and both heads.
-    """
+    """Shared-encoder actor-critic: an MLP/LSTM/GRU feature extractor feeding an actor head and a critic head, trained jointly by one optimizer."""
 
     def __init__(self, feature_extractor, hidden_size, n_actions):
         super().__init__()
-
         self.feature_extractor = feature_extractor
-
-        # MLP.forward takes only x, LSTM/GRU.forward also take a hidden state
         self.is_recurrent = isinstance(feature_extractor, (LSTM, GRU))
-
         self.fc_actor = nn.Linear(hidden_size, n_actions)
         self.fc_critic = nn.Linear(hidden_size, 1)
 
     def forward(self, x, hidden=None):
-        """(batch, seq_len, *obs_shape) -> (Categorical, value, hidden).
-
-        hidden going IN is h_0 for a GRU, (h_0, c_0) for an LSTM, and ignored
-        by the MLP. hidden coming OUT is the state after the last timestep, so
-        the caller can feed it straight back on the next call -- that is how
-        the rollout loop keeps its memory while stepping one timestep at a
-        time. It is None for the MLP, which has nothing to carry.
-
-        value is squeezed from (batch, seq_len, 1) to (batch, seq_len) so it
-        lines up with the rewards.
-        """
+        """(batch, seq_len, ...) -> (dist, value, hidden)."""
         if self.is_recurrent:
             features, hidden = self.feature_extractor(x, hidden, return_hidden=True)
         else:
             features = self.feature_extractor(x)
             hidden = None
 
-        logits = self.fc_actor(features)  # (batch, seq_len, n_actions)
-        value = self.fc_critic(features).squeeze(-1)  # (batch, seq_len)
-
-        # a distribution, not raw logits: PPO needs log_prob() and entropy(),
-        # and dist.logits gives the raw numbers back if they are ever wanted
-        #
-        # validate_args=False, and it is not a micro-optimization. The default
-        # is True, and torch validates by ending in
-        # "if not torch._is_all_true(valid)" -- a python if on a DEVICE tensor,
-        # which is a full GPU -> CPU round trip that stalls the queue. There is
-        # one in Categorical(...) checking the logits, and another in
-        # dist.log_prob(a) checking the sample. The rollout builds one
-        # distribution per timestep, so leaving it on costs 2 * worker_steps
-        # synchronisations per iteration -- 1,280 at T = 640 -- to re-check
-        # numbers the two lines above just produced.
+        logits = self.fc_actor(features)
+        value = self.fc_critic(features).squeeze(-1)
+        # validate_args=False: avoids expensive GPU -> CPU round trip
         return Categorical(logits=logits, validate_args=False), value, hidden
 
 
@@ -111,7 +59,6 @@ def main():
     print(f"input: ({NUM_SEQUENCES}, {SEQ_LEN}, {OBS_SHAPE})\n")
 
     x = random_obs(NUM_SEQUENCES, SEQ_LEN)
-
     extractors = [
         ("MLP", MLP(INPUT_SIZE, HIDDEN_SIZE, N_LAYERS)),
         ("LSTM", LSTM(INPUT_SIZE, HIDDEN_SIZE)),
@@ -132,7 +79,6 @@ def main():
         print(
             f"        action   {tuple(action.shape)}  log_prob {tuple(dist.log_prob(action).shape)}"
         )
-        # the state the encoder ended on: None for MLP, h for GRU, (h, c) for LSTM
         if hidden is None:
             print(f"        hidden   None")
         elif isinstance(hidden, tuple):
@@ -140,7 +86,6 @@ def main():
         else:
             print(f"        hidden   {tuple(hidden.shape)}")
 
-    # the recurrent ones can be continued from a hidden state (truncated BPTT)
     print("\nWITH AN INITIAL HIDDEN STATE")
     h0 = torch.zeros(1, NUM_SEQUENCES, HIDDEN_SIZE)
     c0 = torch.zeros(1, NUM_SEQUENCES, HIDDEN_SIZE)
@@ -151,7 +96,6 @@ def main():
     print(f"  LSTM  value {tuple(lstm_net(x, (h0, c0))[1].shape)}")
     print(f"  GRU   value {tuple(gru_net(x, h0)[1].shape)}")
 
-    # both heads read the same features, so one backward pass trains everything
     print("\nSHARED ENCODER CHECK (GRU)")
     dist, value, _ = gru_net(x)
     loss = -dist.log_prob(dist.sample()).mean() + value.pow(2).mean()
