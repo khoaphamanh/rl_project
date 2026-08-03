@@ -32,7 +32,12 @@ class Config(Helper):
         # required in notebooks and scripts without an __main__ guard.
         self.async_envs = True
 
-        self.worker_steps = self.env_max_steps  # T: env's own time limit
+        # T: None -> use the env's own default max_steps; an explicit int
+        # overrides the env's max_steps too (see Helper.build_env), which
+        # keeps MiniGrid's truncation and reward in sync with worker_steps
+        self.worker_steps = self.env_max_steps //4
+        if self.worker_steps is None:
+            self.worker_steps = self.env_max_steps
         self.n_total_steps = self.n_workers * self.worker_steps  # W * T
 
         self.gamma = 0.99

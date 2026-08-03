@@ -121,7 +121,13 @@ class Helper:
 
     def build_env(self, render_mode=None):
         """One MiniGrid game, wrapped the way the config asks (adds StartInCueView if force_cue_visible). The single builder every env in the project comes from."""
-        env = gym.make(self.name_env, render_mode=render_mode)
+        kwargs = {}
+        if self.worker_steps is not None:
+            # overrides the env's own default max_steps; MiniGrid computes
+            # both truncation and the success reward (1 - 0.9*step_count/
+            # max_steps) from it, so both stay in sync with worker_steps
+            kwargs["max_steps"] = int(self.worker_steps)
+        env = gym.make(self.name_env, render_mode=render_mode, **kwargs)
 
         if self.force_cue_visible:
             env = StartInCueView(env)

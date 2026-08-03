@@ -36,15 +36,6 @@ class ConfigNoHPO(Config):
         self.n_iterations = 500
         self.n_iterations_report = 100
 
-        # 3. the env
-        self.name_env = "MiniGrid-DoorKey-8x8-v0"
-        self.force_cue_visible = False
-
-        # 4. sampling
-        self.n_workers = 16  # W
-        self.worker_steps = self.env_max_steps  # T
-        self.n_total_steps = self.n_workers * self.worker_steps
-
         # 5. PPO -- the pre-HPO values
         self.lr = 1e-3
         self.wd = 0.0
