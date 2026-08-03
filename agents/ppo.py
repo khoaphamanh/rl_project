@@ -4,35 +4,12 @@ and the training loop. main.py builds a Config and calls train_agent(); every
 other method here is one stage of that pipeline.
 """
 
-import time
-from contextlib import contextmanager
-
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from config.helper import SequenceDataset
+from config.helper import SequenceDataset, Timing, format_clock
 from models.model import Network
-
-
-def format_clock(seconds):
-    """A duration someone WAITS through: 1h 05m 03s / 5m 03s / 42.1s."""
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes, seconds = divmod(int(seconds), 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h {minutes:02d}m {seconds:02d}s"
-    return f"{minutes}m {seconds:02d}s"
-
-
-def format_mean(seconds):
-    """A per-call mean duration, in whatever unit (us/ms/s) keeps it readable."""
-    if seconds < 1e-3:
-        return f"{seconds * 1e6:.1f}us"
-    if seconds < 1.0:
-        return f"{seconds * 1e3:.2f}ms"
-    return f"{seconds:.3f}s"
 
 
 class PPOAgent:
@@ -88,111 +65,9 @@ class PPOAgent:
         self.hidden = self.zero_hidden()
         self.ep_return = np.zeros(self.n_workers, dtype=np.float64)
         self.ep_length = np.zeros(self.n_workers, dtype=np.int64)
-        self.timing = {}  # Phase timers (reset each report)
-        self.timing_run = {}  # Phase timers (cumulative for seed)
-
-    def _sync(self):
-        """Block until GPU work finishes."""
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-
-    @contextmanager
-    def _timed(self, phase, units=1):
-        """Accumulate phase timing."""
-        self._sync()
-        start = time.perf_counter()
-        try:
-            yield
-        finally:
-            self._sync()
-            entry = self.timing.setdefault(phase, [0.0, 0])
-            entry[0] += time.perf_counter() - start
-            entry[1] += units
-
-    def pop_timing(self):
-        """Return accumulated timings since last call and fold into timing_run."""
-        collected = {}
-        for key, (seconds, units) in self.timing.items():
-            collected[key] = (seconds, units)
-            total = self.timing_run.setdefault(key, [0.0, 0])
-            total[0] += seconds
-            total[1] += units
-        self.timing = {}
-        return collected
-
-    TIMING_ROWS = (
-        ("sample", "sample (collect)"),
-        ("env_step", "  env.step() + reset()"),
-        ("env_loop", "  the worker loop, all of it"),
-        ("act_forward", "  act forward (no_grad)"),
-        ("act_to_host", "  act -> host copy"),
-        ("gae", "gae"),
-        ("split_pad_mask", "split_pad_mask"),
-        ("update_fwd", "update forward"),
-        ("update_bwd", "update backward + step"),
-    )
-
-    TIMING_ROWS_EVAL = (
-        ("evaluate", "evaluate() (report only)"),
-        ("eval_forward", "  eval forward (no_grad)"),
-        ("eval_step", "  eval env.step() + reset()"),
-    )
-
-    def _log_timing_table(self, log, timing, headline):
-        """Print phase-by-phase timing table."""
-        if "iteration" not in timing:
-            return
-
-        iteration_total, n_iterations = timing["iteration"]
-
-        def row(label, seconds, units):
-            share = 100.0 * seconds / iteration_total if iteration_total else 0.0
-            mean = format_mean(seconds / units) if units else "-"
-            log(f"  {label:<30}{seconds:>9.2f}s {share:>7.1f}% {units:>11} {mean:>10}")
-
-        log("")
-        log(headline)
-        log(f"  {'phase':<30}{'total':>10} {'share':>8} {'calls':>11} {'mean':>10}")
-
-        for key, label in self.TIMING_ROWS:
-            if key in timing:
-                row(label, *timing[key])
-
-        log("  " + "-" * 70)
-        row("one whole iteration", iteration_total, n_iterations)
-
-        for key, label in self.TIMING_ROWS_EVAL:
-            if key in timing:
-                row(label, *timing[key])
-
-    def log_timing(self, log, since_report, since_start):
-        """Print timing since last report."""
-        timing = self.pop_timing()
-        if "iteration" not in timing:
-            return
-
-        iteration_total, n_iterations = timing["iteration"]
-        self._log_timing_table(
-            log,
-            timing,
-            f"TIME  {n_iterations} iterations in {format_clock(since_report)}"
-            f"  --  {format_clock(iteration_total / n_iterations)} per iteration,"
-            f"  {format_clock(since_start)} into the run",
-        )
-
-    def log_timing_seed(self, log, elapsed):
-        """Print timing for the entire seed run."""
-        if "iteration" not in self.timing_run:
-            return
-
-        iteration_total, n_iterations = self.timing_run["iteration"]
-        self._log_timing_table(
-            log,
-            self.timing_run,
-            f"TIME  SEED {self.seed}, WHOLE RUN:  {n_iterations} iterations in "
-            f"{format_clock(elapsed)}  --  "
-            f"{format_clock(iteration_total / n_iterations)} per iteration",
-        )
+        # every clock this run keeps; train_agent restarts it once the setup
+        # is done. See Timing in config/helper.py
+        self.timing = Timing(self.device)
 
     # ---- rollout ----
     def sample(self):
@@ -230,7 +105,7 @@ class PPOAgent:
             # (W, 7, 7, 3) -> (W, 1, 7, 7, 3): seq_len = 1 while acting
             obs_t = torch.from_numpy(self.obs).to(self.device).unsqueeze(1)
 
-            with self._timed("act_forward"):
+            with self.timing.phase("act_forward"):
                 with torch.no_grad():
                     # returned hidden feeds back in next iteration: this is
                     # the agent's memory while it plays
@@ -238,7 +113,7 @@ class PPOAgent:
                     action = dist.sample()  # (W, 1)
                     log_prob = dist.log_prob(action)  # (W, 1)
 
-            with self._timed("act_to_host"):
+            with self.timing.phase("act_to_host"):
                 # one device->host copy here, then the loop below indexes it.
                 # Not action[w, 0].item() per worker: each .item() on a GPU is
                 # its own sync/round-trip, and there are W*T of them per
@@ -253,38 +128,30 @@ class PPOAgent:
             # Two clocks: "env_step" is just envs.step() (incl. autoreset of
             # finished workers); "env_loop" adds the python around it (buffer
             # writes, bookkeeping). If env_loop >> env_step, the fix belongs
-            # in this file rather than in how the envs are stepped.
-            loop_start = time.perf_counter()
+            # in this file rather than in how the envs are stepped. Neither
+            # syncs: nothing below queues GPU work.
+            with self.timing.phase("env_loop", W, sync=False):
+                # One call steps all W envs; shapes are (W,) regardless of
+                # whether the vector env is sync or async.
+                with self.timing.phase("env_step", W, sync=False):
+                    obs, rewards, terminations, truncations, _ = self.envs.step(actions)
 
-            # One call steps all W envs; shapes are (W,) regardless of
-            # whether the vector env is sync or async.
-            step_start = time.perf_counter()
-            obs, rewards, terminations, truncations, _ = self.envs.step(actions)
-            step_seconds = time.perf_counter() - step_start
+                dones = np.logical_or(terminations, truncations)
 
-            dones = np.logical_or(terminations, truncations)
+                buf["rewards"][:, t] = torch.from_numpy(rewards).float()
+                buf["dones"][:, t] = torch.from_numpy(dones).float()
 
-            buf["rewards"][:, t] = torch.from_numpy(rewards).float()
-            buf["dones"][:, t] = torch.from_numpy(dones).float()
+                self.ep_return += rewards
+                self.ep_length += 1
 
-            self.ep_return += rewards
-            self.ep_length += 1
+                for w in np.flatnonzero(dones):
+                    finished_returns.append(self.ep_return[w])
+                    finished_lengths.append(self.ep_length[w])
+                    self.ep_return[w] = 0.0
+                    self.ep_length[w] = 0
+                    self.hidden = self.reset_hidden_of(self.hidden, w)
 
-            for w in np.flatnonzero(dones):
-                finished_returns.append(self.ep_return[w])
-                finished_lengths.append(self.ep_length[w])
-                self.ep_return[w] = 0.0
-                self.ep_length[w] = 0
-                self.hidden = self.reset_hidden_of(self.hidden, w)
-
-            self.obs = obs
-
-            self.timing.setdefault("env_step", [0.0, 0])[0] += step_seconds
-            self.timing.setdefault("env_loop", [0.0, 0])[0] += (
-                time.perf_counter() - loop_start
-            )
-            self.timing["env_step"][1] += W
-            self.timing["env_loop"][1] += W
+                self.obs = obs
 
         # bootstrap value for the final state s_T
         obs_t1 = torch.from_numpy(self.obs).to(self.device).unsqueeze(1)
@@ -386,8 +253,14 @@ class PPOAgent:
         }
         return loss, info
 
-    def minibatch_loss(self, mb):
-        """Replay one minibatch with grad on: policy + value_coef*value + entropy terms combined into one scalar. Returns (loss, info)."""
+    def minibatch_loss(self, mb, model=None):
+        """Replay one minibatch with grad on: policy + value_coef*value +
+        entropy terms combined into one scalar. Returns (loss, info). `model`
+        defaults to this agent's; Helper.probe_batch_size passes a throwaway
+        copy so its probe never touches the real weights."""
+        if model is None:
+            model = self.model
+
         mask = mb["mask"].to(self.device)
 
         # h_0 per sequence (split_pad_mask changed hxs from per-step to
@@ -408,7 +281,7 @@ class PPOAgent:
         # next rollout carries its own self.hidden). Safe because padding
         # sits at the end of each sequence, so no real output ever depends on
         # a padded step.
-        dist, values, _ = self.model(mb["obs"].to(self.device), hidden)
+        dist, values, _ = model(mb["obs"].to(self.device), hidden)
 
         # log pi_new of the action actually taken; only the weights differ
         # from the log_probs stored in the buffer
@@ -446,41 +319,37 @@ class PPOAgent:
     # ---- training loop ----
     def train(self):
         """One PPO iteration: sample() -> gae() -> split_pad_mask() -> learn() for n_epochs. Returns a flat stats dict."""
-        # "iteration" is the outer clock; the phases below should sum to just
-        # under it, and the gap is untimed python.
-        iteration_start = time.perf_counter()
+        # "iteration" is the outer clock; the phases inside it should sum to
+        # just under it, and the gap is untimed python.
+        with self.timing.phase("iteration"):
+            # ---- collect ----
+            with self.timing.phase("sample"):
+                buf, stats = self.sample()
+            with self.timing.phase("gae"):
+                buf["advantages"], buf["returns"] = self.gae(buf)
+            with self.timing.phase("split_pad_mask"):
+                batch = self.split_pad_mask(buf)
 
-        # ---- collect ----
-        with self._timed("sample"):
-            buf, stats = self.sample()
-        with self._timed("gae"):
-            buf["advantages"], buf["returns"] = self.gae(buf)
-        with self._timed("split_pad_mask"):
-            batch = self.split_pad_mask(buf)
+            # ---- learn, at the largest minibatch that fits ----
+            # Update is a callable so run_with_batch_size_fallback can retry at
+            # a smaller size on OOM. mini_batch_size is already a single number
+            # by now (train_agent probed it before iteration 0), so this only
+            # has something to fall back to if a rollout turns out bigger than
+            # the probe.
+            self.mini_batch_size, (epochs_run, logs) = self.run_with_batch_size_fallback(
+                lambda mini_batch_size: self.learn(batch, mini_batch_size),
+                self.mini_batch_size,
+                self.logger,
+                what="update minibatch size",
+            )
 
-        # ---- learn, at the largest minibatch that fits ----
-        # Update is a callable so run_with_batch_size_fallback can retry at a
-        # smaller size on OOM. After the first iteration mini_batch_size is a
-        # single number, not the candidate list, so the search runs once per
-        # run, not once per iteration.
-        self.mini_batch_size, (epochs_run, logs) = self.run_with_batch_size_fallback(
-            lambda mini_batch_size: self.learn(batch, mini_batch_size),
-            self.mini_batch_size,
-            self.logger,
-            what="update minibatch size",
-        )
-
-        # recorded because it's a hyperparameter the machine chose, which can
-        # differ across machines for the same config
-        stats["mini_batch_size"] = self.mini_batch_size
-        stats["epochs_run"] = epochs_run
-        stats["updates"] = len(logs)
-        for k in logs[0]:
-            stats[k] = float(np.mean([d[k] for d in logs]))
-
-        entry = self.timing.setdefault("iteration", [0.0, 0])
-        entry[0] += time.perf_counter() - iteration_start
-        entry[1] += 1
+            # recorded because it's a hyperparameter the machine chose, which
+            # can differ across machines for the same config
+            stats["mini_batch_size"] = self.mini_batch_size
+            stats["epochs_run"] = epochs_run
+            stats["updates"] = len(logs)
+            for k in logs[0]:
+                stats[k] = float(np.mean([d[k] for d in logs]))
 
         return stats
 
@@ -502,10 +371,10 @@ class PPOAgent:
                 # host->device copy is included in "update_fwd" on purpose --
                 # it's the same tensors every epoch, so if it dominates the
                 # fix is to move the batch once in train(), not per minibatch.
-                with self._timed("update_fwd"):
+                with self.timing.phase("update_fwd"):
                     loss, info = self.minibatch_loss(mb)
 
-                with self._timed("update_bwd"):
+                with self.timing.phase("update_bwd"):
                     self.optimizer.zero_grad()  # torch accumulates otherwise
                     loss.backward()  # one backward for all three terms
 
@@ -552,21 +421,21 @@ class PPOAgent:
         # contract to honour
         self.model.eval()
 
-        # accumulated locally and registered once after the loops instead of
-        # via _timed: this is the innermost loop, and per-iteration
-        # cuda synchronize() calls here would cost more than what's timed
-        forward_seconds, step_seconds = 0.0, 0.0
-        forward_calls, eval_steps = 0, 0
-
+        # every phase below is sync=False: this is the innermost loop, and a
+        # cuda synchronize() per step would cost more than what it measures.
+        # "eval_forward" is counted per call (comparable to act_forward),
+        # "eval_step" per env step including dead slots, which really are
+        # stepped (comparable to env_step).
         for first in range(0, n_episodes, n_slots):
             # fixed seed per episode index, so episode i is reproducible
             # across calls. Clip pins a short final wave's surplus slots to
             # the last episode; `counts` drops the duplicate.
             episode = np.minimum(first + np.arange(n_slots), n_episodes - 1)
 
-            reset_start = time.perf_counter()
-            obs, _ = envs.reset(seed=[self.eval_seed + int(i) for i in episode])
-            step_seconds += time.perf_counter() - reset_start
+            # units=0: a reset is not an env step, but its cost belongs to the
+            # env rather than to the model
+            with self.timing.phase("eval_step", 0, sync=False):
+                obs, _ = envs.reset(seed=[self.eval_seed + int(i) for i in episode])
 
             # zeroed here so an episode never starts with prior memory
             hidden = self.zero_hidden(batch_size=n_slots)
@@ -580,30 +449,24 @@ class PPOAgent:
             ep_length = np.zeros(n_slots, dtype=np.int64)
 
             while live.any():
-                # (S, 7, 7, 3) -> (S, 1, 7, 7, 3): seq_len 1, same shape as
-                # the rollout uses
-                forward_start = time.perf_counter()
+                with self.timing.phase("eval_forward", sync=False):
+                    # (S, 7, 7, 3) -> (S, 1, 7, 7, 3): seq_len 1, same shape as
+                    # the rollout uses
+                    obs_t = torch.from_numpy(obs).to(dev).unsqueeze(1)
 
-                obs_t = torch.from_numpy(obs).to(dev).unsqueeze(1)
+                    with torch.no_grad():
+                        dist, _, hidden = self.model(obs_t, hidden)
+                        action = (
+                            dist.probs.argmax(dim=-1) if deterministic else dist.sample()
+                        )
 
-                with torch.no_grad():
-                    dist, _, hidden = self.model(obs_t, hidden)
-                    action = (
-                        dist.probs.argmax(dim=-1) if deterministic else dist.sample()
-                    )
+                    # .numpy() reads the tensor, forcing a GPU sync -- kept
+                    # inside the timed region so the clock is honest without
+                    # paying for an explicit synchronize()
+                    actions = action[:, 0].cpu().numpy()
 
-                # .numpy() reads the tensor, forcing a GPU sync -- kept inside
-                # the timed region so the clock is honest without an explicit
-                # synchronize()
-                actions = action[:, 0].cpu().numpy()
-
-                forward_seconds += time.perf_counter() - forward_start
-                forward_calls += 1
-                eval_steps += n_slots
-
-                step_start = time.perf_counter()
-                obs, rewards, terminations, truncations, _ = envs.step(actions)
-                step_seconds += time.perf_counter() - step_start
+                with self.timing.phase("eval_step", n_slots, sync=False):
+                    obs, rewards, terminations, truncations, _ = envs.step(actions)
 
                 # a dead slot's reward and step must not be counted
                 ep_return += rewards * live
@@ -620,16 +483,6 @@ class PPOAgent:
                     live[s] = False
 
         self.model.train()
-
-        # forward mean is per call (comparable to act_forward); env mean is
-        # per env step incl. dead slots, which really are stepped
-        # (comparable to env_step)
-        self.timing.setdefault("eval_forward", [0.0, 0])
-        self.timing.setdefault("eval_step", [0.0, 0])
-        self.timing["eval_forward"][0] += forward_seconds
-        self.timing["eval_forward"][1] += forward_calls
-        self.timing["eval_step"][0] += step_seconds
-        self.timing["eval_step"][1] += eval_steps
 
         return {
             "eval_episodes": n_episodes,
@@ -655,6 +508,16 @@ class PPOAgent:
         # so run_with_batch_size_fallback logs to file too, not just stdout
         self.logger = logger
 
+        # settled once, here, against a worst-case minibatch rather than
+        # iteration 0's real data -- see Helper.probe_batch_size
+        self.mini_batch_size = self.config.probe_batch_size(
+            self.model,
+            self.minibatch_loss,
+            self.obs_shape,
+            self.mini_batch_size,
+            logger,
+        )
+
         header = (
             f"{'iter':>5} {'eps':>4} {'return':>7} {'len':>6} "
             f"{'entropy':>8} {'v_loss':>9} {'kl':>8} {'clip':>6}"
@@ -664,8 +527,9 @@ class PPOAgent:
         history = []
         eval_history = []  # one entry per report iteration
 
-        run_started = time.perf_counter()
-        last_report = run_started
+        # the clocks start here, so building the envs and probing the
+        # minibatch size are not billed to the training loop
+        self.timing.start()
 
         for i in range(n_iterations):
             stats = self.train()
@@ -689,7 +553,7 @@ class PPOAgent:
                 # eval_deterministic) and desync the printed vs stored row.
                 # Timed but outside the "iteration" clock: it's the cost of
                 # measuring, not part of training.
-                with self._timed("evaluate"):
+                with self.timing.phase("evaluate"):
                     evaluation = self.evaluate()
 
                 # startswith guard: eval_episodes is already prefixed
@@ -722,17 +586,15 @@ class PPOAgent:
                     f" +- {stats['eval_return_std']:<5.3f}"
                 )
 
-                # timing since the last report; this empties the timers so
-                # the next window starts fresh
-                now = time.perf_counter()
-                self.log_timing(log, now - last_report, now - run_started)
-                last_report = now
+                # timing since the last report; this empties the window so
+                # the next one starts fresh
+                self.timing.report(log)
 
             history.append(stats)
 
-        # after the loop, so the last report's pop_timing has already folded
-        # into timing_run
-        self.log_timing_seed(log, time.perf_counter() - run_started)
+        # after the loop, so the last report() has already folded its window
+        # into the whole-run totals
+        self.timing.summary(log, self.seed)
 
         # ---- checkpoint ----
         self.eval_history = eval_history
@@ -775,7 +637,7 @@ class PPOAgent:
                 f"iter {peak['iteration']})"
             )
             log(f"saved  {path}")
-            log(f"took   {format_clock(time.perf_counter() - run_started)}")
+            log(f"took   {format_clock(self.timing.elapsed)}")
 
         return history
 

@@ -37,7 +37,7 @@ class Config(Helper):
         # T: None -> use the env's own default max_steps; an explicit int
         # overrides the env's max_steps too (see Helper.build_env), which
         # keeps MiniGrid's truncation and reward in sync with worker_steps
-        self.worker_steps = 2**self.env_size // 4
+        self.worker_steps = None
         if self.worker_steps is None:
             self.worker_steps = self.env_max_steps
         self.n_total_steps = self.n_workers * self.worker_steps  # W * T
@@ -52,7 +52,7 @@ class Config(Helper):
 
         self.n_epochs = 3
         # candidates, largest first: run_with_batch_size_fallback uses the largest that fits
-        self.mini_batch_size = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4]
+        self.mini_batch_size = [32, 16, 8, 4]  # 4096, 2048, 1024, 512, 256, 128, 64,
         self.target_kl = None
         self.n_iterations = 500
         self.n_iterations_report = 100
@@ -76,13 +76,43 @@ class Config(Helper):
 
         self.search_space = [
             {"type": "float", "name": "lr", "low": 1e-5, "high": 1e-2, "log": True},
-            {"type": "float", "name": "entropy_coef", "low": 1e-4, "high": 1e-1, "log": True},
-            {"type": "float", "name": "value_coef", "low": 0.05, "high": 1.0, "log": True},
-            {"type": "float", "name": "clip_eps", "low": 0.1, "high": 0.3, "step": 0.01},
-            {"type": "float", "name": "gae_lambda", "low": 0.9, "high": 0.99, "step": 0.01},
+            {
+                "type": "float",
+                "name": "entropy_coef",
+                "low": 1e-4,
+                "high": 1e-1,
+                "log": True,
+            },
+            {
+                "type": "float",
+                "name": "value_coef",
+                "low": 0.05,
+                "high": 1.0,
+                "log": True,
+            },
+            {
+                "type": "float",
+                "name": "clip_eps",
+                "low": 0.1,
+                "high": 0.3,
+                "step": 0.01,
+            },
+            {
+                "type": "float",
+                "name": "gae_lambda",
+                "low": 0.9,
+                "high": 0.99,
+                "step": 0.01,
+            },
             {"type": "int", "name": "n_epochs", "low": 1, "high": 8},
             {"type": "float", "name": "wd", "low": 1e-8, "high": 1e-2, "log": True},
-            {"type": "float", "name": "max_grad_norm", "low": 0.1, "high": 2.0, "log": True},
+            {
+                "type": "float",
+                "name": "max_grad_norm",
+                "low": 0.1,
+                "high": 2.0,
+                "log": True,
+            },
         ]
 
         self._configure_model()

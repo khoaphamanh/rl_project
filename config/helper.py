@@ -1,14 +1,18 @@
 """
 Helper: builders and utilities derived from a Config -- env construction,
-save/load, logging, HPO bookkeeping, and the watch_agent viewer. Reachable
-as config.<name>. Also defines StartInCueView and SequenceDataset.
+save/load, logging, timing, HPO bookkeeping, and the watch_agent viewer.
+Reachable as config.<name>. Also defines Timing (every clock a training run
+keeps), StartInCueView and SequenceDataset.
 """
 
+import copy
 import gc
 import json
 import logging
 import os
 import shutil
+import time
+from contextlib import contextmanager
 from datetime import datetime
 
 import gymnasium as gym
@@ -94,6 +98,198 @@ def parse_hpo_objective(objective):
         )
 
     return metric, center, spread
+
+
+def format_clock(seconds):
+    """A duration someone WAITS through: 1h 05m 03s / 5m 03s / 42.1s."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    return f"{minutes}m {seconds:02d}s"
+
+
+def format_mean(seconds):
+    """A per-call mean duration, in whatever unit (us/ms/s) keeps it readable."""
+    if seconds < 1e-3:
+        return f"{seconds * 1e6:.1f}us"
+    if seconds < 1.0:
+        return f"{seconds * 1e3:.2f}ms"
+    return f"{seconds:.3f}s"
+
+
+def log_with(logger, level="info"):
+    """logger.<level>, or print when there is no logger -- so everything here
+    is usable from a scratch script and from a real run without a branch at
+    every call site."""
+    return print if logger is None else getattr(logger, level)
+
+
+class Timing:
+    """Every clock a training run keeps. The caller (PPOAgent) only names the
+    phases it wants measured -- `with timing.phase("sample"):` -- and asks for
+    a table now and then; all the arithmetic and formatting is here.
+
+    Two sets of per-phase totals are kept, each [seconds, units]: `window`,
+    everything since the last report(), and `run`, the whole seed. report()
+    empties the first into the second, so the two never double-count.
+    """
+
+    # phase key -> label, in the order the table prints them. A phase that has
+    # no row here is still accumulated, just not shown; a row whose phase was
+    # never timed is skipped.
+    ROWS = (
+        ("sample", "sample (collect)"),
+        ("env_step", "  env.step() + reset()"),
+        ("env_loop", "  the worker loop, all of it"),
+        ("act_forward", "  act forward (no_grad)"),
+        ("act_to_host", "  act -> host copy"),
+        ("gae", "gae"),
+        ("split_pad_mask", "split_pad_mask"),
+        ("update_fwd", "update forward"),
+        ("update_bwd", "update backward + step"),
+    )
+
+    # printed below the "one whole iteration" line: evaluation is the cost of
+    # measuring the policy, not of training it, so it is not part of that total
+    ROWS_EVAL = (
+        ("evaluate", "evaluate() (report only)"),
+        ("eval_forward", "  eval forward (no_grad)"),
+        ("eval_step", "  eval env.step() + reset()"),
+    )
+
+    def __init__(self, device):
+        self.device = device
+        self.window = {}  # phase -> [seconds, units], since the last report
+        self.run = {}  # phase -> [seconds, units], the whole seed
+        self.start()
+
+    def start(self):
+        """(Re)start the wall clocks. Called when the training loop begins, so
+        building the envs and probing the minibatch size are not counted as
+        run time."""
+        self.started = time.perf_counter()
+        self.reported = self.started
+
+    @property
+    def elapsed(self):
+        """Seconds since start()."""
+        return time.perf_counter() - self.started
+
+    def sync(self, when=True):
+        """Wait for queued GPU work, so a timer measures what ran and not what
+        was merely launched. when=False makes it a no-op -- for hot loops where
+        the synchronize would cost more than the thing it is timing."""
+        if when and self.device.type == "cuda":
+            torch.cuda.synchronize()
+
+    def add(self, phase, seconds, units=1):
+        """Add one measurement to `phase`."""
+        entry = self.window.setdefault(phase, [0.0, 0])
+        entry[0] += seconds
+        entry[1] += units
+
+    @contextmanager
+    def phase(self, name, units=1, sync=True):
+        """Time the block and add it to `name`. Pass sync=False for a region
+        that queues no GPU work, or one ending in a device->host copy that
+        forces the sync anyway; see sync().
+
+        No try/finally: a block that raised (an OOM about to be retried at a
+        smaller minibatch, say) never ran to completion and is not a
+        measurement worth keeping."""
+        self.sync(sync)
+        start = time.perf_counter()
+        yield
+        self.sync(sync)
+        self.add(name, time.perf_counter() - start, units)
+
+    def fold(self):
+        """Add the window's totals to the run's and empty it; returns what the window held."""
+        window = dict(self.window)
+        for key, (seconds, units) in window.items():
+            total = self.run.setdefault(key, [0.0, 0])
+            total[0] += seconds
+            total[1] += units
+        self.window.clear()
+        return window
+
+    def report(self, log):
+        """Print the table for everything since the last report and open a new
+        window. The numbers are not lost, only moved: fold() keeps them in `run`."""
+        window = self.fold()
+
+        now = time.perf_counter()
+        since_report, self.reported = now - self.reported, now
+
+        # an iteration that has not finished yet has nothing to take shares of
+        if "iteration" not in window:
+            return
+
+        total, n = window["iteration"]
+        self._table(
+            log,
+            window,
+            f"TIME  {n} iterations in {format_clock(since_report)}"
+            f"  --  {format_clock(total / n)} per iteration,"
+            f"  {format_clock(now - self.started)} into the run",
+        )
+
+    def summary(self, log, seed):
+        """Print the table for the whole seed. Call it after the last report(),
+        which is what folded the final window into `run`."""
+        if "iteration" not in self.run:
+            return
+
+        total, n = self.run["iteration"]
+        self._table(
+            log,
+            self.run,
+            f"TIME  SEED {seed}, WHOLE RUN:  {n} iterations in "
+            f"{format_clock(self.elapsed)}  --  "
+            f"{format_clock(total / n)} per iteration",
+        )
+
+    def _table(self, log, timing, headline):
+        """One phase-by-phase table. `timing` is {phase: [seconds, units]} and
+        must hold an "iteration" entry: the share column is a percentage of it."""
+        iteration_total, n_iterations = timing["iteration"]
+
+        def row(label, seconds, units):
+            share = 100.0 * seconds / iteration_total if iteration_total else 0.0
+            # units=0 is deliberate for phases counted in seconds only (an env
+            # reset is not an env step), and there is no mean to show for them
+            mean = format_mean(seconds / units) if units else "-"
+            log(f"  {label:<30}{seconds:>9.2f}s {share:>7.1f}% {units:>11} {mean:>10}")
+
+        log("")
+        log(headline)
+        log(f"  {'phase':<30}{'total':>10} {'share':>8} {'calls':>11} {'mean':>10}")
+
+        for key, label in self.ROWS:
+            if key in timing:
+                row(label, *timing[key])
+
+        log("  " + "-" * 70)
+        row("one whole iteration", iteration_total, n_iterations)
+
+        for key, label in self.ROWS_EVAL:
+            if key in timing:
+                row(label, *timing[key])
+
+
+# what an out-of-memory RuntimeError says, lowercased. The CPU allocator is
+# matched on its class/file name too, since the wording ("can't"/"cannot") has
+# changed between torch versions.
+_OOM_TEXT = (
+    "out of memory",
+    "can't allocate memory",
+    "cannot allocate memory",
+    "defaultcpuallocator",
+    "alloc_cpu.cpp",
+)
 
 
 class Helper:
@@ -268,16 +464,10 @@ class Helper:
         for err in self._iter_error_chain(error):
             if isinstance(err, torch.cuda.OutOfMemoryError):
                 return True
-            if isinstance(err, RuntimeError):
-                text = str(err).lower()
-                if "out of memory" in text:
-                    return True
-                # CPU allocator wording; matched on class name too since the
-                # phrasing ("can't"/"cannot") has changed between torch versions
-                if "can't allocate memory" in text or "cannot allocate memory" in text:
-                    return True
-                if "defaultcpuallocator" in text or "alloc_cpu.cpp" in text:
-                    return True
+            if isinstance(err, RuntimeError) and any(
+                text in str(err).lower() for text in _OOM_TEXT
+            ):
+                return True
         return False
 
     def _clear_traceback_chain(self, error):
@@ -301,16 +491,12 @@ class Helper:
         """Calls run_fn(size) at the largest batch_size candidate that doesn't
         OOM, falling back on failure. Returns (size_used, result); re-raises
         the last OOM if every candidate fails. Non-OOM exceptions propagate."""
-        if isinstance(batch_size, (list, tuple)):
-            candidates = sorted({int(b) for b in batch_size}, reverse=True)
-        else:
-            candidates = [int(batch_size)]
+        sizes = batch_size if isinstance(batch_size, (list, tuple)) else [batch_size]
+        candidates = sorted({int(size) for size in sizes}, reverse=True)
 
-        # print() when there is no logger, so this is usable from a scratch
-        # script and from a real run without a branch at every call site
-        say = logger.info if logger is not None else print
-        warn = logger.warning if logger is not None else print
-        fail = logger.error if logger is not None else print
+        say = log_with(logger)
+        warn = log_with(logger, "warning")
+        fail = log_with(logger, "error")
 
         last_error = None
 
@@ -326,18 +512,71 @@ class Helper:
                 last_error = error
                 self._free_memory()
 
-                if i + 1 < len(candidates):
-                    warn(
-                        f"out of memory at {what} {bs}, "
-                        f"falling back to {candidates[i + 1]}"
-                    )
+                smaller = candidates[i + 1 :]
+                if smaller:
+                    warn(f"out of memory at {what} {bs}, falling back to {smaller[0]}")
                 else:
-                    fail(
-                        f"out of memory at {what} {bs}, no smaller one left to try"
-                    )
+                    fail(f"out of memory at {what} {bs}, no smaller one left to try")
 
-        self._free_memory()
+        # the loop's last _free_memory already ran; nothing fit
         raise last_error
+
+    def probe_batch_size(self, model, loss_fn, obs_shape, candidates, logger=None):
+        """Resolve the largest of `candidates` that fits in memory, before real
+        training starts, and return it.
+
+        The probe runs one forward/backward/optimizer step per candidate on an
+        all-zero minibatch of shape (n, worker_steps, *obs_shape) rather than
+        on iteration 0's real data: early rollouts pack fewer sequences per
+        iteration than later ones (see PPOAgent.split_pad_mask), so a real
+        batch would underestimate what training ends up needing.
+
+        loss_fn(mb, model) -> (loss, info) is the caller's own minibatch loss.
+        It is handed a throwaway deep copy of `model`, with its own optimizer,
+        so the real weights and optimizer state never see the probe."""
+        probe = copy.deepcopy(model)
+        optimizer = torch.optim.Adam(
+            probe.parameters(), lr=self.lr, weight_decay=self.wd
+        )
+        L = self.worker_steps
+
+        def step(n):
+            # the keys split_pad_mask produces, in the shapes SequenceDataset
+            # would have collated them into. All-ones mask: nothing padded is
+            # the worst case, every slot is real work.
+            mb = {
+                "obs": torch.zeros(n, L, *obs_shape, dtype=torch.uint8),
+                "actions": torch.zeros(n, L, dtype=torch.long),
+                "log_probs": torch.zeros(n, L),
+                "advantages": torch.zeros(n, L),
+                "returns": torch.zeros(n, L),
+                "mask": torch.ones(n, L),
+            }
+
+            # None for an MLP, which is why neither branch runs for it
+            hidden = self.zero_hidden(n)
+            if self.is_lstm:
+                mb["hxs"], mb["cxs"] = hidden[0].squeeze(0), hidden[1].squeeze(0)
+            elif self.is_recurrent:
+                mb["hxs"] = hidden.squeeze(0)
+
+            loss, _ = loss_fn(mb, probe)
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(probe.parameters(), self.max_grad_norm)
+            optimizer.step()
+
+        resolved, _ = self.run_with_batch_size_fallback(
+            step, candidates, logger, what="probe minibatch size"
+        )
+
+        # the copy, its gradients and its optimizer state are dead now; hand
+        # the memory back before training allocates at the size just settled on
+        del probe, optimizer
+        self._free_memory()
+
+        return resolved
 
     def log_model_summary(self, model, logger=None, batch_size=None, seq_len=8):
         """Runs torchinfo's summary on the model and logs the table (param
@@ -346,11 +585,10 @@ class Helper:
         try:
             from torchinfo import summary
         except ImportError:
-            message = (
+            log_with(logger, "warning")(
                 "torchinfo not installed, skipping the model summary "
                 "(pip install torchinfo)"
             )
-            (logger.warning if logger is not None else print)(message)
             return None
 
         if batch_size is None:
@@ -372,7 +610,7 @@ class Helper:
         )
         shape = (batch_size, seq_len, 7, 7, 3)
 
-        write = logger.info if logger is not None else print
+        write = log_with(logger)
         write("")
         write(f"MODEL SUMMARY  {self.feature_extractor.upper()}  (probe input {shape})")
         for line in str(info).splitlines():
@@ -441,31 +679,32 @@ class Helper:
         # save_model writes (tensors, strings, ints, bools) is allowed under it
         checkpoint = torch.load(path, map_location=self.device, weights_only=True)
 
-        if isinstance(checkpoint, dict) and "model" in checkpoint:
-            state = checkpoint["model"]
+        # everything this project writes goes through save_model, so this is
+        # its dict. A bare state_dict from torch.save(model.state_dict(), ...)
+        # is a dict too, just without the "model" key -- wrapped here so the
+        # rest of the method has one shape to deal with.
+        if "model" not in checkpoint:
+            checkpoint = {"model": checkpoint}
 
-            # force_cue_visible changes no tensor shape but changes what the
-            # agent could see during training; checked here so a mismatch
-            # fails loudly instead of silently scoring the wrong task.
-            for key in (
-                "feature_extractor",
-                "hidden_size",
-                "input_size",
-                "name_env",
-                "force_cue_visible",
-            ):
-                if key in checkpoint and getattr(self, key) != checkpoint[key]:
-                    raise ValueError(
-                        f"{path} was trained with {key}={checkpoint[key]!r}, but "
-                        f"the config says {getattr(self, key)!r}. Set "
-                        f"config.{key} to match, or load the matching file."
-                    )
-        else:
-            # a bare state_dict from torch.save(model.state_dict(), ...)
-            state = checkpoint
-            checkpoint = {"model": state}
+        # force_cue_visible changes no tensor shape but changes what the agent
+        # could see during training; checked here so a mismatch fails loudly
+        # instead of silently scoring the wrong task. A bare state_dict carries
+        # none of these keys and is loaded unchecked.
+        for key in (
+            "feature_extractor",
+            "hidden_size",
+            "input_size",
+            "name_env",
+            "force_cue_visible",
+        ):
+            if key in checkpoint and getattr(self, key) != checkpoint[key]:
+                raise ValueError(
+                    f"{path} was trained with {key}={checkpoint[key]!r}, but "
+                    f"the config says {getattr(self, key)!r}. Set "
+                    f"config.{key} to match, or load the matching file."
+                )
 
-        model.load_state_dict(state)
+        model.load_state_dict(checkpoint["model"])
         return checkpoint
 
     # HPO: what to search over and how it's written/resumed lives here; what a
@@ -475,18 +714,19 @@ class Helper:
     def suggest_from_search_space(self, trial):
         """Draws one value per entry of config.search_space via trial.suggest_*
         (picked by each entry's "type"). Returns {name: value}."""
+        # anything but "int"/"categorical" -- including a missing type -- is a
+        # float, which is what every entry of the shared search_space is
+        suggest = {
+            "int": trial.suggest_int,
+            "categorical": trial.suggest_categorical,
+        }
+
         params = {}
 
         for spec in self.search_space:
             spec = dict(spec)
             kind = spec.pop("type", "float")
-
-            if kind == "int":
-                params[spec["name"]] = trial.suggest_int(**spec)
-            elif kind == "categorical":
-                params[spec["name"]] = trial.suggest_categorical(**spec)
-            else:
-                params[spec["name"]] = trial.suggest_float(**spec)
+            params[spec["name"]] = suggest.get(kind, trial.suggest_float)(**spec)
 
         return params
 
@@ -518,8 +758,7 @@ class Helper:
         metric, center, spread = parse_hpo_objective(self.hpo_objective)
         if spread is None:
             return f"{center}({metric})"
-        weight = getattr(self, "hpo_lambda", 1.0)
-        return f"{center}_minus_{weight:g}{spread}({metric})"
+        return f"{center}_minus_{self.hpo_lambda:g}{spread}({metric})"
 
     def aggregate_scores(self, values):
         """Reduces per-seed metric values to the score the study maximizes:
@@ -538,7 +777,7 @@ class Helper:
         else:
             penalty = float(values.std())  # ddof=0, population std
 
-        return score - getattr(self, "hpo_lambda", 1.0) * penalty
+        return score - self.hpo_lambda * penalty
 
     def apply_params(self, params):
         """Writes a trial's drawn params onto this config's attributes. Returns
@@ -564,7 +803,7 @@ class Helper:
         with. Empty for configs like ConfigNoHPO whose search_space is []."""
         return {
             entry["name"]: getattr(self, entry["name"])
-            for entry in getattr(self, "search_space", [])
+            for entry in self.search_space
             if hasattr(self, entry["name"])
         }
 
@@ -598,17 +837,18 @@ class Helper:
         """Points this config at one saved checkpoint: sets
         dir_pretrained_model (trial=None/"best"/"final"/int) and self.seed
         (via seed_index). Returns path_model; nothing is created or read."""
+        # trial=None leaves dir_pretrained_model wherever the config put it:
+        # the encoder's top level, or no_hpo/ for ConfigNoHPO
         if trial is not None:
-            if isinstance(trial, str) and trial.lower() in ("best", "final"):
+            name = str(trial).lower()
+            if name in ("best", "final"):
                 self.dir_pretrained_model = self.dir_hpo_best_trial
+            elif name.isdigit():
+                self.dir_pretrained_model = self.dir_hpo_trial(int(name))
             else:
-                try:
-                    number = int(trial)
-                except (TypeError, ValueError):
-                    raise ValueError(
-                        f"trial={trial!r} is not 'final', 'best' or a trial number"
-                    ) from None
-                self.dir_pretrained_model = self.dir_hpo_trial(number)
+                raise ValueError(
+                    f"trial={trial!r} is not 'final', 'best' or a trial number"
+                )
 
         if not 0 <= seed_index < len(self.seed_list):
             raise IndexError(
@@ -635,16 +875,15 @@ class Helper:
         if not os.path.exists(path):
             return {}
 
+        # a bare state_dict has no "params" either, and is a dict all the same
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-        if not isinstance(checkpoint, dict):
-            return {}
         return dict(checkpoint.get("params") or {})
 
     def copy_best_trial(self, study, logger=None):
         """Copies the winning trial's files into best_trial/ (clearing it
         first) and writes best_params.json beside them. Returns the target
         path, or None if no trial has completed yet."""
-        say = logger.info if logger is not None else print
+        say = log_with(logger)
 
         try:
             best = study.best_trial
@@ -818,7 +1057,7 @@ class Helper:
         hpo_metric. Returns the paths written, or [] if there's no curve."""
         import plotly.graph_objects as go
 
-        say = logger.info if logger is not None else print
+        say = log_with(logger)
 
         if metric is None:
             metric = self.hpo_metric
@@ -964,7 +1203,7 @@ class Helper:
         checkpoints. Returns the paths written. include_trials=False skips the
         individual trials and does only best_trial/.
         """
-        say = logger.info if logger is not None else print
+        say = log_with(logger)
 
         if metric is None:
             metric = self.hpo_metric
@@ -1034,19 +1273,20 @@ class Helper:
         self.print_separate_lines(logger)
         logger.info(f"Start HPO {kind_training} with {remaining} remaining trials")
 
+        # .params is empty if the trial died before suggesting anything, in
+        # which case there is nothing to repeat and the sampler just draws again
         last = study.trials[-1] if study.trials else None
-        if last is not None and last.state in (
-            optuna.trial.TrialState.FAIL,
-            optuna.trial.TrialState.RUNNING,
+        if (
+            last is not None
+            and last.params
+            and last.state
+            in (optuna.trial.TrialState.FAIL, optuna.trial.TrialState.RUNNING)
         ):
-            # .params is empty if it died before suggesting anything, in which
-            # case there is nothing to repeat and the sampler just draws again
-            if last.params:
-                logger.info(
-                    f"trial {last.number} is {last.state.name} -- "
-                    f"re-queueing its params: {last.params}"
-                )
-                study.enqueue_trial(last.params)
+            logger.info(
+                f"trial {last.number} is {last.state.name} -- "
+                f"re-queueing its params: {last.params}"
+            )
+            study.enqueue_trial(last.params)
 
         study.optimize(
             objective,
