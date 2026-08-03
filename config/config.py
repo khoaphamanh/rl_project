@@ -1,5 +1,6 @@
 import random
 import os
+import re
 import numpy as np
 import torch
 
@@ -24,6 +25,7 @@ class Config(Helper):
         self.tbptt_length = "max"
 
         self.name_env = "MiniGrid-DoorKey-8x8-v0"
+        self.env_size = int(re.search(r"(\d+)x\d+", self.name_env).group(1))
         self.force_cue_visible = False
 
         self.n_workers = 256  # W: games played in parallel
@@ -35,7 +37,7 @@ class Config(Helper):
         # T: None -> use the env's own default max_steps; an explicit int
         # overrides the env's max_steps too (see Helper.build_env), which
         # keeps MiniGrid's truncation and reward in sync with worker_steps
-        self.worker_steps = self.env_max_steps //4
+        self.worker_steps = 2**self.env_size // 4
         if self.worker_steps is None:
             self.worker_steps = self.env_max_steps
         self.n_total_steps = self.n_workers * self.worker_steps  # W * T
