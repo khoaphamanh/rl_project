@@ -28,7 +28,7 @@ class Config(Helper):
         self.env_size = int(re.search(r"(\d+)x\d+", self.name_env).group(1))
         self.force_cue_visible = False
 
-        self.n_workers = 256  # W: games played in parallel
+        self.n_workers = 16  # W: games played in parallel
 
         # AsyncVectorEnv (separate processes) vs SyncVectorEnv. False is
         # required in notebooks and scripts without an __main__ guard.
