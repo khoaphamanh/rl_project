@@ -145,6 +145,11 @@ class Timing:
     Two sets of per-phase totals are kept, each [seconds, units]: `window`,
     everything since the last report(), and `run`, the whole seed. report()
     empties the first into the second, so the two never double-count.
+
+    enabled=False (config.calculate_time) turns the whole thing off in one
+    place: phase() stops measuring and report()/summary() stop printing, so
+    the caller keeps its `with timing.phase(...)` blocks either way. The wall
+    clocks (start(), elapsed) run regardless -- they cost nothing.
     """
 
     # phase key -> label, in the order the table prints them. A phase that has
@@ -170,8 +175,9 @@ class Timing:
         ("eval_step", "  eval env.step() + reset()"),
     )
 
-    def __init__(self, device):
+    def __init__(self, device, enabled=True):
         self.device = device
+        self.enabled = bool(enabled)
         self.window = {}  # phase -> [seconds, units], since the last report
         self.run = {}  # phase -> [seconds, units], the whole seed
         self.start()
@@ -210,6 +216,12 @@ class Timing:
         No try/finally: a block that raised (an OOM about to be retried at a
         smaller minibatch, say) never ran to completion and is not a
         measurement worth keeping."""
+        if not self.enabled:
+            # not even the perf_counter calls: this wraps the innermost loops
+            # (per env step, per minibatch), so "off" has to mean free
+            yield
+            return
+
         self.sync(sync)
         start = time.perf_counter()
         yield
@@ -229,6 +241,9 @@ class Timing:
     def report(self, log):
         """Print the table for everything since the last report and open a new
         window. The numbers are not lost, only moved: fold() keeps them in `run`."""
+        if not self.enabled:
+            return
+
         window = self.fold()
 
         now = time.perf_counter()
@@ -250,6 +265,9 @@ class Timing:
     def summary(self, log, seed):
         """Print the table for the whole seed. Call it after the last report(),
         which is what folded the final window into `run`."""
+        if not self.enabled:
+            return
+
         if "iteration" not in self.run:
             return
 

@@ -66,8 +66,10 @@ class PPOAgent:
         self.ep_return = np.zeros(self.n_workers, dtype=np.float64)
         self.ep_length = np.zeros(self.n_workers, dtype=np.int64)
         # every clock this run keeps; train_agent restarts it once the setup
-        # is done. See Timing in config/helper.py
-        self.timing = Timing(self.device)
+        # is done. config.calculate_time=False makes every phase() below a
+        # no-op and silences the TIME tables, so the `with` blocks can stay
+        # where they are. See Timing in config/helper.py
+        self.timing = Timing(self.device, enabled=config.calculate_time)
 
     # ---- rollout ----
     def sample(self):

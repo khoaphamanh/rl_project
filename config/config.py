@@ -57,6 +57,16 @@ class Config(Helper):
         self.n_iterations = 5000
         self.n_iterations_report = 100
 
+        # the master switch for every clock in the run (Timing in
+        # config/helper.py). True: PPOAgent times each phase and prints the
+        # TIME tables at every report and at the end of the seed. False: every
+        # `with self.timing.phase(...)` becomes a bare yield, no
+        # cuda.synchronize() is issued for a measurement, and no table is
+        # printed -- the "took ..." wall clock still is, since that costs
+        # nothing. Turn it off once a config is settled and the phase
+        # breakdown has stopped telling you anything new.
+        self.calculate_time = True
+
         self.n_eval_episodes = 50
         self.eval_seed = 10_000
         self.eval_deterministic = False  # False = sample actions, True = argmax
