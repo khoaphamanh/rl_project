@@ -49,6 +49,16 @@ _HPO_CENTERS = ("mean", "median")
 # the penalty subtracted, weighted by config.hpo_lambda; None = no penalty.
 _HPO_SPREADS = ("std", "iqr", None)
 
+# the columns of the closing per-seed table (Helper.log_seed_summary), shared
+# by the hand-picked run and the search's final report. "sampled" is the policy
+# sampled from pi, "argmax" the same weights evaluated greedily.
+_SEED_SUMMARY_METRICS = (
+    "sampled_return",
+    "sampled_success_rate",
+    "argmax_return",
+    "argmax_success_rate",
+)
+
 
 def parse_hpo_objective(objective):
     """Parses hpo_objective (e.g. "success-rate_median_minus-iqr") into
@@ -386,6 +396,65 @@ class Helper:
 
         raise ValueError(f"unknown feature_extractor {self.feature_extractor!r}")
 
+    def config_attributes(self, include_private=False):
+        """Every attribute this config carries, as a dict sorted by name: the
+        instance attributes plus the class-level ones and the @property values
+        defined anywhere in the hierarchy (the encoder subclass, Config,
+        Helper). Properties are read defensively -- one that raises is reported
+        in place rather than taking the caller down."""
+        values = {}
+
+        def keep(key):
+            return include_private or not key.startswith("_")
+
+        # what __init__ set, and what apply_params() has since overwritten
+        for key, value in vars(self).items():
+            if keep(key):
+                values[key] = value
+
+        # @property values and plain class attributes live on the class, not in
+        # vars(self), so they need the MRO walk. It runs most-derived-first and
+        # the `key in values` guard keeps the first hit, so an instance
+        # attribute wins over a class default and a subclass property (d_ff)
+        # wins over a base-class one of the same name.
+        for klass in type(self).__mro__:
+            if klass is object:
+                continue
+            for key, attribute in vars(klass).items():
+                if key in values or not keep(key):
+                    continue
+                if isinstance(attribute, property):
+                    try:
+                        values[key] = getattr(self, key)
+                    except Exception as error:  # a broken property is a value,
+                        # not a crash: this runs at the top of every run
+                        values[key] = f"<unreadable: {type(error).__name__}: {error}>"
+                elif not callable(attribute) and not isinstance(
+                    attribute, (staticmethod, classmethod)
+                ):
+                    values[key] = attribute
+
+        return dict(sorted(values.items()))
+
+    def log_config_attributes(self, logger=None, title="HYPERPARAMETERS"):
+        """Writes config_attributes() one per line, alphabetically. A list of
+        dicts (search_space) goes one entry per line instead of one long
+        line."""
+        write = log_with(logger)
+        attributes = self.config_attributes()
+        width = max([len(key) for key in attributes] + [24]) + 2
+
+        write(title)
+        for key, value in attributes.items():
+            if isinstance(value, (list, tuple)) and any(
+                isinstance(item, dict) for item in value
+            ):
+                write(f"  {key}")
+                for item in value:
+                    write(f"  {'':<{width}}{item}")
+            else:
+                write(f"  {key:<{width}}{value}")
+
     def build_logger(self, log_dir="logs", name="rl_project"):
         """Builds one logger per invocation: writes to
         logs/log_<date>_<time>.log and the terminal, with every hyperparameter
@@ -432,16 +501,11 @@ class Helper:
         logger.info(f"RUN STARTED  {started:%Y-%m-%d %H:%M:%S}")
         logger.info(f"LOG FILE     {path}")
         logger.info(bar)
-        logger.info("HYPERPARAMETERS")
 
-        for key, value in vars(self).items():
-            logger.info(f"  {key:<24}{value}")
-
-        # @property, so not in vars(self) -- but they decide what was built and
-        # where it lands
-        logger.info("  " + "-" * 40)
-        for key in ("device", "is_recurrent", "is_lstm", "name_model", "path_model"):
-            logger.info(f"  {key:<24}{getattr(self, key)}")
+        # attributes and @property values together, alphabetically -- the
+        # derived ones (device, path_model, ...) decide what was built and
+        # where it lands, so they belong in the dump next to what they came from
+        self.log_config_attributes(logger)
 
         logger.info(bar)
 
@@ -1055,9 +1119,15 @@ class Helper:
         """Writes two learning-curve plots (mean+-std, median+IQR) for a
         directory of checkpoints, as .html/.svg; metric defaults to
         hpo_metric. Returns the paths written, or [] if there's no curve."""
-        import plotly.graph_objects as go
-
         say = log_with(logger)
+
+        try:
+            import plotly.graph_objects as go
+        except ImportError:
+            # same graceful skip as the pandas csv export: a checkout without
+            # plotly still trains, it just doesn't draw
+            say("plotly is not installed, skipping the curve plots")
+            return []
 
         if metric is None:
             metric = self.hpo_metric
@@ -1230,6 +1300,60 @@ class Helper:
 
         say(f"plot_hpo: {len(paths)} file(s) written under {self.dir_hpo}")
         return paths
+
+    @staticmethod
+    def seed_result_row(seed, sampled, argmax):
+        """One seed's row for log_seed_summary, from its two evaluations of the
+        same weights: `sampled` drawn from pi, `argmax` greedy."""
+        return {
+            "seed": seed,
+            "sampled_return": float(sampled["return_mean"]),
+            "sampled_success_rate": float(sampled["success_rate"]),
+            "argmax_return": float(argmax["return_mean"]),
+            "argmax_success_rate": float(argmax["success_rate"]),
+        }
+
+    def log_seed_summary(self, logger, rows, header=None):
+        """The closing table: one row per seed, then each of the four metrics
+        aggregated across seeds. main_no_hpo.py and HPOPPO.final both end with
+        this, so a hand-picked run and a tuned one are read the same way.
+        Returns {metric: {mean, std, median, iqr}}."""
+        write = log_with(logger)
+        width = max(len(metric) for metric in _SEED_SUMMARY_METRICS) + 2
+
+        write("")
+        write(header or f"{self.feature_extractor.upper()}  over {len(rows)} seed(s)")
+        write(
+            f"{'seed':>6}" + "".join(f"{m:>{width}}" for m in _SEED_SUMMARY_METRICS)
+        )
+        for row in rows:
+            write(
+                f"{row['seed']:>6}"
+                + "".join(f"{row[m]:>{width}.3f}" for m in _SEED_SUMMARY_METRICS)
+            )
+
+        write("")
+        write("  (spread is across seeds, not across the episodes of one run;")
+        write("   sampled and argmax measure the same weights -- read down a")
+        write("   column, not across)")
+
+        stats = {}
+        for metric in _SEED_SUMMARY_METRICS:
+            values = [row[metric] for row in rows]
+            stats[metric] = {
+                "mean": float(np.mean(values)),
+                "std": float(np.std(values)),
+                "median": float(np.median(values)),
+                "iqr": float(np.percentile(values, 75) - np.percentile(values, 25)),
+            }
+            summary = stats[metric]
+            write(
+                f"{metric:>{width}}  mean {summary['mean']:.3f}  "
+                f"std {summary['std']:.3f}  median {summary['median']:.3f}  "
+                f"iqr {summary['iqr']:.3f}"
+            )
+
+        return stats
 
     def print_separate_lines(self, logger, n=10):
         for _ in range(n):

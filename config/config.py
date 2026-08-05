@@ -15,7 +15,7 @@ class Config(Helper):
     feature_extractor = None  # set by each subclass in _configure_model()
 
     def __init__(self):
-        self.seed_list = [0, 26, 98]
+        self.seed_list = [0]# , 26, 98
 
         self.input_size = 7 * 7 * 20  # 980 after flatten_obs one-hots each cell
 
@@ -24,11 +24,11 @@ class Config(Helper):
 
         self.tbptt_length = "max"
 
-        self.name_env = "MiniGrid-DoorKey-8x8-v0"
-        self.env_size = int(re.search(r"(\d+)x\d+", self.name_env).group(1))
+        self.name_env = "MiniGrid-MemoryS11-v0" # "MiniGrid-DoorKey-8x8-v0"
+        self.env_size = int(re.search(r"(\d+)", self.name_env).group(1))
         self.force_cue_visible = False
 
-        self.n_workers = 16  # W: games played in parallel
+        self.n_workers = 8  # W: games played in parallel
 
         # AsyncVectorEnv (separate processes) vs SyncVectorEnv. False is
         # required in notebooks and scripts without an __main__ guard.
@@ -52,9 +52,9 @@ class Config(Helper):
 
         self.n_epochs = 3
         # candidates, largest first: run_with_batch_size_fallback uses the largest that fits
-        self.mini_batch_size = [32, 16, 8, 4]  # 4096, 2048, 1024, 512, 256, 128, 64,
+        self.mini_batch_size = [ 128, 64,32, 16, 8, 4]  # 4096, 2048, 1024, 512, 256, 128, 64,
         self.target_kl = None
-        self.n_iterations = 500
+        self.n_iterations = 5000
         self.n_iterations_report = 100
 
         self.n_eval_episodes = 50

@@ -32,9 +32,9 @@ class ConfigNoHPO(Config):
         self.feature_extractor = self._chosen_model
 
         # 2. the run
-        self.seed_list = [0, 26, 98]
-        self.n_iterations = 500
-        self.n_iterations_report = 100
+        # self.seed_list = [0]
+        # self.n_iterations = 500
+        # self.n_iterations_report = 100
 
         # 5. PPO -- the pre-HPO values
         self.lr = 1e-3

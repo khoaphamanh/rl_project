@@ -7,8 +7,6 @@ scratch and overwrites -- there is no resume here, unlike main.py."""
 import argparse
 import os
 
-import numpy as np
-
 from agents.ppo import PPOAgent
 from config import MODEL_CHOICES
 from config.config_no_hpo import ConfigNoHPO, FEATURE_EXTRACTOR
@@ -55,7 +53,7 @@ def report_run(logger, eval_history, fresh, curve_deterministic):
 
 
 def run_one(model_name, seed, logger):
-    """Train encoder from seed. Returns {"seed", "success_sampled", "success_argmax"}."""
+    """Train encoder from seed. Returns a result_row (seed + SUMMARY_METRICS)."""
     config = ConfigNoHPO(model_name)
     agent = PPOAgent(config, seed=seed)
 
@@ -77,11 +75,7 @@ def run_one(model_name, seed, logger):
             logger, agent.eval_history, fresh, config.eval_deterministic
         )
 
-        return {
-            "seed": seed,
-            "success_sampled": sampled["success_rate"],
-            "success_argmax": argmax["success_rate"],
-        }
+        return config.seed_result_row(seed, sampled, argmax)
     finally:
         agent.close()
 
@@ -112,12 +106,7 @@ def report_saved(model_name, seed_index, seed, logger):
         logger.info(f"REPORT ONLY  seed {seed}  --  loaded {path}, nothing trained")
         sampled, argmax = report_run(logger, curve, fresh, curve_deterministic)
 
-        return {
-            "seed": seed,
-            "success_sampled": sampled["success_rate"],
-            "success_argmax": argmax["success_rate"],
-            "logger": logger,
-        }
+        return config.seed_result_row(seed, sampled, argmax)
     finally:
         agent.close()
 
@@ -169,19 +158,32 @@ def main():
         results = [run_one(args.model, s, logger) for s in seeds]
 
     log = logger.info
-    log("")
-    log(f"{args.model}  over {len(results)} seed(s)")
-    log(f"{'seed':>8} {'sampled':>9} {'argmax':>9}")
-    for r in results:
-        log(f"{r['seed']:>8} {r['success_sampled']:>9.3f} {r['success_argmax']:>9.3f}")
 
-    for key in ("success_sampled", "success_argmax"):
-        vals = [r[key] for r in results]
-        log(
-            f"{key:>16}  mean {np.mean(vals):.3f}  std {np.std(vals):.3f}  "
-            f"median {np.median(vals):.3f}  "
-            f"iqr {np.percentile(vals, 75) - np.percentile(vals, 25):.3f}"
-        )
+    # the same table HPOPPO.final ends with, so the two are read the same way
+    config.log_seed_summary(
+        logger, results, header=f"{args.model}  over {len(results)} seed(s)"
+    )
+
+    # the same number the study maximizes, so a hand-picked run and a tuned one
+    # are read off the same scale. Scored on the sampled column, like HPO:
+    # hpo_metric is "return_mean" or "success_rate", never the argmax variant.
+    scored = {
+        "return_mean": "sampled_return",
+        "success_rate": "sampled_success_rate",
+    }[config.hpo_metric]
+    score = config.aggregate_scores([r[scored] for r in results])
+    log("")
+    log(f"  SCORE  {config.score_name} = {score:.4f}")
+
+    # the mean+-std and median+IQR return curves over no_hpo/'s checkpoints --
+    # what plot_hpo draws for the search, drawn here for the hand-picked run.
+    # Reads eval_history off the checkpoints, so --report-only plots too.
+    config.plot_eval_curves(
+        config.dir_pretrained_model,
+        metric="return_mean",
+        name="no_hpo",
+        logger=logger,
+    )
 
 
 if __name__ == "__main__":

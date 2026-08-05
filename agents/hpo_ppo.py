@@ -424,6 +424,31 @@ class HPOPPO:
                 f"median {s['median']:.3f}  iqr {s['iqr_across_seeds']:.3f}"
             )
 
+        # the same closing table main_no_hpo.py ends with, so a tuned run and a
+        # hand-picked one are read the same way. The two blocks above stay --
+        # they carry timeout/length and keep the eval modes visibly apart.
+        self.config.log_seed_summary(
+            self.logger,
+            [
+                self.config.seed_result_row(
+                    r["seed"],
+                    sampled={
+                        "return_mean": r["return_mean"],
+                        "success_rate": r["success_rate"],
+                    },
+                    argmax={
+                        "return_mean": r["argmax_return_mean"],
+                        "success_rate": r["argmax_success_rate"],
+                    },
+                )
+                for r in results
+            ],
+            header=(
+                f"{self.feature_extractor}  trial {best.number}  "
+                f"over {len(results)} seed(s)"
+            ),
+        )
+
         self.logger.info("")
         self.logger.info(f"  SCORE  {self.score_name} = {score:.4f}")
         # these are the winning trial's own runs, so this carries the
