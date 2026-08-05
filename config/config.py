@@ -19,16 +19,13 @@ class Config(Helper):
 
         self.input_size = 7 * 7 * 20  # 980 after flatten_obs one-hots each cell
 
-        self.lr = 1e-3
-        self.wd = 0.0
-
         self.tbptt_length = "max"
 
         self.name_env = "MiniGrid-MemoryS11-v0" # "MiniGrid-DoorKey-8x8-v0"
         self.env_size = int(re.search(r"(\d+)", self.name_env).group(1))
         self.force_cue_visible = False
 
-        self.n_workers = 8  # W: games played in parallel
+        self.n_workers = 32  # W: games played in parallel
 
         # AsyncVectorEnv (separate processes) vs SyncVectorEnv. False is
         # required in notebooks and scripts without an __main__ guard.
@@ -37,24 +34,53 @@ class Config(Helper):
         # T: None -> use the env's own default max_steps; an explicit int
         # overrides the env's max_steps too (see Helper.build_env), which
         # keeps MiniGrid's truncation and reward in sync with worker_steps
-        self.worker_steps = None
+        self.worker_steps = 605//2
         if self.worker_steps is None:
-            self.worker_steps = self.env_max_steps
+            self.worker_steps = self.env_max_steps 
         self.n_total_steps = self.n_workers * self.worker_steps  # W * T
 
-        self.gamma = 0.99
-        self.gae_lambda = 0.95
+        # Declared, not chosen. Every name below is searched (see search_space),
+        # so a tuned run gets its value from the trial via apply_params -- which
+        # refuses to write a name the config doesn't already have, hence these
+        # placeholders. A hand-picked run gets real numbers from ConfigNoHPO
+        # instead; those live there and only there, so there is no second copy
+        # here to drift out of sync with them.
+        #
+        # None is deliberate: nothing here is a usable fallback, so a path that
+        # forgets to apply params fails loudly instead of quietly training some
+        # default while reporting the params it meant to use.
+        self.lr = None
+        self.wd = None
+        self.gamma = None
+        self.gae_lambda = None
+        self.clip_eps = None
+        self.value_coef = None
+        self.entropy_coef = None
+        self.max_grad_norm = None
+        self.n_epochs = None
 
-        self.clip_eps = 0.2
-        self.value_coef = 0.1
-        self.entropy_coef = 0.03
-        self.max_grad_norm = 0.5
-
-        self.n_epochs = 3
-        # candidates, largest first: run_with_batch_size_fallback uses the largest that fits
-        self.mini_batch_size = [ 128, 64,32, 16, 8, 4]  # 4096, 2048, 1024, 512, 256, 128, 64,
+        # not searched, and PPOAgent reads `target_kl is not None` as "no early
+        # stop on KL" -- so a tuned run has it off unless you add it to
+        # search_space below. ConfigNoHPO sets a real one for hand-picked runs.
         self.target_kl = None
-        self.n_iterations = 5000
+
+        # decay lr linearly to 0 across n_iterations (train_agent applies it,
+        # once per iteration). Falsy -- including None -- means a constant lr.
+        # Not searched either, same as target_kl above: a tuned run has it off
+        # unless you add it to search_space, e.g.
+        #   {"type": "categorical", "name": "lr_anneal", "choices": [True, False]}
+        # With it on, the searched `lr` is the INITIAL rate, not the rate.
+        self.lr_anneal = None
+
+        # candidates, largest first: run_with_batch_size_fallback uses the largest that fits
+        self.mini_batch_size = [128, 64, 32, 16, 8, 4]
+
+        # 2000 is the budget the verified GRU run used: solved MemoryS11 at
+        # iteration ~1000 and held 1.00 to the end, with lr_anneal on.
+        # Raising it is safe -- the schedule spans n_iterations, so it just
+        # decays more slowly -- but it also changes the budget every encoder
+        # is compared at, so change it for all of them or none.
+        self.n_iterations = 2000
         self.n_iterations_report = 100
 
         # the master switch for every clock in the run (Timing in
@@ -69,7 +95,13 @@ class Config(Helper):
 
         self.n_eval_episodes = 50
         self.eval_seed = 10_000
-        self.eval_deterministic = False  # False = sample actions, True = argmax
+        # False = sample actions, True = argmax. Sampling is safe here even
+        # though it reads a stochastic policy: entropy_coef=0.005 plus the lr
+        # decay drive entropy to ~0.000 by the time the task is solved, so a
+        # sampled episode and an argmax one take the same actions. It was only
+        # misleading back when entropy sat at ~1.5 and every eval looked like
+        # chance regardless of what the policy had actually learned.
+        self.eval_deterministic = False
 
         self.n_trials = 30
         self.seed_hpo = 42
@@ -84,8 +116,28 @@ class Config(Helper):
         # sampler avoids a promising region; 0.5 is a safe compromise.
         self.hpo_lambda = 1.0
 
+        # The PPO half of the search space, shared by all four encoders so the
+        # values a study settles on are comparable across the ablation. Each
+        # ConfigMLP/LSTM/GRU/Transformer appends its own architecture knobs to
+        # this list in _configure_model(); ConfigNoHPO replaces it with [].
+        # Every "name" here must already be an attribute above -- apply_params
+        # raises on one that isn't, rather than inventing it.
         self.search_space = [
             {"type": "float", "name": "lr", "low": 1e-5, "high": 1e-2, "log": True},
+            {
+                "type": "float",
+                "name": "gamma",
+                "low": 0.99,
+                "high": 0.9999,
+                "step": 0.001,
+            },
+            {
+                "type": "float",
+                "name": "gae_lambda",
+                "low": 0.9,
+                "high": 0.99,
+                "step": 0.01,
+            },
             {
                 "type": "float",
                 "name": "entropy_coef",
@@ -96,7 +148,7 @@ class Config(Helper):
             {
                 "type": "float",
                 "name": "value_coef",
-                "low": 0.05,
+                "low": 0.01,
                 "high": 1.0,
                 "log": True,
             },
@@ -105,13 +157,6 @@ class Config(Helper):
                 "name": "clip_eps",
                 "low": 0.1,
                 "high": 0.3,
-                "step": 0.01,
-            },
-            {
-                "type": "float",
-                "name": "gae_lambda",
-                "low": 0.9,
-                "high": 0.99,
                 "step": 0.01,
             },
             {"type": "int", "name": "n_epochs", "low": 1, "high": 8},

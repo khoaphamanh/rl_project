@@ -40,6 +40,11 @@ class PPOAgent:
         self.max_grad_norm = config.max_grad_norm
         self.n_epochs = config.n_epochs
         self.target_kl = config.target_kl
+        self.lr_anneal = config.lr_anneal
+        # the value the schedule counts down FROM, kept separate from the
+        # optimizer's current lr so annealing is not compounding: each
+        # iteration sets lr from this, it never scales the previous step's
+        self.lr_initial = config.lr
         self.mini_batch_size = config.mini_batch_size
         self.run_with_batch_size_fallback = config.run_with_batch_size_fallback
         self.logger = None
@@ -355,6 +360,36 @@ class PPOAgent:
 
         return stats
 
+    def anneal_lr(self, iteration, n_iterations):
+        """Linear decay of the learning rate, lr_initial -> 0 across the run.
+        Called once per iteration by train_agent, never inside the epoch loop:
+        every epoch of one iteration replays the SAME rollout, so a schedule
+        that moved between them would weight the later epochs of a batch less
+        than the earlier ones for no reason, and target_kl already cuts that
+        loop short at a data-dependent point. Returns the lr now in force.
+
+        Why anneal at all: PPO's update is stochastic approximation, and with
+        a step size that never shrinks the policy does not converge to a point
+        -- it random-walks in a ball around it whose radius grows with lr times
+        the gradient noise. On MemoryS11 that noise gets much worse exactly
+        when the task is solved (the advantage spread collapses ~100x, so
+        gae()'s normalization is dividing mostly-noise by its own magnitude),
+        which is why a constant lr oscillates 1.00 -> 0.38 -> 0.98 -> 0.62.
+
+        Note this scales the WHOLE gradient, so the policy, value and entropy
+        terms shrink together and keep their balance. Rescaling one of them
+        alone -- e.g. flooring the advantage std -- leaves the entropy bonus
+        dominant and drives the policy back toward uniform instead."""
+        if not self.lr_anneal:
+            return self.lr_initial
+
+        # 1 -> 1/n over the run rather than 1 -> 0: the last iteration still
+        # learns a little, and a literal 0 would make the final update a no-op
+        lr = self.lr_initial * (1.0 - iteration / n_iterations)
+        for group in self.optimizer.param_groups:
+            group["lr"] = lr
+        return lr
+
     def learn(self, batch, mini_batch_size):
         """Run n_epochs of minibatch updates over one rollout, with an optional early stop on target_kl. Returns (epochs_run, logs)."""
         # rebuilt every iteration since each rollout has a different number
@@ -534,7 +569,9 @@ class PPOAgent:
         self.timing.start()
 
         for i in range(n_iterations):
-            stats = self.train()
+            # before train(), so this iteration's updates all run at one lr
+            stats = {"lr": self.anneal_lr(i, n_iterations)}
+            stats.update(self.train())
             stats["iteration"] = i
 
             if i == 0:

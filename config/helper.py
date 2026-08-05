@@ -142,9 +142,14 @@ class Timing:
     phases it wants measured -- `with timing.phase("sample"):` -- and asks for
     a table now and then; all the arithmetic and formatting is here.
 
-    Two sets of per-phase totals are kept, each [seconds, units]: `window`,
-    everything since the last report(), and `run`, the whole seed. report()
-    empties the first into the second, so the two never double-count.
+    Two sets of per-phase totals are kept, each [seconds, units, calls]:
+    `window`, everything since the last report(), and `run`, the whole seed.
+    report() empties the first into the second, so the two never double-count.
+
+    calls and units are counted separately because for some phases they
+    differ: one envs.step() call is W env steps, so "36.86s over 60500 calls"
+    and "36.86s over 484000 env steps" are both true and answer different
+    questions (is the call expensive? is a step expensive?).
 
     enabled=False (config.calculate_time) turns the whole thing off in one
     place: phase() stops measuring and report()/summary() stop printing, so
@@ -202,10 +207,12 @@ class Timing:
             torch.cuda.synchronize()
 
     def add(self, phase, seconds, units=1):
-        """Add one measurement to `phase`."""
-        entry = self.window.setdefault(phase, [0.0, 0])
+        """Add one measurement to `phase`: one call, processing `units` of
+        whatever that call handles (W env steps, one minibatch, one forward)."""
+        entry = self.window.setdefault(phase, [0.0, 0, 0])
         entry[0] += seconds
         entry[1] += units
+        entry[2] += 1
 
     @contextmanager
     def phase(self, name, units=1, sync=True):
@@ -231,10 +238,11 @@ class Timing:
     def fold(self):
         """Add the window's totals to the run's and empty it; returns what the window held."""
         window = dict(self.window)
-        for key, (seconds, units) in window.items():
-            total = self.run.setdefault(key, [0.0, 0])
+        for key, (seconds, units, calls) in window.items():
+            total = self.run.setdefault(key, [0.0, 0, 0])
             total[0] += seconds
             total[1] += units
+            total[2] += calls
         self.window.clear()
         return window
 
@@ -253,7 +261,7 @@ class Timing:
         if "iteration" not in window:
             return
 
-        total, n = window["iteration"]
+        total, _, n = window["iteration"]
         self._table(
             log,
             window,
@@ -271,7 +279,7 @@ class Timing:
         if "iteration" not in self.run:
             return
 
-        total, n = self.run["iteration"]
+        total, _, n = self.run["iteration"]
         self._table(
             log,
             self.run,
@@ -281,27 +289,41 @@ class Timing:
         )
 
     def _table(self, log, timing, headline):
-        """One phase-by-phase table. `timing` is {phase: [seconds, units]} and
-        must hold an "iteration" entry: the share column is a percentage of it."""
-        iteration_total, n_iterations = timing["iteration"]
+        """One phase-by-phase table. `timing` is {phase: [seconds, units, calls]}
+        and must hold an "iteration" entry: the share column is a percentage of it."""
+        iteration_total, _, n_iterations = timing["iteration"]
 
-        def row(label, seconds, units):
+        def row(label, seconds, units, calls):
             share = 100.0 * seconds / iteration_total if iteration_total else 0.0
-            # units=0 is deliberate for phases counted in seconds only (an env
-            # reset is not an env step), and there is no mean to show for them
-            mean = format_mean(seconds / units) if units else "-"
-            log(f"  {label:<30}{seconds:>9.2f}s {share:>7.1f}% {units:>11} {mean:>10}")
+
+            per_call = format_mean(seconds / calls) if calls else "-"
+
+            # "-" when the two agree (one forward per call, one iteration per
+            # call): a per-unit column would just repeat per call. units=0 is
+            # deliberate for phases counted in seconds only -- an env reset is
+            # not an env step -- and has no per-unit either.
+            per_unit = (
+                format_mean(seconds / units) if units and units != calls else "-"
+            )
+
+            log(
+                f"  {label:<30}{seconds:>9.2f}s {share:>7.1f}% "
+                f"{calls:>9} {units:>11} {per_call:>11} {per_unit:>11}"
+            )
 
         log("")
         log(headline)
-        log(f"  {'phase':<30}{'total':>10} {'share':>8} {'calls':>11} {'mean':>10}")
+        log(
+            f"  {'phase':<30}{'total':>10} {'share':>8} "
+            f"{'calls':>9} {'units':>11} {'per call':>11} {'per unit':>11}"
+        )
 
         for key, label in self.ROWS:
             if key in timing:
                 row(label, *timing[key])
 
-        log("  " + "-" * 70)
-        row("one whole iteration", iteration_total, n_iterations)
+        log("  " + "-" * 93)
+        row("one whole iteration", iteration_total, n_iterations, n_iterations)
 
         for key, label in self.ROWS_EVAL:
             if key in timing:

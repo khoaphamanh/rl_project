@@ -31,36 +31,28 @@ class ConfigNoHPO(Config):
         # 1. which encoder
         self.feature_extractor = self._chosen_model
 
-        # 2. the run
-        # self.seed_list = [0]
-        # self.n_iterations = 500
-        # self.n_iterations_report = 100
-
-        # 5. PPO -- the pre-HPO values
+        # 2. PPO -- hand-picked hyperparameters (tunable params, fixed here)
         self.lr = 1e-3
         self.wd = 0.0
-
         self.gamma = 0.99
         self.gae_lambda = 0.95
-
         self.clip_eps = 0.2
         self.value_coef = 0.1
-        self.entropy_coef = 0.03
+        self.entropy_coef = 0.005
         self.max_grad_norm = 0.5
-
         self.n_epochs = 3
-        self.target_kl = None
+        self.target_kl = 0.02
+        # lr decays linearly 1e-3 -> 0 over n_iterations. Without it this run
+        # solves MemoryS11 and then walks back off it (1.00 -> 0.38 -> 0.98 ->
+        # 0.62): once every episode succeeds the advantage spread collapses
+        # ~100x, so the normalized advantages are mostly noise and a constant
+        # step size keeps acting on it. See train_agent.
+        self.lr_anneal = True
 
-        # 6. evaluation
-        self.n_eval_episodes = 50
-        self.eval_seed = 10_000
-        self.eval_deterministic = False
-
-        # 7. the encoders -- all four listed, one of them used. hidden_size
+        # 3. the encoders -- all four listed, one of them used. hidden_size
         # is shared here because the ablation ran with equal WIDTH across
         # encoders, not equal parameter count.
         self.hidden_size = 64
-
         self.n_layers_mlp = 3  # MLP only
 
         # LSTM/GRU: nothing else, build_extractor builds a single layer
@@ -72,5 +64,5 @@ class ConfigNoHPO(Config):
         self.p_drop = 0.0  # must stay 0: breaks PPO's log-prob ratio otherwise
         self.max_seq_length = self.worker_steps
 
-        # 8. not tuned here
+        # 4. no tuning for hand-picked runs
         self.search_space = []
