@@ -1,7 +1,6 @@
-"""The hand-picked run: no optuna, every hyperparameter for every encoder
-spelled out by hand in _configure_model(). Used for smoke tests, reproducing
-pre-HPO numbers, and as the baseline main_no_hpo.py compares a tuned run
-against. Writes to no_hpo/, parallel to the search's hpo/."""
+"""The hand-picked run: no optuna, every hyperparameter spelled out in
+_configure_model(). Used for smoke tests and as main_no_hpo.py's baseline.
+Writes to no_hpo/, parallel to the search's hpo/."""
 
 import os
 
@@ -42,16 +41,14 @@ class ConfigNoHPO(Config):
         self.max_grad_norm = 0.5
         self.n_epochs = 3
         self.target_kl = 0.02
-        # lr decays linearly 1e-3 -> 0 over n_iterations. Without it this run
-        # solves MemoryS11 and then walks back off it (1.00 -> 0.38 -> 0.98 ->
-        # 0.62): once every episode succeeds the advantage spread collapses
-        # ~100x, so the normalized advantages are mostly noise and a constant
-        # step size keeps acting on it. See train_agent.
+        # Without annealing this run solves the task then walks back off it
+        # (1.00 -> 0.38 -> 0.98): once every episode succeeds the advantage
+        # spread collapses ~100x, so normalized advantages are mostly noise
+        # and a constant step size keeps acting on it.
         self.lr_anneal = True
 
-        # 3. the encoders -- all four listed, one of them used. hidden_size
-        # is shared here because the ablation ran with equal WIDTH across
-        # encoders, not equal parameter count.
+        # 3. the encoders -- all four listed, one used. hidden_size is shared:
+        # the ablation equalizes WIDTH across encoders, not parameter count.
         self.hidden_size = 64
         self.n_layers_mlp = 3  # MLP only
 

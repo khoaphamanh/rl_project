@@ -164,9 +164,8 @@ def main():
         logger, results, header=f"{args.model}  over {len(results)} seed(s)"
     )
 
-    # the same number the study maximizes, so a hand-picked run and a tuned one
-    # are read off the same scale. Scored on the sampled column, like HPO:
-    # hpo_metric is "return_mean" or "success_rate", never the argmax variant.
+    # the same number the study maximizes, so hand-picked and tuned runs are
+    # read off one scale. Scored on the sampled column, like HPO.
     scored = {
         "return_mean": "sampled_return",
         "success_rate": "sampled_success_rate",
@@ -175,7 +174,6 @@ def main():
     log("")
     log(f"  SCORE  {config.score_name} = {score:.4f}")
 
-    # the mean+-std and median+IQR return curves over no_hpo/'s checkpoints --
     # what plot_hpo draws for the search, drawn here for the hand-picked run.
     # Reads eval_history off the checkpoints, so --report-only plots too.
     config.plot_eval_curves(

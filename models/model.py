@@ -1,9 +1,6 @@
 """
-Actor-critic network: one shared feature extractor (MLP/LSTM/GRU), two linear
-heads (actor logits, critic value) reading the same features.
-
-Run with:
-    python models/model.py
+Actor-critic network: one shared feature extractor, two linear heads (actor
+logits, critic value) reading the same features. Run: python models/model.py
 """
 
 import torch
@@ -17,7 +14,7 @@ except ImportError:  # when run directly: python models/model.py
 
 
 class Network(nn.Module):
-    """Shared-encoder actor-critic: an MLP/LSTM/GRU feature extractor feeding an actor head and a critic head, trained jointly by one optimizer."""
+    """Shared encoder feeding an actor head and a critic head, trained jointly by one optimizer."""
 
     def __init__(self, feature_extractor, hidden_size, n_actions):
         super().__init__()
@@ -40,7 +37,7 @@ class Network(nn.Module):
         return Categorical(logits=logits, validate_args=False), value, hidden
 
 
-OBS_SHAPE = (7, 7, 3)  # MiniGrid-MemoryS11-v0 partial observation
+OBS_SHAPE = (7, 7, 3)  # MiniGrid partial observation
 INPUT_SIZE = 7 * 7 * CELL_SIZE  # 980 AFTER one-hot, not 147. See flatten_obs.
 HIDDEN_SIZE = 64
 N_LAYERS = 3

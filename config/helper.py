@@ -1,8 +1,7 @@
 """
-Helper: builders and utilities derived from a Config -- env construction,
-save/load, logging, timing, HPO bookkeeping, and the watch_agent viewer.
-Reachable as config.<name>. Also defines Timing (every clock a training run
-keeps), StartInCueView and SequenceDataset.
+Helper: everything derived from a Config -- env construction, save/load,
+logging, timing, HPO bookkeeping, the watch_agent viewer. Reachable as
+config.<name>. Also defines Timing, StartInCueView and SequenceDataset.
 """
 
 import copy
@@ -138,24 +137,11 @@ def log_with(logger, level="info"):
 
 
 class Timing:
-    """Every clock a training run keeps. The caller (PPOAgent) only names the
-    phases it wants measured -- `with timing.phase("sample"):` -- and asks for
-    a table now and then; all the arithmetic and formatting is here.
-
-    Two sets of per-phase totals are kept, each [seconds, units, calls]:
-    `window`, everything since the last report(), and `run`, the whole seed.
-    report() empties the first into the second, so the two never double-count.
-
-    calls and units are counted separately because for some phases they
-    differ: one envs.step() call is W env steps, so "36.86s over 60500 calls"
-    and "36.86s over 484000 env steps" are both true and answer different
-    questions (is the call expensive? is a step expensive?).
-
-    enabled=False (config.calculate_time) turns the whole thing off in one
-    place: phase() stops measuring and report()/summary() stop printing, so
-    the caller keeps its `with timing.phase(...)` blocks either way. The wall
-    clocks (start(), elapsed) run regardless -- they cost nothing.
-    """
+    """Every clock a training run keeps. The caller only names phases --
+    `with timing.phase("sample"):` -- and the arithmetic/formatting lives here.
+    Two sets of per-phase [seconds, units, calls] totals: `window` since the
+    last report(), `run` for the whole seed; report() folds the first into the
+    second so they never double-count. enabled=False makes phase() free."""
 
     # phase key -> label, in the order the table prints them. A phase that has
     # no row here is still accumulated, just not shown; a row whose phase was
@@ -216,13 +202,10 @@ class Timing:
 
     @contextmanager
     def phase(self, name, units=1, sync=True):
-        """Time the block and add it to `name`. Pass sync=False for a region
-        that queues no GPU work, or one ending in a device->host copy that
-        forces the sync anyway; see sync().
-
-        No try/finally: a block that raised (an OOM about to be retried at a
-        smaller minibatch, say) never ran to completion and is not a
-        measurement worth keeping."""
+        """Time the block and add it to `name`. sync=False for a region that
+        queues no GPU work, or one ending in a copy that forces the sync anyway.
+        No try/finally: a block that raised never ran to completion, so it is
+        not a measurement worth keeping."""
         if not self.enabled:
             # not even the perf_counter calls: this wraps the innermost loops
             # (per env step, per minibatch), so "off" has to mean free
@@ -362,18 +345,20 @@ class Helper:
 
     @property
     def path_model(self):
-        """The checkpoint this config currently points at, derived fresh on every read since dir_pretrained_model can move."""
+        """The checkpoint this config points at, re-derived every read since dir_pretrained_model moves."""
         return os.path.join(self.dir_pretrained_model, self.name_model)
 
     def build_env(self, render_mode=None):
-        """One MiniGrid game, wrapped the way the config asks (adds StartInCueView if force_cue_visible). The single builder every env in the project comes from."""
-        kwargs = {}
-        if self.worker_steps is not None:
-            # overrides the env's own default max_steps; MiniGrid computes
-            # both truncation and the success reward (1 - 0.9*step_count/
-            # max_steps) from it, so both stay in sync with worker_steps
-            kwargs["max_steps"] = int(self.worker_steps)
-        env = gym.make(self.name_env, render_mode=render_mode, **kwargs)
+        """One MiniGrid game, wrapped as the config asks. Every env in the project comes from here."""
+        # Overriding max_steps with worker_steps is the point, not an option:
+        # MiniGrid computes truncation AND the success reward
+        # (1 - 0.9*step_count/max_steps) from it, so an episode can never
+        # outlive one rollout and the reward scale stays pinned to T.
+        env = gym.make(
+            self.name_env,
+            render_mode=render_mode,
+            max_steps=int(self.worker_steps),
+        )
 
         if self.force_cue_visible:
             env = StartInCueView(env)
@@ -401,14 +386,18 @@ class Helper:
 
     @property
     def env_max_steps(self):
-        """The env's own time limit (MemoryEnv: 5 * size^2), read off a throwaway env rather than hardcoded so it can never disagree with name_env."""
-        env = self.build_env()
+        """The env's own DEFAULT time limit (MemoryEnv: 5 * size^2), read off a
+        throwaway env so it can never disagree with name_env. Bare gym.make, not
+        build_env: build_env overrides max_steps with worker_steps, which would
+        both hand worker_steps back here and make this unreadable from the line
+        in Config.__init__ that derives worker_steps from it."""
+        env = gym.make(self.name_env)
         max_steps = env.unwrapped.max_steps
         env.close()
         return max_steps
 
     def build_extractor(self):
-        """Builds the encoder named by self.feature_extractor (MLP/LSTM/GRU/TRANSFORMER). All four take (batch, seq_len, 7, 7, 3) and return (batch, seq_len, hidden_size)."""
+        """The encoder named by self.feature_extractor. All four map (batch, seq, 7, 7, 3) -> (batch, seq, hidden_size)."""
         name = self.feature_extractor.upper()
 
         if name == "MLP":
@@ -626,18 +615,11 @@ class Helper:
         raise last_error
 
     def probe_batch_size(self, model, loss_fn, obs_shape, candidates, logger=None):
-        """Resolve the largest of `candidates` that fits in memory, before real
-        training starts, and return it.
-
-        The probe runs one forward/backward/optimizer step per candidate on an
-        all-zero minibatch of shape (n, worker_steps, *obs_shape) rather than
-        on iteration 0's real data: early rollouts pack fewer sequences per
-        iteration than later ones (see PPOAgent.split_pad_mask), so a real
-        batch would underestimate what training ends up needing.
-
-        loss_fn(mb, model) -> (loss, info) is the caller's own minibatch loss.
-        It is handed a throwaway deep copy of `model`, with its own optimizer,
-        so the real weights and optimizer state never see the probe."""
+        """Resolve the largest of `candidates` that fits, before training starts.
+        One forward/backward/step per candidate on an all-zero worst-case batch,
+        not on iteration 0's real data: early rollouts pack fewer sequences than
+        later ones, so real data would underestimate. loss_fn gets a throwaway
+        deep copy of `model`, so the real weights never see the probe."""
         probe = copy.deepcopy(model)
         optimizer = torch.optim.Adam(
             probe.parameters(), lr=self.lr, weight_decay=self.wd
@@ -725,7 +707,7 @@ class Helper:
 
     @property
     def name_model(self):
-        """build_model_name(), re-derived on every read since it depends on self.seed, which set_seed() only fills in after the config is built."""
+        """build_model_name(), re-derived every read: it depends on self.seed, which set_seed() fills in later."""
         return self.build_model_name()
 
     def build_model_name(self):
@@ -858,7 +840,7 @@ class Helper:
 
     @property
     def score_name(self):
-        """ "mean_minus_1std(return_mean)" -- human-readable description of what the study maximizes, for printing alongside a bare score value."""
+        """ "mean_minus_1std(return_mean)" -- what the study maximizes, for printing next to a score."""
         metric, center, spread = parse_hpo_objective(self.hpo_objective)
         if spread is None:
             return f"{center}({metric})"
@@ -918,12 +900,12 @@ class Helper:
         return self.dir_hpo
 
     def dir_hpo_trial(self, number):
-        """hpo/trial_<number>/ -- the directory that trial's checkpoint is written to (one per trial, since every trial's filename is otherwise identical)."""
+        """hpo/trial_<number>/ -- one directory per trial, since the filenames are otherwise identical."""
         return os.path.join(self.dir_hpo, f"trial_{number}")
 
     @property
     def dir_hpo_best_trial(self):
-        """hpo/best_trial/ -- a copy of whichever trial won; the study's final result, in the same shape as trial_<n>/."""
+        """hpo/best_trial/ -- a copy of the winning trial, same shape as trial_<n>/."""
         return os.path.join(self.dir_hpo, "best_trial")
 
     def build_hpo_trial_dir(self, number):
@@ -1075,12 +1057,10 @@ class Helper:
             return None
         return path_csv
 
-    # Every checkpoint carries its own eval_history (written by train_agent),
-    # so a directory of checkpoints -- one per seed -- is a set of curves
-    # ready to aggregate. Two figures (mean+-std, median+IQR) are drawn rather
-    # than one: they answer different questions, and the gap between them is
-    # the diagnostic for a dead seed. plotly is imported inside these methods,
-    # like optuna/joblib elsewhere, so a checkout without it still trains.
+    # Every checkpoint carries its own eval_history, so a directory of them is
+    # a set of curves. Two figures (mean+-std, median+IQR): the gap between
+    # them is the diagnostic for a dead seed. plotly is imported inside these
+    # methods, so a checkout without it still trains.
     def load_eval_histories(self, directory):
         """Reads every checkpoint's eval_history in `directory`. Returns
         {seed: eval_history}, seed parsed from the filename. Skips files that
@@ -1508,7 +1488,7 @@ class Helper:
         return best
 
     def zero_hidden(self, batch_size=None):
-        """h_0 (and c_0 for LSTM) of shape (1, batch_size, hidden_size), zero-initialized; None for MLP. batch_size defaults to n_workers."""
+        """Zeroed h_0 (and c_0 for LSTM), (1, batch_size, hidden_size); None for MLP."""
         if not self.is_recurrent:
             return None
 
@@ -1948,7 +1928,7 @@ def _find_cue(image):
 
 
 def _visible_objects(image):
-    """['green ball -- 3 ahead, 2 left', ...] for every non-structural cell in view (skips unseen/empty/wall/floor/agent)."""
+    """['green ball -- 3 ahead, 2 left', ...] for each non-structural cell in view."""
     n = image.shape[0]
     agent_col, agent_row = n // 2, n - 1  # the agent sits bottom-centre
     lines = []
@@ -2050,7 +2030,7 @@ def _draw_policy(screen, pygame, probs, chosen, x, y, width, font):
 
 
 def _draw_button(screen, pygame, rect, label, font, mouse, accent, enabled=True):
-    """Draws a filled rounded button that lights up on hover; enabled=False draws it flat and grey with no hover response."""
+    """A filled rounded button that lights up on hover; enabled=False draws it flat and grey."""
     if not enabled:
         pygame.draw.rect(screen, (34, 34, 34), rect, border_radius=6)
         pygame.draw.rect(screen, (58, 58, 58), rect, 2, border_radius=6)

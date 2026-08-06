@@ -1,12 +1,7 @@
-"""
-Inspect the input (observation) and output (action) size of the MiniGrid
-Memory environment used in this project, and document the full step-by-step
-interaction protocol (reset -> action -> step -> ... -> close) with the exact
-type / shape / size of everything that crosses the agent-environment boundary.
-
-Run with:
-    conda activate rl_project
-    python test_enviroment/test_input_output.py
+"""Inspect the observation/action sizes of the MiniGrid Memory env and walk the
+interaction protocol (reset -> action -> step -> close), printing the type,
+shape and size of everything crossing the agent-environment boundary.
+Run: python test_enviroment/explane_enviroment.py
 """
 
 import gymnasium as gym
@@ -119,13 +114,9 @@ def describe(value):
 
 
 def print_channel_grid(image, channel, decode, indent="    "):
-    """
-    Print every value of one channel of obs['image'] as a 7x7 grid.
-
-    The array is indexed image[x, y, c], but it is printed with rows = y and
-    columns = x, so the grid on screen is laid out the way the agent sees it:
-    top row = farthest ahead, bottom row = the agent's own row.
-    """
+    """Print one channel of obs['image'] as a 7x7 grid. Indexed image[x, y, c]
+    but printed rows=y, columns=x, so it reads the way the agent sees it: top
+    row farthest ahead, bottom row the agent's own."""
     n_x, n_y = image.shape[0], image.shape[1]
     idx_to_name = decode_table(IMAGE_CHANNEL_MEANING[channel][1])
     width = max(len(name) for name in idx_to_name.values()) if decode else 3

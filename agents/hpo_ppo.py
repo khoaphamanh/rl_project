@@ -14,7 +14,7 @@ from config import make_config
 
 
 class HPOPPO:
-    """An Optuna study over one encoder on one env: draws hyperparameters, trains PPOAgent runs per trial, and scores them."""
+    """An Optuna study over one encoder: draws params, trains a PPOAgent per seed, scores them."""
 
     def __init__(self, config, logger=None):
         self.config = config
@@ -25,9 +25,7 @@ class HPOPPO:
         self.seed_list = config.seed_list
         self.n_trials = config.n_trials
 
-        # all three derived from the one config string, so they cannot drift
-        # apart: hpo_objective is what was asked for, hpo_metric is the key
-        # looked up in a run's result, score_name is what gets printed
+        # all three parsed from the one config string, so they cannot drift
         self.hpo_objective = config.hpo_objective
         self.hpo_metric = config.hpo_metric
         self.score_name = config.score_name
@@ -45,10 +43,8 @@ class HPOPPO:
         else:
             self.logger.info(f"resumed the sampler from {config.path_hpo_sampler}")
 
-        # MedianPruner compares a trial's running mean against the median of
-        # finished trials at the same step. Step here is a SEED index, not an
-        # iteration (see objective()), so a bad draw can be killed after one
-        # seed instead of three.
+        # step here is a SEED index, not an iteration (see objective()), so a
+        # bad draw can be killed after one seed instead of all of them
         self.pruner = optuna.pruners.MedianPruner()
 
         self.study = optuna.create_study(
@@ -62,20 +58,17 @@ class HPOPPO:
 
     # ---- one training run ----
     def run_split(self, seed, params, trial_number):
-        """Train a fresh PPOAgent once at these params/seed, checkpoint it under hpo/trial_<n>/, and return its last-iteration scores."""
+        """Train a fresh PPOAgent at these params/seed, checkpoint it, return its last-iteration scores."""
         config = make_config(self.feature_extractor)
 
-        # must happen before PPOAgent is built: the agent reads lr/wd and the
-        # architecture sizes into the model at construction time and never
-        # looks at the config again
+        # before PPOAgent is built: the agent reads lr/wd and the architecture
+        # sizes into the model at construction and never consults config again
         config.apply_params(params)
 
         config.dir_pretrained_model = config.build_hpo_trial_dir(trial_number)
 
-        # one eval mode for the whole run: train_agent()'s periodic evals and
-        # this run's closing number must be the same kind of measurement, so
-        # switching hpo_objective can't silently switch the measuring
-        # instrument too
+        # one eval mode for the whole run, so switching hpo_objective cannot
+        # silently switch the measuring instrument too
         deterministic = config.eval_deterministic
 
         agent = PPOAgent(config, seed=seed)
@@ -128,18 +121,15 @@ class HPOPPO:
                 result = self.run_split(seed, params, trial_number=trial.number)
                 scores.append(result[self.hpo_metric])
 
-                # every metric kept per seed, not just the optimized one, so
-                # the csv can answer "what would another objective have
-                # picked" without rerunning. eval_history is skipped here
-                # (list of dicts, unreadable in a csv cell) and added below
-                # as flattened lists instead.
+                # every metric per seed, not just the optimized one, so the csv
+                # can answer "what would another objective have picked".
+                # eval_history is added below as flat lists instead.
                 for key, value in result.items():
                     if key not in ("seed", "eval_history"):
                         trial.set_user_attr(f"{key}_seed_{seed}", value)
 
-                # curve flattened to one list per seed per metric, so the
-                # ablation figure can be redrawn from the study without
-                # re-reading every trial's checkpoints
+                # flattened per seed per metric, so the ablation figure redraws
+                # from the study without re-reading every checkpoint
                 history = result["eval_history"]
                 trial.set_user_attr(
                     "curve_iterations", [int(c["iteration"]) for c in history]
@@ -153,10 +143,9 @@ class HPOPPO:
                     [float(c["return_mean"]) for c in history],
                 )
 
-                # pruning happens between seeds, not inside train_agent, so
-                # optuna stays out of the agent. Uses the same aggregate_scores
-                # as the final value, so a trial is pruned and judged on the
-                # same kind of number.
+                # between seeds, not inside train_agent, so optuna stays out of
+                # the agent. Same aggregate_scores as the final value, so a
+                # trial is pruned and judged on the same kind of number.
                 running = self.config.aggregate_scores(scores)
                 trial.report(running, step=index_split)
                 if trial.should_prune():
@@ -189,34 +178,27 @@ class HPOPPO:
         # copied out of trial_<n>/ so it survives deleting the other trials
         self.config.copy_best_trial(self.study, self.logger)
 
-        # runs after copy_best_trial since it plots from the checkpoints, and
-        # after the whole search (not inside objective()) since a pruned
-        # trial's plot would otherwise be built from one seed and never
-        # updated. A ctrl-c'd study leaves no plots; rerun with
-        # --final-only or call config.plot_hpo() to rebuild from disk.
+        # after copy_best_trial (it plots from the checkpoints) and after the
+        # whole search. A ctrl-c'd study leaves no plots; --final-only rebuilds.
         self.config.plot_hpo(logger=self.logger)
 
         return best
 
     # ---- the number to report ----
     def score_saved(self, seed_index, seed):
-        """Load one saved checkpoint of the winning trial (no training) and return its scores in both sampled and argmax eval modes, or None if missing."""
-        # fresh config, same reason as run_split: nothing here should leak
-        # into the next seed
+        """Load one winning-trial checkpoint (no training) and score it in both eval modes, or None if missing."""
+        # fresh config, same reason as run_split: nothing leaks to the next seed
         config = make_config(self.feature_extractor)
 
-        # dir_pretrained_model = best_trial/, config.seed = seed_list[seed_index]
-        # -- the same two things watch.py sets to find this path
+        # the same two things watch.py sets to find this path
         path = config.select_run(trial="best", seed_index=seed_index)
         if not os.path.exists(path):
             self.logger.info(f"seed {seed}: no checkpoint at {path}, skipped")
             return None
 
-        # architecture the file was trained with: search_space tunes widths
-        # per encoder, so a fresh make_config() describes a different network
-        # than the winning trial. Read from the checkpoint (see
-        # helper.searched_params) so this is correct even if optuna no longer
-        # has a record of the trial.
+        # the architecture the file was trained with -- a fresh make_config()
+        # describes a different network. Read from the checkpoint, so this is
+        # right even if optuna no longer has a record of the trial.
         config.apply_params(config.checkpoint_params(path))
 
         agent = PPOAgent(config, seed=seed)
@@ -270,16 +252,15 @@ class HPOPPO:
             agent.close()
 
     def final(self):
-        """Report the winning trial's saved runs, training nothing: reloads each seed's checkpoint, summarizes both eval modes, and writes the final JSON and curve plots."""
+        """Report the winning trial's saved runs, training nothing. Writes the final JSON and curve plots."""
         try:
             best = self.study.best_trial
         except ValueError:
             self.logger.info("no completed trial -- nothing to report")
             return None
 
-        # re-copied, not assumed: --final-only skips hpo(), and a study
-        # resumed for more trials can crown a new winner over an old
-        # best_trial/. The copy empties the target first.
+        # re-copied, not assumed: --final-only skips hpo(), and a resumed study
+        # can crown a new winner over an old best_trial/.
         directory = self.config.copy_best_trial(self.study, self.logger)
         if directory is None:
             self.logger.info("nothing to report")
@@ -302,11 +283,9 @@ class HPOPPO:
             self.logger.info("no checkpoint could be scored -- nothing to report")
             return None
 
-        # every metric summarised, not just the searched one, and both eval
-        # modes -- they are NOT comparable to each other, see score_saved.
-        # seed/path/curve_deterministic are labels, iteration is identical
-        # across seeds, and eval_history is a list -- none belong in a mean,
-        # so they're dropped here and kept raw in "results" instead.
+        # every metric summarised, in both eval modes -- which are NOT
+        # comparable to each other, see score_saved. `skip` holds the labels
+        # and lists that don't belong in a mean; they stay raw in "results".
         summary = {}
         skip = {"seed", "path", "curve_deterministic", "iteration", "eval_history"}
         for key in sorted(set(results[0]) - skip):
@@ -344,13 +323,11 @@ class HPOPPO:
             "seeds_scored": [r["seed"] for r in results],
             "eval_seed": self.config.eval_seed,
             "n_eval_episodes": self.config.n_eval_episodes,
-            # which report iteration every scalar above was taken at, so the
-            # json is readable without knowing what config.py said that day
+            # so the json is readable without knowing what config.py said that day
             "n_iterations": self.config.n_iterations,
             "n_iterations_report": self.config.n_iterations_report,
             "scored_at_iteration": results[0]["iteration"],
-            # curve's mode read off the checkpoint; the other mode is
-            # measured fresh by score_saved
+            # read off the checkpoint; the other mode is measured fresh
             "curve_deterministic": results[0]["curve_deterministic"],
             "trials_deterministic": self.config.eval_deterministic,
             "results": results,

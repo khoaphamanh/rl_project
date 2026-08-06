@@ -29,12 +29,12 @@ def main():
     parser.add_argument(
         "--final-only",
         action="store_true",
-        help="skip the search; retrain at the best params already in the study",
+        help="skip the search; just report the winning trial's saved runs",
     )
     parser.add_argument(
         "--search-only",
         action="store_true",
-        help="run the search but skip the final retrain",
+        help="run the search but skip the final report",
     )
     args = parser.parse_args()
 

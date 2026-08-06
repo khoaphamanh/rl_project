@@ -21,7 +21,7 @@ class Config(Helper):
 
         self.tbptt_length = "max"
 
-        self.name_env = "MiniGrid-MemoryS11-v0" # "MiniGrid-DoorKey-8x8-v0"
+        self.name_env = "MiniGrid-MemoryS17Random-v0" #"MiniGrid-MemoryS11-v0" # "MiniGrid-DoorKey-8x8-v0"
         self.env_size = int(re.search(r"(\d+)", self.name_env).group(1))
         self.force_cue_visible = False
 
@@ -31,24 +31,17 @@ class Config(Helper):
         # required in notebooks and scripts without an __main__ guard.
         self.async_envs = True
 
-        # T: None -> use the env's own default max_steps; an explicit int
-        # overrides the env's max_steps too (see Helper.build_env), which
-        # keeps MiniGrid's truncation and reward in sync with worker_steps
-        self.worker_steps = 605//2
-        if self.worker_steps is None:
-            self.worker_steps = self.env_max_steps 
+        # T: build_env feeds this back as the env's max_steps, so MiniGrid's
+        # truncation and success reward (1 - 0.9*step_count/max_steps) move
+        # with it. Derived from env_max_steps so it tracks name_env.
+        self.worker_steps = self.env_max_steps // 4
         self.n_total_steps = self.n_workers * self.worker_steps  # W * T
 
-        # Declared, not chosen. Every name below is searched (see search_space),
-        # so a tuned run gets its value from the trial via apply_params -- which
-        # refuses to write a name the config doesn't already have, hence these
-        # placeholders. A hand-picked run gets real numbers from ConfigNoHPO
-        # instead; those live there and only there, so there is no second copy
-        # here to drift out of sync with them.
-        #
-        # None is deliberate: nothing here is a usable fallback, so a path that
-        # forgets to apply params fails loudly instead of quietly training some
-        # default while reporting the params it meant to use.
+        # Declared, not chosen: every name below is drawn per trial and written
+        # by apply_params, which refuses names the config lacks -- hence the
+        # placeholders. None, not a default, so a path that forgets to apply
+        # params fails loudly instead of training something it didn't report.
+        # Hand-picked runs get real numbers from ConfigNoHPO, only there.
         self.lr = None
         self.wd = None
         self.gamma = None
@@ -59,48 +52,32 @@ class Config(Helper):
         self.max_grad_norm = None
         self.n_epochs = None
 
-        # not searched, and PPOAgent reads `target_kl is not None` as "no early
-        # stop on KL" -- so a tuned run has it off unless you add it to
-        # search_space below. ConfigNoHPO sets a real one for hand-picked runs.
+        # not searched; PPOAgent reads `is not None` as "early-stop on KL".
         self.target_kl = None
 
-        # decay lr linearly to 0 across n_iterations (train_agent applies it,
-        # once per iteration). Falsy -- including None -- means a constant lr.
-        # Not searched either, same as target_kl above: a tuned run has it off
-        # unless you add it to search_space, e.g.
-        #   {"type": "categorical", "name": "lr_anneal", "choices": [True, False]}
-        # With it on, the searched `lr` is the INITIAL rate, not the rate.
+        # decay lr linearly to 0 across n_iterations; falsy = constant lr.
+        # Not searched either. With it on, `lr` is the INITIAL rate.
         self.lr_anneal = None
 
         # candidates, largest first: run_with_batch_size_fallback uses the largest that fits
-        self.mini_batch_size = [128, 64, 32, 16, 8, 4]
+        self.mini_batch_size = [1024,512,256,128, 64, 32, 16, 8, 4]
 
-        # 2000 is the budget the verified GRU run used: solved MemoryS11 at
-        # iteration ~1000 and held 1.00 to the end, with lr_anneal on.
-        # Raising it is safe -- the schedule spans n_iterations, so it just
-        # decays more slowly -- but it also changes the budget every encoder
-        # is compared at, so change it for all of them or none.
-        self.n_iterations = 2000
-        self.n_iterations_report = 100
+        # the budget every encoder is compared at: change it for all or none.
+        # Raising it is safe -- the lr schedule spans n_iterations, so it just
+        # decays more slowly.
+        self.n_iterations = 1000
+        self.n_iterations_report = 10
 
-        # the master switch for every clock in the run (Timing in
-        # config/helper.py). True: PPOAgent times each phase and prints the
-        # TIME tables at every report and at the end of the seed. False: every
-        # `with self.timing.phase(...)` becomes a bare yield, no
-        # cuda.synchronize() is issued for a measurement, and no table is
-        # printed -- the "took ..." wall clock still is, since that costs
-        # nothing. Turn it off once a config is settled and the phase
-        # breakdown has stopped telling you anything new.
+        # master switch for every clock (Timing in helper.py). Off: each
+        # `timing.phase(...)` becomes a bare yield, no cuda.synchronize() is
+        # issued to measure, no TIME table printed. "took ..." stays either way.
         self.calculate_time = True
 
         self.n_eval_episodes = 50
         self.eval_seed = 10_000
-        # False = sample actions, True = argmax. Sampling is safe here even
-        # though it reads a stochastic policy: entropy_coef=0.005 plus the lr
-        # decay drive entropy to ~0.000 by the time the task is solved, so a
-        # sampled episode and an argmax one take the same actions. It was only
-        # misleading back when entropy sat at ~1.5 and every eval looked like
-        # chance regardless of what the policy had actually learned.
+        # False = sample actions, True = argmax. Sampling is safe: entropy_coef
+        # plus the lr decay drive entropy to ~0 by the time the task is solved,
+        # so a sampled and an argmax episode take the same actions.
         self.eval_deterministic = False
 
         self.n_trials = 30
@@ -112,16 +89,13 @@ class Config(Helper):
         # spread is "minus-std"/"minus-iqr"/"None", weighted by hpo_lambda.
         self.hpo_objective = "return_mean_minus-std"
 
-        # score = center - lambda * spread, both across seeds. Reduce if the
-        # sampler avoids a promising region; 0.5 is a safe compromise.
+        # score = center - lambda * spread, both across seeds.
         self.hpo_lambda = 1.0
 
-        # The PPO half of the search space, shared by all four encoders so the
-        # values a study settles on are comparable across the ablation. Each
-        # ConfigMLP/LSTM/GRU/Transformer appends its own architecture knobs to
-        # this list in _configure_model(); ConfigNoHPO replaces it with [].
-        # Every "name" here must already be an attribute above -- apply_params
-        # raises on one that isn't, rather than inventing it.
+        # The PPO half, shared by all four encoders so tuned values stay
+        # comparable. Each subclass appends its architecture knobs in
+        # _configure_model(); ConfigNoHPO replaces it with []. Every "name"
+        # must already be an attribute above -- apply_params raises otherwise.
         self.search_space = [
             {"type": "float", "name": "lr", "low": 1e-5, "high": 1e-2, "log": True},
             {

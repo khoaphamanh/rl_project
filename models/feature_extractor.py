@@ -265,9 +265,8 @@ def memory_test(model, x, name):
     """Perturbs t=0 and prints which output timesteps change, to check the encoder carries memory forward."""
     x_changed = x.clone()
 
-    # perturb the first observation only. Modulo per channel, so every index
-    # stays inside its own range -- +1 alone could push object 10 to 11, which
-    # flatten_obs would reject. The (3,) tensor broadcasts over the last axis.
+    # perturb the first observation only. Modulo per channel keeps every index
+    # in range -- +1 alone could push object 10 to 11, which flatten_obs rejects.
     ranges = torch.tensor(OBS_CHANNEL_SIZES, dtype=x.dtype)
     x_changed[:, 0] = (x[:, 0] + 1) % ranges
 
@@ -280,7 +279,7 @@ def memory_test(model, x, name):
 
 
 def causality_test(model, x, name):
-    """Perturbs the last step and prints which earlier outputs change, to check the encoder never leaks future information."""
+    """Perturbs the last step and prints which earlier outputs change: checks for future leakage."""
     x_changed = x.clone()
 
     ranges = torch.tensor(OBS_CHANNEL_SIZES, dtype=x.dtype)

@@ -10,8 +10,7 @@ class ConfigLSTM(Config):
 
         self.hidden_size = 64  # width of h and c
 
-        # same low/high/step as the other three encoders, so the widths the
-        # search settles on are comparable across the ablation
+        # same low/high/step as the other encoders, so widths stay comparable
         self.search_space += [
             {"type": "int", "name": "hidden_size", "low": 32, "high": 512, "step": 8},
         ]
