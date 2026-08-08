@@ -83,7 +83,7 @@ class Config(Helper):
         # master switch for every clock (Timing in helper.py). Off: each
         # `timing.phase(...)` becomes a bare yield, no cuda.synchronize() is
         # issued to measure, no TIME table printed. "took ..." stays either way.
-        self.calculate_time = True
+        self.calculate_time = False
 
         self.n_eval_episodes = 50
         self.eval_seed = 10_000
