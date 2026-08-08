@@ -21,12 +21,14 @@ import torch
 from gymnasium.vector import AsyncVectorEnv, AutoresetMode, SyncVectorEnv
 from minigrid.wrappers import ImgObsWrapper
 from torch.utils.data import Dataset
-
-# importing this registers MiniGrid-* with gymnasium; looks unused but
-# gym.make raises NameNotFound without it. Do not let a linter remove it.
+import plotly.graph_objects as go
 import minigrid  # noqa: F401
-
 from models.feature_extractor import MLP, LSTM, GRU, Transformer
+import joblib
+from torchinfo import summary
+import optuna
+import pygame
+from models.model import Network
 
 # The two metrics a run reports and the study can rank on. Both are one
 # number per seed; mean and std then aggregate ACROSS seeds, never across the
@@ -632,15 +634,7 @@ class Helper:
     def log_model_summary(self, model, logger=None, batch_size=None, seq_len=8):
         """Runs torchinfo's summary on the model and logs the table (param
         counts, shapes, size). batch_size/seq_len only shape the probe pass.
-        Returns the ModelStatistics, or None if torchinfo isn't installed."""
-        try:
-            from torchinfo import summary
-        except ImportError:
-            log_with(logger, "warning")(
-                "torchinfo not installed, skipping the model summary "
-                "(pip install torchinfo)"
-            )
-            return None
+        Returns the ModelStatistics object."""
 
         if batch_size is None:
             batch_size = self.mini_batch_size
@@ -981,8 +975,6 @@ class Helper:
 
     def save_sampler(self, sampler, path=None):
         """Pickle the TPE sampler. Called after every trial -- see path_hpo_sampler."""
-        import joblib
-
         if path is None:
             path = self.path_hpo_sampler
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -991,8 +983,6 @@ class Helper:
 
     def load_sampler(self, path=None):
         """The pickled sampler, or None if there is not one yet."""
-        import joblib
-
         if path is None:
             path = self.path_hpo_sampler
         if not os.path.exists(path):
@@ -1021,7 +1011,7 @@ class Helper:
             frame = study.trials_dataframe(
                 attrs=("number", "value", "params", "user_attrs", "state")
             )
-        except ImportError:
+        except (ImportError, AttributeError):
             return None
 
         frame.columns = [self._strip_prefix(name) for name in frame.columns]
@@ -1121,14 +1111,6 @@ class Helper:
         _HPO_METRICS. Returns the paths written, or [] if there's no curve."""
         say = log_with(logger)
 
-        try:
-            import plotly.graph_objects as go
-        except ImportError:
-            # same graceful skip as the pandas csv export: a checkout without
-            # plotly still trains, it just doesn't draw
-            say("plotly is not installed, skipping the curve plots")
-            return []
-
         if metrics is None:
             metrics = _HPO_METRICS
         elif isinstance(metrics, str):
@@ -1190,9 +1172,14 @@ class Helper:
                     line=dict(color=colour, width=2.5),
                     marker=dict(size=6),
                     name=centre_label,
+                    # the band's own trace is hoverinfo="skip", so the spread
+                    # has to ride along on the centre line to be readable
+                    customdata=np.stack([std, low, high], axis=-1),
                     hovertemplate="iteration %{x}<br>"
                     + metric
-                    + " %{y:.3f}<extra></extra>",
+                    + " %{y:.3f} +- %{customdata[0]:.3f}"
+                    + "<br>band [%{customdata[1]:.3f}, %{customdata[2]:.3f}]"
+                    + "<extra></extra>",
                 )
             )
 
@@ -1372,8 +1359,6 @@ class Helper:
         """study.optimize, resume-aware: runs only the trials still needed to
         reach n_trials (complete + pruned), re-queueing the last trial's
         params if it crashed or was killed mid-run. Returns trials run."""
-        import optuna
-
         states = (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED)
         done = study.get_trials(deepcopy=False, states=list(states))
         remaining = n_trials - len(done)
@@ -1415,8 +1400,6 @@ class Helper:
 
     def summary_hpo(self, logger, study, path_csv=None):
         """The closing table: counts by state, then the winner. Returns it, or None."""
-        import optuna
-
         self.csv_study_export(study, path_csv)
 
         trials = study.trials
@@ -1486,12 +1469,6 @@ class Helper:
         """Opens a pygame window that plays a saved policy over the fixed
         eval-set mazes, showing the full maze, the agent's 7x7 observation,
         action distribution and value estimate. Blocks until closed."""
-        # imported HERE, not at the top of the module: training must not need
-        # pygame installed, and importing it opens an SDL connection
-        import pygame
-
-        from models.model import Network
-
         if deterministic is None:
             deterministic = self.eval_deterministic
 
