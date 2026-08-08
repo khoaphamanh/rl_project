@@ -72,7 +72,7 @@ class Config(Helper):
         self.lr_anneal = None
 
         # candidates, largest first: run_with_batch_size_fallback uses the largest that fits
-        self.mini_batch_size = [1024, 512, 256, 128, 64, 32, 16, 8, 4]
+        self.mini_batch_size = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4]
 
         # the budget every encoder is compared at: change it for all or none.
         # Raising it is safe -- the lr schedule spans n_iterations, so it just
