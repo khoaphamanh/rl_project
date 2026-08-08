@@ -1,8 +1,8 @@
 """Entry point for the hyperparameter search: `python main.py MLP|LSTM|GRU|
-TRANSFORMER` runs hpo() (the optuna study) then final() (reports the winning
-trial's saved runs; trains nothing). --trials/--final-only/--search-only run
-one phase at a time. Resumable: the study and sampler are checkpointed to
-disk, so re-running continues an interrupted search."""
+TRANSFORMER [max|tbptt]` runs hpo() (the optuna study) then final() (reports
+the winning trial's saved runs; trains nothing). --trials/--final-only/
+--search-only run one phase at a time. Resumable: the study and sampler are
+checkpointed to disk, so re-running continues an interrupted search."""
 
 import argparse
 
@@ -19,6 +19,16 @@ def main():
         type=str.upper,
         choices=MODEL_CHOICES,
         help="which feature extractor to tune (%(choices)s)",
+    )
+    parser.add_argument(
+        "tag",
+        nargs="?",
+        default="max",
+        type=str.lower,
+        choices=("max", "tbptt"),
+        help="GRU/LSTM only: 'max' fixes tbptt_length at max and writes to "
+        "pretrained_model_<ENC>_max, 'tbptt' searches it and writes to "
+        "pretrained_model_<ENC>_tbptt. Ignored for MLP/TRANSFORMER.",
     )
     parser.add_argument(
         "--trials",
@@ -38,7 +48,7 @@ def main():
     )
     args = parser.parse_args()
 
-    config = make_config(args.model)
+    config = make_config(args.model, hpo_tag=args.tag)
     if args.trials is not None:
         config.n_trials = args.trials
 

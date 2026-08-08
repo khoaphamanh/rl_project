@@ -6,6 +6,7 @@ config.<name>. Also defines Timing, StartInCueView and SequenceDataset.
 
 import copy
 import gc
+import glob
 import json
 import logging
 import os
@@ -27,26 +28,18 @@ import minigrid  # noqa: F401
 
 from models.feature_extractor import MLP, LSTM, GRU, Transformer
 
-# hpo_objective is <metric>_<center>_<spread>, e.g. "return_mean_minus-std" or
-# "success-rate_median_minus-iqr". metric is one number per seed; center and
-# spread aggregate across seeds (never across eval episodes within a run).
-# A third field, "aulc", was removed: being permutation-invariant, it can't
-# tell a run that learned and held from one that learned and collapsed.
+# The two metrics a run reports and the study can rank on. Both are one
+# number per seed; mean and std then aggregate ACROSS seeds, never across the
+# eval episodes within one run.
 _HPO_METRICS = ("return_mean", "success_rate")
 
-# "return" is accepted alone because return_mean_minus-std already parses
-# "mean" as the center.
-_HPO_METRIC_ALIASES = {
-    "return": "return_mean",
-    "success": "success_rate",
-    "success_rate": "success_rate",
-    "return_mean": "return_mean",
+# Exactly two objectives exist, both scored mean - hpo_lambda*std across seeds.
+# Median/IQR were dropped: with a handful of seeds they estimate nothing the
+# mean/std pair doesn't, and two objectives keep every report comparable.
+_HPO_OBJECTIVES = {
+    "return_mean_minus_std": "return_mean",
+    "success_rate_mean_minus_std": "success_rate",
 }
-
-_HPO_CENTERS = ("mean", "median")
-
-# the penalty subtracted, weighted by config.hpo_lambda; None = no penalty.
-_HPO_SPREADS = ("std", "iqr", None)
 
 # the columns of the closing per-seed table (Helper.log_seed_summary), shared
 # by the hand-picked run and the search's final report. "sampled" is the policy
@@ -60,53 +53,18 @@ _SEED_SUMMARY_METRICS = (
 
 
 def parse_hpo_objective(objective):
-    """Parses hpo_objective (e.g. "success-rate_median_minus-iqr") into
-    (metric, center, spread); center/spread default to mean/None. Raises
-    ValueError on an unrecognized field rather than defaulting silently."""
-    text = str(objective).strip().lower().replace("-", "_")
-    fields = [field for field in text.split("_") if field]
-    if not fields:
+    """The per-seed metric behind hpo_objective. Only the two entries of
+    _HPO_OBJECTIVES are accepted; anything else raises rather than defaulting
+    silently to a scale the rest of the reports would not match."""
+    key = str(objective).strip().lower().replace("-", "_")
+    if key not in _HPO_OBJECTIVES:
         raise ValueError(
-            "hpo_objective is empty. Write it as <metric>_<center>_<spread>, "
-            "e.g. return_mean_minus-std, success-rate_median_minus-iqr or "
-            "success-rate_median_None."
+            f"hpo_objective {objective!r} is not one of "
+            f"{sorted(_HPO_OBJECTIVES)}. Both are scored "
+            f"mean - hpo_lambda*std across seeds; they differ only in which "
+            f"metric is aggregated."
         )
-
-    original = list(fields)
-
-    # the spread, last
-    spread = None
-    if fields[-2:] == ["minus", "std"]:
-        spread, fields = "std", fields[:-2]
-    elif fields[-2:] == ["minus", "iqr"]:
-        spread, fields = "iqr", fields[:-2]
-    elif fields[-1] in ("none", "null"):
-        fields = fields[:-1]
-    elif fields[-1] == "minus" or (len(fields) > 1 and fields[-2] == "minus"):
-        # "..._minus" alone, or "..._minus_something-else"
-        raise ValueError(
-            f"hpo_objective {objective!r}: {'_'.join(original[-2:])!r} is not a "
-            f"spread. Use minus-std, minus-iqr or None."
-        )
-
-    # the center, next-to-last
-    center = "mean"
-    if fields and fields[-1] in _HPO_CENTERS:
-        center, fields = fields[-1], fields[:-1]
-
-    # everything left is the metric
-    metric = "_".join(fields)
-    metric = _HPO_METRIC_ALIASES.get(metric, metric)
-    if metric not in _HPO_METRICS:
-        raise ValueError(
-            f"hpo_objective {objective!r} names the metric {metric or '(nothing)'!r}, "
-            f"which is not one of {list(_HPO_METRICS)}. The format is "
-            f"<metric>_<center>_<spread>, where <center> is one of "
-            f"{list(_HPO_CENTERS)} and <spread> is one of minus-std, minus-iqr "
-            f"or None -- e.g. return_mean_minus-std."
-        )
-
-    return metric, center, spread
+    return _HPO_OBJECTIVES[key]
 
 
 def format_clock(seconds):
@@ -624,7 +582,14 @@ class Helper:
         optimizer = torch.optim.Adam(
             probe.parameters(), lr=self.lr, weight_decay=self.wd
         )
-        L = self.worker_steps
+        # the longest sequence split_pad_mask can emit: a chunk is capped at
+        # tbptt_length, so probing at worker_steps would overestimate the batch
+        # by T/tbptt_length and resolve a needlessly small minibatch
+        L = (
+            self.worker_steps
+            if self.tbptt_length == "max"
+            else min(int(self.tbptt_length), self.worker_steps)
+        )
 
         def step(n):
             # the keys split_pad_mask produces, in the shapes SequenceDataset
@@ -816,54 +781,53 @@ class Helper:
 
         return params
 
-    # all four derived from hpo_objective; see parse_hpo_objective for the format
+    # both derived from hpo_objective, which parse_hpo_objective validates
     @property
     def hpo_metric(self):
         """The per-seed metric key from hpo_objective: "return_mean" or "success_rate"."""
-        return parse_hpo_objective(self.hpo_objective)[0]
-
-    @property
-    def hpo_center(self):
-        """ "mean" or "median" -- how the per-seed metrics are centred."""
-        return parse_hpo_objective(self.hpo_objective)[1]
-
-    @property
-    def hpo_spread(self):
-        """ "std", "iqr", or None -- what is subtracted from the center."""
-        return parse_hpo_objective(self.hpo_objective)[2]
+        return parse_hpo_objective(self.hpo_objective)
 
     @property
     def hpo_aggregation(self):
-        """ "median_minus-iqr" -- the center and spread fields of hpo_objective, joined back into one string for reports."""
-        _, center, spread = parse_hpo_objective(self.hpo_objective)
-        return center if spread is None else f"{center}_minus-{spread}"
+        """How the per-seed metrics are reduced. The only aggregation there is."""
+        return "mean_minus-std"
 
     @property
     def score_name(self):
         """ "mean_minus_1std(return_mean)" -- what the study maximizes, for printing next to a score."""
-        metric, center, spread = parse_hpo_objective(self.hpo_objective)
-        if spread is None:
-            return f"{center}({metric})"
-        return f"{center}_minus_{self.hpo_lambda:g}{spread}({metric})"
+        name = f"mean_minus_{self.hpo_lambda:g}std({self.hpo_metric})"
+        if self.searches_tbptt:
+            name += f"_minus_{self.tbptt_lambda:g}(tbptt/T)"
+        return name
+
+    @property
+    def searches_tbptt(self):
+        """True when tbptt_length is in this config's search_space -- i.e. the
+        tbptt study. The max study never pays the penalty."""
+        return any(entry["name"] == "tbptt_length" for entry in self.search_space)
 
     def aggregate_scores(self, values):
         """Reduces per-seed metric values to the score the study maximizes:
-        center(values) - hpo_lambda * spread(values), per hpo_objective.
-        Spread is across seeds, not within one run. Returns a float."""
+        mean(values) - hpo_lambda * std(values), both across seeds and not
+        within one run. Returns a float."""
         values = np.asarray(values, dtype=float)
-        _, center, spread = parse_hpo_objective(self.hpo_objective)
+        # ddof=0, population std -- the seeds ARE the population being compared
+        return float(values.mean()) - self.hpo_lambda * float(values.std())
 
-        score = float(np.median(values)) if center == "median" else float(values.mean())
+    def trial_score(self, values, params=None):
+        """What a trial is ranked on: aggregate_scores, minus the tbptt penalty
+        when this trial drew a tbptt_length. In a "max" run params carries no
+        such key, so nothing is subtracted and this is aggregate_scores."""
+        score = self.aggregate_scores(values)
 
-        if spread is None:
+        length = (params or {}).get("tbptt_length")
+        if length is None or length == "max":
             return score
 
-        if spread == "iqr":
-            penalty = float(np.percentile(values, 75) - np.percentile(values, 25))
-        else:
-            penalty = float(values.std())  # ddof=0, population std
-
-        return score - self.hpo_lambda * penalty
+        # normalized by T so the penalty lands in [0, tbptt_lambda] -- the same
+        # scale as the return, which makes tbptt_lambda readable as "the most
+        # return I will trade away to go from full BPTT to none"
+        return score - self.tbptt_lambda * (int(length) / self.worker_steps)
 
     def apply_params(self, params):
         """Writes a trial's drawn params onto this config's attributes. Returns
@@ -1043,24 +1007,40 @@ class Helper:
         return path
 
     def csv_study_export(self, study, path_csv=None):
-        """Writes every trial (params, value, state, duration, user attrs) to a
-        csv. Called at the start of each trial so an interrupted study still
-        leaves a readable table. Needs pandas; returns None if missing.
+        """One row per trial: number, objective value, every drawn param, the
+        four across-seed numbers HPOPPO records, and state. Written at the
+        start of each trial. Needs pandas; returns None if missing.
         """
         if path_csv is None:
             path_csv = self.path_hpo_csv
 
         os.makedirs(os.path.dirname(path_csv) or ".", exist_ok=True)
         try:
-            study.trials_dataframe().to_csv(path_csv, index=False)
+            # named attrs, not the default: the default also dumps datetimes
+            # and every user attr, which buries the params in the wide table
+            frame = study.trials_dataframe(
+                attrs=("number", "value", "params", "user_attrs", "state")
+            )
         except ImportError:
             return None
+
+        frame.columns = [self._strip_prefix(name) for name in frame.columns]
+        frame = frame.rename(columns={"value": "objective_value"})
+        frame.to_csv(path_csv, index=False)
         return path_csv
 
+    @staticmethod
+    def _strip_prefix(name):
+        """'params_lr' -> 'lr', 'user_attrs_return_std' -> 'return_std'."""
+        for prefix in ("params_", "user_attrs_"):
+            if name.startswith(prefix):
+                return name[len(prefix) :]
+        return name
+
     # Every checkpoint carries its own eval_history, so a directory of them is
-    # a set of curves. Two figures (mean+-std, median+IQR): the gap between
-    # them is the diagnostic for a dead seed. plotly is imported inside these
-    # methods, so a checkout without it still trains.
+    # a set of curves. One mean+-std figure per metric in _HPO_METRICS, as html
+    # and svg. plotly is imported inside these methods, so a checkout without
+    # it still trains.
     def load_eval_histories(self, directory):
         """Reads every checkpoint's eval_history in `directory`. Returns
         {seed: eval_history}, seed parsed from the filename. Skips files that
@@ -1130,15 +1110,15 @@ class Helper:
     def plot_eval_curves(
         self,
         directory,
-        metric=None,
+        metrics=None,
         name=None,
         title=None,
         logger=None,
         include_plotlyjs="cdn",
     ):
-        """Writes two learning-curve plots (mean+-std, median+IQR) for a
-        directory of checkpoints, as .html/.svg; metric defaults to
-        hpo_metric. Returns the paths written, or [] if there's no curve."""
+        """Writes one mean+-std learning curve per metric for a directory of
+        checkpoints, as .html and .svg. metrics defaults to both of
+        _HPO_METRICS. Returns the paths written, or [] if there's no curve."""
         say = log_with(logger)
 
         try:
@@ -1149,8 +1129,10 @@ class Helper:
             say("plotly is not installed, skipping the curve plots")
             return []
 
-        if metric is None:
-            metric = self.hpo_metric
+        if metrics is None:
+            metrics = _HPO_METRICS
+        elif isinstance(metrics, str):
+            metrics = (metrics,)
         if name is None:
             name = os.path.basename(os.path.normpath(directory))
 
@@ -1159,45 +1141,29 @@ class Helper:
             say(f"no eval_history in {directory}, nothing to plot")
             return []
 
-        iterations, seeds, values = self.curve_table(histories, metric)
-        if not iterations:
-            say(f"no {metric!r} in the curves under {directory}, nothing to plot")
-            return []
-
-        # nan-aware everywhere: a seed missing at one iteration must not turn
-        # the whole row into nan and blank out the plot
-        mean = np.nanmean(values, axis=1)
-        std = np.nanstd(values, axis=1)
-        median = np.nanmedian(values, axis=1)
-        q25 = np.nanpercentile(values, 25, axis=1)
-        q75 = np.nanpercentile(values, 75, axis=1)
-
-        header = (
-            f"{self.feature_extractor.upper()} on {self.name_env}"
-            f"  --  {name}  --  {len(seeds)} seed(s) {list(seeds)}"
-        )
-
         paths = []
-        for suffix, centre, low, high, centre_label, band_label, colour in (
-            (
-                "mean_std",
-                mean,
-                mean - std,
-                mean + std,
+        for metric in metrics:
+            iterations, seeds, values = self.curve_table(histories, metric)
+            if not iterations:
+                say(f"no {metric!r} in the curves under {directory}, skipped")
+                continue
+
+            # nan-aware everywhere: a seed missing at one iteration must not
+            # turn the whole row into nan and blank out the plot
+            mean = np.nanmean(values, axis=1)
+            std = np.nanstd(values, axis=1)
+            low, high = mean - std, mean + std
+            centre_label, band_label, colour = (
                 "mean over seeds",
                 "+- 1 std",
                 "#2f6fdb",
-            ),
-            (
-                "median_iqr",
-                median,
-                q25,
-                q75,
-                "median over seeds",
-                "IQR (q25 - q75)",
-                "#c2410c",
-            ),
-        ):
+            )
+
+            header = (
+                f"{self.feature_extractor.upper()} on {self.name_env}"
+                f"  --  {name}  --  {len(seeds)} seed(s) {list(seeds)}"
+            )
+
             fig = go.Figure()
 
             # band drawn first so the centre line sits on top; filled "toself"
@@ -1219,7 +1185,7 @@ class Helper:
             fig.add_trace(
                 go.Scatter(
                     x=iterations,
-                    y=centre,
+                    y=mean,
                     mode="lines+markers",
                     line=dict(color=colour, width=2.5),
                     marker=dict(size=6),
@@ -1265,7 +1231,14 @@ class Helper:
             )
 
             os.makedirs(directory, exist_ok=True)
-            stem = os.path.join(directory, f"curve_{metric}_{suffix}")
+            stem = os.path.join(directory, f"curve_{metric}_mean_std")
+
+            # a median/IQR figure left by an earlier run would sit next to this
+            # one looking current; there is no code left that can refresh it
+            for stale in glob.glob(
+                os.path.join(directory, f"curve_{metric}_median_iqr.*")
+            ):
+                os.remove(stale)
 
             fig.write_html(f"{stem}.html", include_plotlyjs=include_plotlyjs)
             paths.append(f"{stem}.html")
@@ -1278,7 +1251,10 @@ class Helper:
             except Exception as error:
                 say(f"could not write {stem}.svg ({type(error).__name__}: {error})")
 
-        say(f"plotted {metric} for {name}: {len(paths)} file(s) in {directory}")
+        say(
+            f"plotted {', '.join(metrics)} for {name}: "
+            f"{len(paths)} file(s) in {directory}"
+        )
         return paths
 
     @staticmethod
@@ -1288,15 +1264,12 @@ class Helper:
         r, g, b = (int(hex_colour[i : i + 2], 16) for i in (0, 2, 4))
         return f"rgba({r},{g},{b},{alpha})"
 
-    def plot_hpo(self, metric=None, logger=None, include_trials=True):
+    def plot_hpo(self, metrics=None, logger=None, include_trials=True):
         """Plots every trial directory and best_trial/ under hpo/ that holds
         checkpoints. Returns the paths written. include_trials=False skips the
         individual trials and does only best_trial/.
         """
         say = log_with(logger)
-
-        if metric is None:
-            metric = self.hpo_metric
 
         directories = []
         if include_trials and os.path.isdir(self.dir_hpo):
@@ -1316,7 +1289,7 @@ class Helper:
 
         paths = []
         for directory in directories:
-            paths += self.plot_eval_curves(directory, metric=metric, logger=logger)
+            paths += self.plot_eval_curves(directory, metrics=metrics, logger=logger)
 
         say(f"plot_hpo: {len(paths)} file(s) written under {self.dir_hpo}")
         return paths
@@ -1337,7 +1310,7 @@ class Helper:
         """The closing table: one row per seed, then each of the four metrics
         aggregated across seeds. main_no_hpo.py and HPOPPO.final both end with
         this, so a hand-picked run and a tuned one are read the same way.
-        Returns {metric: {mean, std, median, iqr}}."""
+        Returns {metric: {mean, std}}, both across seeds."""
         write = log_with(logger)
         width = max(len(metric) for metric in _SEED_SUMMARY_METRICS) + 2
 
@@ -1363,14 +1336,11 @@ class Helper:
             stats[metric] = {
                 "mean": float(np.mean(values)),
                 "std": float(np.std(values)),
-                "median": float(np.median(values)),
-                "iqr": float(np.percentile(values, 75) - np.percentile(values, 25)),
             }
             summary = stats[metric]
             write(
                 f"{metric:>{width}}  mean {summary['mean']:.3f}  "
-                f"std {summary['std']:.3f}  median {summary['median']:.3f}  "
-                f"iqr {summary['iqr']:.3f}"
+                f"std {summary['std']:.3f}"
             )
 
         return stats

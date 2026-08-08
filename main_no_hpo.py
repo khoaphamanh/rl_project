@@ -178,7 +178,6 @@ def main():
     # Reads eval_history off the checkpoints, so --report-only plots too.
     config.plot_eval_curves(
         config.dir_pretrained_model,
-        metric="return_mean",
         name="no_hpo",
         logger=logger,
     )

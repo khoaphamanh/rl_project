@@ -25,6 +25,10 @@ class HPOPPO:
         self.seed_list = config.seed_list
         self.n_trials = config.n_trials
 
+        # every make_config() below has to repeat it: the tag decides both the
+        # directory written to and whether tbptt_length is in the search space
+        self.hpo_tag = config.hpo_tag
+
         # all three parsed from the one config string, so they cannot drift
         self.hpo_objective = config.hpo_objective
         self.hpo_metric = config.hpo_metric
@@ -59,7 +63,7 @@ class HPOPPO:
     # ---- one training run ----
     def run_split(self, seed, params, trial_number):
         """Train a fresh PPOAgent at these params/seed, checkpoint it, return its last-iteration scores."""
-        config = make_config(self.feature_extractor)
+        config = make_config(self.feature_extractor, hpo_tag=self.hpo_tag)
 
         # before PPOAgent is built: the agent reads lr/wd and the architecture
         # sizes into the model at construction and never consults config again
@@ -93,6 +97,14 @@ class HPOPPO:
             # trials can exhaust file descriptors
             agent.close()
 
+    def plot_trial(self, trial_number):
+        """Draw one trial's curves from the checkpoints it just wrote. Called
+        per trial rather than only at the end, so a study that is pruned,
+        crashed or ctrl-c'd still leaves a figure for every trial it ran."""
+        return self.config.plot_eval_curves(
+            self.config.dir_hpo_trial(trial_number), logger=self.logger
+        )
+
     # ---- the search ----
     def hpo(self):
         """Run (or resume) the study. Returns the best trial, or None."""
@@ -112,6 +124,7 @@ class HPOPPO:
             self.logger.info(f"TRIAL {trial.number}  {params}")
 
             scores = []
+            per_seed = {metric: [] for metric in ("return_mean", "success_rate")}
             for index_split, seed in enumerate(self.seed_list):
                 self.logger.info(
                     f"trial {trial.number}, seed {seed} "
@@ -121,41 +134,34 @@ class HPOPPO:
                 result = self.run_split(seed, params, trial_number=trial.number)
                 scores.append(result[self.hpo_metric])
 
-                # every metric per seed, not just the optimized one, so the csv
-                # can answer "what would another objective have picked".
-                # eval_history is added below as flat lists instead.
-                for key, value in result.items():
-                    if key not in ("seed", "eval_history"):
-                        trial.set_user_attr(f"{key}_seed_{seed}", value)
-
-                # flattened per seed per metric, so the ablation figure redraws
-                # from the study without re-reading every checkpoint
-                history = result["eval_history"]
-                trial.set_user_attr(
-                    "curve_iterations", [int(c["iteration"]) for c in history]
-                )
-                trial.set_user_attr(
-                    f"curve_success_rate_seed_{seed}",
-                    [float(c["success_rate"]) for c in history],
-                )
-                trial.set_user_attr(
-                    f"curve_return_mean_seed_{seed}",
-                    [float(c["return_mean"]) for c in history],
-                )
+                # four numbers, rewritten after every seed so a pruned trial
+                # carries them too. These are the only user attrs, and so the
+                # only non-param columns csv_study_export writes -- the per-seed
+                # values stay in the log, the curves in the checkpoints.
+                for metric, values in per_seed.items():
+                    values.append(result[metric])
+                    trial.set_user_attr(metric, float(np.mean(values)))
+                    trial.set_user_attr(f"{metric}_std", float(np.std(values)))
 
                 # between seeds, not inside train_agent, so optuna stays out of
-                # the agent. Same aggregate_scores as the final value, so a
-                # trial is pruned and judged on the same kind of number.
-                running = self.config.aggregate_scores(scores)
+                # the agent. Same trial_score as the final value, so a trial is
+                # pruned and judged on the same kind of number -- the tbptt
+                # penalty is constant within a trial, so it applies to both.
+                running = self.config.trial_score(scores, params)
                 trial.report(running, step=index_split)
                 if trial.should_prune():
                     self.logger.info(
                         f"trial {trial.number} pruned after seed {seed} "
                         f"(running {self.score_name} {running:.3f})"
                     )
+                    # before the raise: the seeds that did finish still wrote
+                    # checkpoints, and a pruned trial's curve is why it lost
+                    self.plot_trial(trial.number)
                     raise optuna.TrialPruned()
 
-            value = self.config.aggregate_scores(scores)
+            self.plot_trial(trial.number)
+
+            value = self.config.trial_score(scores, params)
             self.logger.info(
                 f"TRIAL {trial.number} done: {self.score_name} {value:.3f}   "
                 f"per-seed {self.hpo_metric} over {self.seed_list} "
@@ -178,8 +184,9 @@ class HPOPPO:
         # copied out of trial_<n>/ so it survives deleting the other trials
         self.config.copy_best_trial(self.study, self.logger)
 
-        # after copy_best_trial (it plots from the checkpoints) and after the
-        # whole search. A ctrl-c'd study leaves no plots; --final-only rebuilds.
+        # a refresh, not the only pass: plot_trial already drew each trial as
+        # it finished. This still redraws them, so trials from a study resumed
+        # from before per-trial plotting also get a figure, plus best_trial/.
         self.config.plot_hpo(logger=self.logger)
 
         return best
@@ -188,7 +195,7 @@ class HPOPPO:
     def score_saved(self, seed_index, seed):
         """Load one winning-trial checkpoint (no training) and score it in both eval modes, or None if missing."""
         # fresh config, same reason as run_split: nothing leaks to the next seed
-        config = make_config(self.feature_extractor)
+        config = make_config(self.feature_extractor, hpo_tag=self.hpo_tag)
 
         # the same two things watch.py sets to find this path
         path = config.select_run(trial="best", seed_index=seed_index)
@@ -295,16 +302,16 @@ class HPOPPO:
                 # spread across seeds -- not to be confused with
                 # return_std_episodes (spread across episodes in one run)
                 "std_across_seeds": float(np.std(values)),
-                "median": float(np.median(values)),
-                "iqr_across_seeds": float(
-                    np.percentile(values, 75) - np.percentile(values, 25)
-                ),
                 "per_seed": values,
             }
 
         # recomputed from the loaded runs; should equal best.value exactly
-        # since these are the same runs the study ranked (checked below)
-        score = self.config.aggregate_scores([r[self.hpo_metric] for r in results])
+        # since these are the same runs the study ranked (checked below).
+        # best.params, not aggregate_scores: a tbptt trial's value carries the
+        # length penalty, and dropping it here would trip the WARNING below.
+        score = self.config.trial_score(
+            [r[self.hpo_metric] for r in results], best.params
+        )
 
         report = {
             "feature_extractor": self.feature_extractor,
@@ -313,6 +320,10 @@ class HPOPPO:
             "metric": self.hpo_metric,
             "aggregation": self.config.hpo_aggregation,
             "hpo_lambda": getattr(self.config, "hpo_lambda", 1.0),
+            "hpo_tag": self.hpo_tag,
+            # only meaningful when the study searched tbptt_length
+            "tbptt_lambda": self.config.tbptt_lambda,
+            "searches_tbptt": self.config.searches_tbptt,
             "score_name": self.score_name,
             "score": score,
             "best_value_in_study": best.value,
@@ -374,8 +385,7 @@ class HPOPPO:
             s = summary[key]
             self.logger.info(
                 f"{key:>14}  mean {s['mean']:.3f}  "
-                f"std_across_seeds {s['std_across_seeds']:.3f}  "
-                f"median {s['median']:.3f}  iqr {s['iqr_across_seeds']:.3f}"
+                f"std_across_seeds {s['std_across_seeds']:.3f}"
             )
 
         self.logger.info("")
@@ -397,8 +407,7 @@ class HPOPPO:
             s = summary[key]
             self.logger.info(
                 f"{key:>14}  mean {s['mean']:.3f}  "
-                f"std_across_seeds {s['std_across_seeds']:.3f}  "
-                f"median {s['median']:.3f}  iqr {s['iqr_across_seeds']:.3f}"
+                f"std_across_seeds {s['std_across_seeds']:.3f}"
             )
 
         # the same closing table main_no_hpo.py ends with, so a tuned run and a

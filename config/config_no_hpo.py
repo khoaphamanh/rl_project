@@ -17,7 +17,9 @@ class ConfigNoHPO(Config):
     def __init__(self, feature_extractor=None):
         # stashed before super().__init__(), which calls _configure_model()
         self._chosen_model = (feature_extractor or FEATURE_EXTRACTOR).upper()
-        super().__init__()
+        # untagged even for GRU/LSTM: max/tbptt splits the SEARCH into two
+        # studies, and a hand-picked run is neither. Keeps no_hpo/ where it was.
+        super().__init__(hpo_tag="")
 
         # no_hpo/ sits parallel to hpo/, not inside it: this is not a trial
         self.dir_pretrained_model = os.path.join(self.dir_model, "no_hpo")

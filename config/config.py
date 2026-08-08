@@ -14,14 +14,26 @@ class Config(Helper):
 
     feature_extractor = None  # set by each subclass in _configure_model()
 
-    def __init__(self):
-        self.seed_list = [0]# , 26, 98
+    def __init__(self, hpo_tag=None):
+        self.seed_list = [0, 15, 12, 97, 98]
 
         self.input_size = 7 * 7 * 20  # 980 after flatten_obs one-hots each cell
 
+        # Which of the two GRU/LSTM studies this is. "max" keeps tbptt_length
+        # fixed below; "tbptt" puts it in the search space (config_gru.py).
+        # Narrowed to "" for MLP/Transformer once _configure_model names the
+        # encoder -- they share one untagged directory, as before.
+        self.hpo_tag = "max" if hpo_tag is None else str(hpo_tag).lower()
+
+        # how many steps the gradient may flow back through; "max" = cut on
+        # episode boundaries only. Read by PPOAgent.split_pad_mask.
         self.tbptt_length = "max"
 
-        self.name_env = "MiniGrid-MemoryS17Random-v0" #"MiniGrid-MemoryS11-v0" # "MiniGrid-DoorKey-8x8-v0"
+        # only bites in a "tbptt" run: score loses tbptt_lambda * (L / T), so
+        # among lengths that score the same the shortest wins. See trial_score.
+        self.tbptt_lambda = 0.1
+
+        self.name_env = "MiniGrid-MemoryS17Random-v0"  # "MiniGrid-MemoryS11-v0" # "MiniGrid-DoorKey-8x8-v0"
         self.env_size = int(re.search(r"(\d+)", self.name_env).group(1))
         self.force_cue_visible = False
 
@@ -60,7 +72,7 @@ class Config(Helper):
         self.lr_anneal = None
 
         # candidates, largest first: run_with_batch_size_fallback uses the largest that fits
-        self.mini_batch_size = [1024,512,256,128, 64, 32, 16, 8, 4]
+        self.mini_batch_size = [1024, 512, 256, 128, 64, 32, 16, 8, 4]
 
         # the budget every encoder is compared at: change it for all or none.
         # Raising it is safe -- the lr schedule spans n_iterations, so it just
@@ -80,16 +92,16 @@ class Config(Helper):
         # so a sampled and an argmax episode take the same actions.
         self.eval_deterministic = False
 
-        self.n_trials = 30
+        self.n_trials = 100
         self.seed_hpo = 42
         self.hpo_direction = "maximize"
 
-        # <metric>_<center>_<spread>, e.g. "return_mean_minus-std". metric is
-        # "return" or "success-rate"; center is "mean"/"median" across seeds;
-        # spread is "minus-std"/"minus-iqr"/"None", weighted by hpo_lambda.
+        # Exactly two values are accepted -- "return_mean_minus-std" or
+        # "success_rate_mean_minus-std". Both score mean - hpo_lambda*std
+        # across seeds; they differ only in the metric aggregated.
         self.hpo_objective = "return_mean_minus-std"
 
-        # score = center - lambda * spread, both across seeds.
+        # score = mean - lambda * std, both across seeds.
         self.hpo_lambda = 1.0
 
         # The PPO half, shared by all four encoders so tuned values stay
@@ -145,8 +157,16 @@ class Config(Helper):
         ]
 
         self._configure_model()
+
+        # only the recurrent encoders split into a max/tbptt pair: an MLP has
+        # no time dependence to truncate, and the Transformer is out of scope
+        # for this comparison. Both keep pretrained_model_<ENCODER>/.
+        if self.feature_extractor not in ("GRU", "LSTM"):
+            self.hpo_tag = ""
+
+        suffix = f"_{self.hpo_tag}" if self.hpo_tag else ""
         self.dir_model = os.path.join(
-            "agents", f"pretrained_model_{self.feature_extractor.upper()}"
+            "agents", f"pretrained_model_{self.feature_extractor.upper()}{suffix}"
         )
         self.dir_pretrained_model = self.dir_model
         self.dir_hpo = os.path.join(self.dir_model, "hpo")
@@ -162,7 +182,8 @@ class Config(Helper):
     @property
     def name_hpo(self):
         env = self.name_env.replace("/", "-")
-        return f"{self.feature_extractor.upper()}_{env}"
+        tag = f"_{self.hpo_tag}" if self.hpo_tag else ""
+        return f"{self.feature_extractor.upper()}_{env}{tag}"
 
     @property
     def name_study(self):

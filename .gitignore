@@ -12,6 +12,7 @@ build/
 .env
 .env.local
 environment.yml
+venv_rl_project/
 
 # IDE
 .vscode/

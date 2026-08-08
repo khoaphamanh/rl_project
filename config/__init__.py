@@ -1,8 +1,10 @@
 MODEL_CHOICES = ("MLP", "LSTM", "GRU", "TRANSFORMER")
 
 
-def make_config(name):
-    """Name (case-insensitive) -> the matching Config subclass, built."""
+def make_config(name, hpo_tag=None):
+    """Name (case-insensitive) -> the matching Config subclass, built.
+    hpo_tag picks the GRU/LSTM study ("max" or "tbptt"); it is ignored for
+    MLP/TRANSFORMER, which keep one untagged directory."""
     key = name.upper()
 
     # deferred to avoid a circular import
@@ -24,4 +26,4 @@ def make_config(name):
             f"unknown model {name!r}. choose one of {', '.join(MODEL_CHOICES)}"
         )
 
-    return table[key]()
+    return table[key](hpo_tag=hpo_tag)

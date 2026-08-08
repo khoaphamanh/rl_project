@@ -24,6 +24,7 @@ class PPOAgent:
 
         self.n_workers = config.n_workers  # W
         self.worker_steps = config.worker_steps  # T
+        self.tbptt_length = config.tbptt_length
         self.hidden_size = config.hidden_size
         self.is_recurrent = config.is_recurrent
         self.is_lstm = config.is_lstm
@@ -189,13 +190,22 @@ class PPOAgent:
         return advantages, returns
 
     def split_pad_mask(self, buf):
-        """Cut rollout at done, pad to rectangle, build mask: (W, T, ...) -> (n_seq, L, ...)."""
+        """Cut rollout at done and every tbptt_length steps, pad to rectangle,
+        build mask: (W, T, ...) -> (n_seq, L, ...). A chunk that starts
+        mid-episode is seeded from the hidden state sample() recorded there, so
+        only the BACKWARD pass is truncated -- the forward pass is unchanged."""
         W, T, H = self.n_workers, self.worker_steps, self.hidden_size
+
+        # "max" = cut on episode boundaries only. T is already the longest an
+        # episode can be (build_env passes worker_steps as the env's
+        # max_steps), so chunk=T never fires and this stays a no-op.
+        chunk = T if self.tbptt_length == "max" else int(self.tbptt_length)
+
         segments = []
         for w in range(W):
             start = 0
             for t in range(T):
-                if buf["dones"][w, t] > 0.5 or t == T - 1:
+                if buf["dones"][w, t] > 0.5 or t == T - 1 or t - start + 1 >= chunk:
                     segments.append((w, start, t))
                     start = t + 1
 
