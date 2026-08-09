@@ -286,6 +286,105 @@ _OOM_TEXT = (
 )
 
 
+class GroupedMedianPruner(optuna.pruners.BasePruner):
+    """MedianPruner whose reference population is the completed trials that drew
+    the SAME value for one parameter, instead of all of them. Built by
+    Helper.build_pruner; HPOPPO only hands it to create_study.
+
+    Why this exists: in the tbptt study, tbptt_length is the axis being
+    measured, not a nuisance knob. A pruning decision is a judgement about
+    learning SPEED at a fixed iteration -- which is exactly where a truncated
+    backward pass is expected to look worst, whether or not it ends up
+    competitive. Against a global median, short-chunk trials would be killed
+    early by long-chunk ones; and optuna's TPESampler reads PRUNED trials too,
+    ranking every one of them below every completed trial (see
+    optuna.samplers._tpe.sampler._split_trials), so each such prune is also a
+    vote against that tbptt_length. The sampler would then stop drawing short
+    lengths, and the pruner would have decided the ablation the study was
+    supposed to measure.
+
+    Grouped, a short-chunk trial can only be killed by other short-chunk trials,
+    and the lengths meet exactly once: in the final trial_score, which is where
+    the tbptt penalty belongs. Note the penalty then cancels out of every
+    pruning decision -- it is constant within a group, shifting this trial and
+    its peers alike. It stays in the reported value only so the intermediate
+    curve reads on the same scale as the score the trial is ranked on.
+
+    With group_by=None -- or in a study where no trial drew that parameter, i.e.
+    the "max" study -- every trial falls in one group and this is MedianPruner.
+    """
+
+    def __init__(
+        self,
+        group_by=None,
+        n_startup_trials=5,
+        n_warmup_steps=0,
+        interval_steps=1,
+        n_min_trials=1,
+    ):
+        self.group_by = group_by
+        self.n_startup_trials = n_startup_trials
+        self.n_warmup_steps = n_warmup_steps
+        self.interval_steps = interval_steps
+        self.n_min_trials = n_min_trials
+
+    def _group(self, trial):
+        """Which population a trial is judged against. None for every trial in a
+        study that doesn't search group_by, which collapses to one group."""
+        return None if self.group_by is None else trial.params.get(self.group_by)
+
+    def _is_check_step(self, step, steps):
+        """Optuna's own interval rule: check at the first step reported at or
+        after each warmup + k*interval boundary. Re-implemented rather than
+        imported from optuna.pruners._percentile -- it is a two-line rule and
+        that module is private."""
+        boundary = (
+            step - self.n_warmup_steps
+        ) // self.interval_steps * self.interval_steps + self.n_warmup_steps
+        previous = max((s for s in steps if s != step), default=-1)
+        return previous < boundary
+
+    def prune(self, study, trial):
+        step = trial.last_step
+        if step is None or step < self.n_warmup_steps:
+            return False
+
+        if not self._is_check_step(step, trial.intermediate_values.keys()):
+            return False
+
+        group = self._group(trial)
+        peers = [
+            t
+            for t in study.get_trials(
+                deepcopy=False, states=(optuna.trial.TrialState.COMPLETE,)
+            )
+            if self._group(t) == group
+        ]
+
+        # both counts are in-group: a trial is only judged once enough of its own
+        # peers have finished to say what this length is supposed to look like.
+        # A length TPE rarely draws therefore never prunes, which is the safe
+        # direction -- it is the one with the least evidence against it.
+        if len(peers) < self.n_startup_trials:
+            return False
+
+        values = [
+            t.intermediate_values[step] for t in peers if step in t.intermediate_values
+        ]
+        if len(values) < self.n_min_trials:
+            return False
+
+        # same shape as optuna's: this trial's BEST over every step it has
+        # reported -- so one bad evaluation never kills it -- against its peers'
+        # median at this one step
+        own = np.asarray(list(trial.intermediate_values.values()), dtype=float)
+        median = float(np.nanmedian(np.asarray(values, dtype=float)))
+
+        if study.direction == optuna.study.StudyDirection.MAXIMIZE:
+            return float(np.nanmax(own)) < median
+        return float(np.nanmin(own)) > median
+
+
 class Helper:
     """Builders and small utilities shared by anything that reads the config."""
 
@@ -1001,6 +1100,27 @@ class Helper:
         if not os.path.exists(path):
             return None
         return joblib.load(path)
+
+    def build_pruner(self):
+        """The study's pruner, wired from this config's hpo_pruner_* knobs.
+
+        Every argument is passed on purpose: optuna's defaults are
+        n_warmup_steps=0 and n_min_trials=1, and since a step here is a training
+        iteration (HPOPPO offsets it per seed), a warmup of 0 would put the
+        first check at iteration 0 -- one untrained network against the median
+        of other untrained networks, i.e. a coin flip.
+
+        group_by is set only when this config searches tbptt_length, so that the
+        pruner cannot decide the axis the tbptt study exists to measure. In a
+        "max" study it is None and GroupedMedianPruner is plain MedianPruner.
+        """
+        return GroupedMedianPruner(
+            group_by="tbptt_length" if self.searches_tbptt else None,
+            n_startup_trials=self.hpo_pruner_startup_trials,
+            n_warmup_steps=self.hpo_pruner_warmup,
+            interval_steps=self.hpo_pruner_interval,
+            n_min_trials=self.hpo_pruner_min_trials,
+        )
 
     def save_json(self, path, data):
         """Write data as indented json. default=str so numpy scalars survive."""

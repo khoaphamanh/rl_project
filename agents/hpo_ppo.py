@@ -47,9 +47,14 @@ class HPOPPO:
         else:
             self.logger.info(f"resumed the sampler from {config.path_hpo_sampler}")
 
-        # step here is a SEED index, not an iteration (see objective()), so a
-        # bad draw can be killed after one seed instead of all of them
-        self.pruner = optuna.pruners.MedianPruner()
+        # what the knobs mean and why none is left at optuna's default lives in
+        # helper.build_pruner. What this file owns is the step they are counted
+        # in: one training iteration, offset per seed so two seeds of the same
+        # trial can never write the same step (see objective()). A bad draw is
+        # therefore killable partway through its FIRST seed, not just between
+        # seeds -- the finest granularity the training loop offers is one
+        # evaluation, i.e. every n_iterations_report iterations.
+        self.pruner = config.build_pruner()
 
         self.study = optuna.create_study(
             study_name=config.name_study,
@@ -60,9 +65,29 @@ class HPOPPO:
             load_if_exists=True,  # the whole resume mechanism
         )
 
+        # A step only means something relative to the n_iterations it was
+        # encoded with: at 1000, step 1000 is seed 1 iteration 0, at 500 it is
+        # seed 2 iteration 0. A resumed study that changed n_iterations would
+        # compare this trial's steps against older trials' unrelated ones, and
+        # optuna has no way to notice. Recorded on the study so it can be.
+        recorded = self.study.user_attrs.get("n_iterations")
+        if recorded is None:
+            self.study.set_user_attr("n_iterations", int(config.n_iterations))
+        elif int(recorded) != int(config.n_iterations):
+            self.logger.info(
+                f"WARNING: this study's earlier trials reported pruning steps "
+                f"against n_iterations={recorded}, but config says "
+                f"{config.n_iterations}. Their steps mean different "
+                f"(seed, iteration) pairs than this run's, so the pruner will "
+                f"compare misaligned curves. Start a fresh study, or put "
+                f"n_iterations back to {recorded}."
+            )
+
     # ---- one training run ----
-    def run_split(self, seed, params, trial_number):
-        """Train a fresh PPOAgent at these params/seed, checkpoint it, return its last-iteration scores."""
+    def run_split(self, seed, params, trial_number, on_evaluate=None):
+        """Train a fresh PPOAgent at these params/seed, checkpoint it, return
+        its last-iteration scores. on_evaluate is handed straight to
+        train_agent: it sees every evaluation and can stop the run early."""
         config = make_config(self.feature_extractor, hpo_tag=self.hpo_tag)
 
         # before PPOAgent is built: the agent reads lr/wd and the architecture
@@ -77,12 +102,14 @@ class HPOPPO:
 
         agent = PPOAgent(config, seed=seed)
         try:
-            agent.train_agent(logger=self.logger)
+            agent.train_agent(logger=self.logger, on_evaluate=on_evaluate)
             curve = agent.eval_history
             last = curve[-1]
 
             return {
                 "seed": seed,
+                # not necessarily n_iterations - 1: a pruned run stops early,
+                # and this is however far it actually got
                 "iteration": int(last["iteration"]),
                 "success_rate": float(last["success_rate"]),
                 "return_mean": float(last["return_mean"]),
@@ -125,13 +152,60 @@ class HPOPPO:
 
             scores = []
             per_seed = {metric: [] for metric in ("return_mean", "success_rate")}
+
+            # how far one seed's steps reach before the next seed's begin
+            stride = self.config.n_iterations
+            pruned = False
+
             for index_split, seed in enumerate(self.seed_list):
                 self.logger.info(
                     f"trial {trial.number}, seed {seed} "
                     f"({index_split + 1}/{len(self.seed_list)})"
                 )
 
-                result = self.run_split(seed, params, trial_number=trial.number)
+                # one report per evaluation inside the run, not one per seed.
+                # index_split is bound as a default so each seed's closure keeps
+                # its own value rather than the loop variable's last one.
+                def on_evaluate(iteration, evaluation, index_split=index_split):
+                    """Report this evaluation to optuna; True means prune now."""
+                    nonlocal pruned
+
+                    # seed s owns steps [s*stride, (s+1)*stride), so no two seeds
+                    # of this trial ever report the same step -- optuna keeps one
+                    # value per step and a collision would overwrite silently.
+                    # The whole scheme rests on the run staying inside its slot.
+                    if not 0 <= iteration < stride:
+                        raise ValueError(
+                            f"iteration {iteration} is outside [0, {stride}), so "
+                            f"seed index {index_split} would report into seed "
+                            f"{index_split + 1}'s steps and silently overwrite "
+                            f"them. stride is config.n_iterations -- a run that "
+                            f"trains longer than that has to widen it too."
+                        )
+
+                    step = index_split * stride + iteration
+
+                    # one seed's metric, penalized exactly as the final value is:
+                    # trial_score of a single value has std 0, so this is the raw
+                    # metric minus the tbptt penalty (nothing at all in a "max"
+                    # run). The pruner then ranks trials on the same quantity the
+                    # study ranks them on -- a long-tbptt draw does not survive
+                    # pruning on a raw score its final value would never keep.
+                    # Not the running cross-seed mean-minus-std: at step 0 there
+                    # is only ever one seed, so the std term would be noise.
+                    trial.report(
+                        self.config.trial_score(
+                            [float(evaluation[self.hpo_metric])], params
+                        ),
+                        step=step,
+                    )
+
+                    pruned = trial.should_prune()
+                    return pruned
+
+                result = self.run_split(
+                    seed, params, trial_number=trial.number, on_evaluate=on_evaluate
+                )
                 scores.append(result[self.hpo_metric])
 
                 # four numbers, rewritten after every seed so a pruned trial
@@ -143,16 +217,17 @@ class HPOPPO:
                     trial.set_user_attr(metric, float(np.mean(values)))
                     trial.set_user_attr(f"{metric}_std", float(np.std(values)))
 
-                # between seeds, not inside train_agent, so optuna stays out of
-                # the agent. Same trial_score as the final value, so a trial is
-                # pruned and judged on the same kind of number -- the tbptt
-                # penalty is constant within a trial, so it applies to both.
-                running = self.config.trial_score(scores, params)
-                trial.report(running, step=index_split)
-                if trial.should_prune():
+                # the decision was already taken inside the run, by on_evaluate.
+                # Raising here rather than there keeps the checkpoint, the curve
+                # and the user attrs of the partial seed -- train_agent writes
+                # all three on its way out of the loop it was asked to leave.
+                if pruned:
                     self.logger.info(
-                        f"trial {trial.number} pruned after seed {seed} "
-                        f"(running {self.score_name} {running:.3f})"
+                        f"trial {trial.number} pruned during seed {seed} at "
+                        f"iteration {result['iteration']} "
+                        f"({self.hpo_metric} {result[self.hpo_metric]:.3f}, "
+                        f"running {self.score_name} "
+                        f"{self.config.trial_score(scores, params):.3f})"
                     )
                     # before the raise: the seeds that did finish still wrote
                     # checkpoints, and a pruned trial's curve is why it lost

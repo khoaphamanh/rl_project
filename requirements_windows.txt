@@ -1,17 +1,55 @@
+# Windows install list.  pip install -r requirements_windows.txt
+#
+# Why this file differs from requirements.txt at all: on Linux, PyPI's default
+# `torch` wheel IS the CUDA build (it pulls nvidia-*-cu13 alongside it, gated on
+# platform_system == "Linux"), so requirements.txt gets a GPU torch for free.
+# On Windows PyPI ships a CPU-ONLY wheel under the same version -- there are no
+# nvidia-* dependencies for it, and torch.cuda.is_available() comes back False.
+# The CUDA builds for Windows live only on download.pytorch.org, under a local
+# version tag (+cu128).  Hence the index and the pin below.
+#
+# The +cu128 suffix is not decoration: it is what makes this unambiguous.
+# `torch==2.11.0` alone is satisfiable from both indexes, and pip may pick
+# either -- landing you back on the CPU wheel.  `torch==2.11.0+cu128` exists on
+# the PyTorch index only, so there is nothing else to resolve to.
+#
+# CUDA 12.8 covers Turing through Blackwell (RTX 20xx-50xx).  To use another
+# build, change BOTH the index URL and the +cu128 suffix together:
+#   cu126  older driver, no Blackwell        cu130  newest, needs driver >= 580
+#   cpu    no GPU on this machine -- then drop the index line and the suffix
+# Check what your driver supports with `nvidia-smi` before switching.
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0+cu128
+
+# Direct imports only -- every line below is `import`ed somewhere in agents/,
+# config/, models/ or the three entry points.  Transitive dependencies are
+# deliberately absent: optuna already pulls sqlalchemy/alembic/colorlog/tqdm/
+# PyYAML, pandas pulls tzdata on win32, plotly pulls narwhals.  Pinning those
+# again here only creates a second place to keep in sync.
 numpy==2.4.6
-torch==2.11.0
-torchvision==0.26.0
 torchinfo==1.8.0
-pandas==3.0.5
-optuna==4.9.0
 gymnasium==1.3.0
 minigrid==3.1.0
-pygame==2.6.1
+
+# pygame-ce, NOT pygame.  minigrid 3.1.0 declares pygame-ce>=2.4.0 as its
+# dependency, and pygame-ce is a fork that installs the very same top-level
+# `pygame` module -- so pinning both makes pip install two distributions whose
+# files overwrite each other, and which one you end up importing depends on
+# install order.  watch.py's `import pygame` is served by this.
 pygame-ce==2.5.7
-plotly==6.9.0
+
+optuna==4.9.0
 joblib==1.5.3
-Pillow==12.2.0
-matplotlib==3.11.0
-tqdm==4.70.0
-PyYAML==6.0.3
-requests==2.34.2
+pandas==3.0.5
+
+# plotly writes the .html figures; kaleido is what turns them into the matching
+# .svg (helper.py's plot writers call fig.write_image and skip the svg if it is
+# missing).  Easy to leave out and only notice when half the figures are gone.
+plotly==6.9.0
+kaleido==1.3.0
+
+# torchvision is not imported anywhere in this repo.  If you ever add it, it
+# needs the same CUDA tag or pip will pull the CPU build alongside a CUDA torch:
+# torchvision==0.26.0+cu128
