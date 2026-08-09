@@ -114,11 +114,13 @@ class Config(Helper):
         self.search_space = [
             {"type": "float", "name": "lr", "low": 1e-5, "high": 1e-2, "log": True},
             {
+                # step must divide (high - low): with step=0.001 Optuna
+                # silently clipped high to 0.999, so 0.9999 was never drawn.
                 "type": "float",
                 "name": "gamma",
                 "low": 0.99,
                 "high": 0.9999,
-                "step": 0.001,
+                "step": 0.0001,
             },
             {
                 "type": "float",
