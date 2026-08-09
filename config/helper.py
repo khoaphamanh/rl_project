@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -471,15 +472,27 @@ class Helper:
         logger.handlers.clear()
         logger.propagate = False  # don't also hand records to the root logger
 
-        file_handler = logging.FileHandler(path)
+        # utf-8 explicitly, not the locale default: torchinfo's summary table is
+        # drawn with box characters, and a Windows console/file defaulting to
+        # cp1252 raises UnicodeEncodeError on every one of those lines.
+        file_handler = logging.FileHandler(path, encoding="utf-8")
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
         )
         logger.addHandler(file_handler)
 
+        # same reason, for the terminal: a console that can't represent a
+        # character should print a placeholder, not drop the whole record.
+        stream = sys.stderr
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
         # same format as the file, not a bare message -- so terminal lines are
         # datable on sight and stay aligned with torchinfo's summary output.
-        stream_handler = logging.StreamHandler()
+        stream_handler = logging.StreamHandler(stream)
         stream_handler.setFormatter(
             logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
         )
