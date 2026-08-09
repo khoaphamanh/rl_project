@@ -62,7 +62,6 @@ class Config(Helper):
         self.value_coef = None
         self.entropy_coef = None
         self.max_grad_norm = None
-        self.n_epochs = None
 
         # not searched; PPOAgent reads `is not None` as "early-stop on KL".
         self.target_kl = None
@@ -75,8 +74,12 @@ class Config(Helper):
         self.mini_batch_size = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4]
 
         # the budget every encoder is compared at: change it for all or none.
-        # Raising it is safe -- the lr schedule spans n_iterations, so it just
-        # decays more slowly.
+        # Raising n_iterations is safe -- the lr schedule spans it, so it just
+        # decays more slowly. Deliberately NOT searched: how much compute a
+        # trial gets to spend must not be a tuned hyperparameter, or a study
+        # could "win" by buying more passes over the same rollout instead of by
+        # having the better encoder.
+        self.n_epochs = 3
         self.n_iterations = 1000
         self.n_iterations_report = 10
 
@@ -145,7 +148,6 @@ class Config(Helper):
                 "high": 0.3,
                 "step": 0.01,
             },
-            {"type": "int", "name": "n_epochs", "low": 1, "high": 8},
             {"type": "float", "name": "wd", "low": 1e-8, "high": 1e-2, "log": True},
             {
                 "type": "float",
