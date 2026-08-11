@@ -24,7 +24,7 @@ from minigrid.wrappers import ImgObsWrapper
 from torch.utils.data import Dataset
 import plotly.graph_objects as go
 import minigrid  # noqa: F401
-from models.feature_extractor import MLP, LSTM, GRU, Transformer
+from models.feature_extractor import MLP, GRU
 import joblib
 from torchinfo import summary
 import optuna
@@ -68,6 +68,11 @@ def parse_hpo_objective(objective):
             f"metric is aggregated."
         )
     return _HPO_OBJECTIVES[key]
+
+
+# when a trial ran, in the study csv. Seconds resolution: these are wall
+# clocks on runs that last minutes, and optuna's microseconds only add noise.
+_CSV_TIMESTAMP = "%Y-%m-%d %H:%M:%S"
 
 
 def format_clock(seconds):
@@ -286,105 +291,6 @@ _OOM_TEXT = (
 )
 
 
-class GroupedMedianPruner(optuna.pruners.BasePruner):
-    """MedianPruner whose reference population is the completed trials that drew
-    the SAME value for one parameter, instead of all of them. Built by
-    Helper.build_pruner; HPOPPO only hands it to create_study.
-
-    Why this exists: in the tbptt study, tbptt_length is the axis being
-    measured, not a nuisance knob. A pruning decision is a judgement about
-    learning SPEED at a fixed iteration -- which is exactly where a truncated
-    backward pass is expected to look worst, whether or not it ends up
-    competitive. Against a global median, short-chunk trials would be killed
-    early by long-chunk ones; and optuna's TPESampler reads PRUNED trials too,
-    ranking every one of them below every completed trial (see
-    optuna.samplers._tpe.sampler._split_trials), so each such prune is also a
-    vote against that tbptt_length. The sampler would then stop drawing short
-    lengths, and the pruner would have decided the ablation the study was
-    supposed to measure.
-
-    Grouped, a short-chunk trial can only be killed by other short-chunk trials,
-    and the lengths meet exactly once: in the final trial_score, which is where
-    the tbptt penalty belongs. Note the penalty then cancels out of every
-    pruning decision -- it is constant within a group, shifting this trial and
-    its peers alike. It stays in the reported value only so the intermediate
-    curve reads on the same scale as the score the trial is ranked on.
-
-    With group_by=None -- or in a study where no trial drew that parameter, i.e.
-    the "max" study -- every trial falls in one group and this is MedianPruner.
-    """
-
-    def __init__(
-        self,
-        group_by=None,
-        n_startup_trials=5,
-        n_warmup_steps=0,
-        interval_steps=1,
-        n_min_trials=1,
-    ):
-        self.group_by = group_by
-        self.n_startup_trials = n_startup_trials
-        self.n_warmup_steps = n_warmup_steps
-        self.interval_steps = interval_steps
-        self.n_min_trials = n_min_trials
-
-    def _group(self, trial):
-        """Which population a trial is judged against. None for every trial in a
-        study that doesn't search group_by, which collapses to one group."""
-        return None if self.group_by is None else trial.params.get(self.group_by)
-
-    def _is_check_step(self, step, steps):
-        """Optuna's own interval rule: check at the first step reported at or
-        after each warmup + k*interval boundary. Re-implemented rather than
-        imported from optuna.pruners._percentile -- it is a two-line rule and
-        that module is private."""
-        boundary = (
-            step - self.n_warmup_steps
-        ) // self.interval_steps * self.interval_steps + self.n_warmup_steps
-        previous = max((s for s in steps if s != step), default=-1)
-        return previous < boundary
-
-    def prune(self, study, trial):
-        step = trial.last_step
-        if step is None or step < self.n_warmup_steps:
-            return False
-
-        if not self._is_check_step(step, trial.intermediate_values.keys()):
-            return False
-
-        group = self._group(trial)
-        peers = [
-            t
-            for t in study.get_trials(
-                deepcopy=False, states=(optuna.trial.TrialState.COMPLETE,)
-            )
-            if self._group(t) == group
-        ]
-
-        # both counts are in-group: a trial is only judged once enough of its own
-        # peers have finished to say what this length is supposed to look like.
-        # A length TPE rarely draws therefore never prunes, which is the safe
-        # direction -- it is the one with the least evidence against it.
-        if len(peers) < self.n_startup_trials:
-            return False
-
-        values = [
-            t.intermediate_values[step] for t in peers if step in t.intermediate_values
-        ]
-        if len(values) < self.n_min_trials:
-            return False
-
-        # same shape as optuna's: this trial's BEST over every step it has
-        # reported -- so one bad evaluation never kills it -- against its peers'
-        # median at this one step
-        own = np.asarray(list(trial.intermediate_values.values()), dtype=float)
-        median = float(np.nanmedian(np.asarray(values, dtype=float)))
-
-        if study.direction == optuna.study.StudyDirection.MAXIMIZE:
-            return float(np.nanmax(own)) < median
-        return float(np.nanmin(own)) > median
-
-
 class Helper:
     """Builders and small utilities shared by anything that reads the config."""
 
@@ -396,12 +302,7 @@ class Helper:
     @property
     def is_recurrent(self):
         """Does the encoder carry a hidden state between timesteps?"""
-        return self.feature_extractor.upper() in ("LSTM", "GRU")
-
-    @property
-    def is_lstm(self):
-        """An LSTM needs (h, c). A GRU needs only h. An MLP needs neither."""
-        return self.feature_extractor.upper() == "LSTM"
+        return self.feature_extractor.upper() == "GRU"
 
     @property
     def path_model(self):
@@ -457,31 +358,13 @@ class Helper:
         return max_steps
 
     def build_extractor(self):
-        """The encoder named by self.feature_extractor. All four map (batch, seq, 7, 7, 3) -> (batch, seq, hidden_size)."""
+        """The encoder named by self.feature_extractor. Both map (batch, seq, 7, 7, 3) -> (batch, seq, hidden_size)."""
         name = self.feature_extractor.upper()
 
         if name == "MLP":
             return MLP(self.input_size, self.hidden_size, self.n_layers_mlp)
-        if name == "LSTM":
-            return LSTM(self.input_size, self.hidden_size)
         if name == "GRU":
             return GRU(self.input_size, self.hidden_size)
-        if name == "TRANSFORMER":
-            # is_recurrent is False here: no hidden state, so zero_hidden /
-            # reset_hidden_of are no-ops for it. Also: sample() calls it with
-            # seq_len=1, so while acting it attends over nothing and behaves
-            # like an MLP -- only the update sees real history. See
-            # feature_extractor module docstring.
-            return Transformer(
-                self.input_size,
-                self.hidden_size,
-                d_model=self.d_model,
-                n_heads=self.n_heads,
-                n_layers=self.n_layers_transformer,
-                d_ff=self.d_ff,
-                p_drop=self.p_drop,
-                max_seq_length=self.max_seq_length,
-            )
 
         raise ValueError(f"unknown feature_extractor {self.feature_extractor!r}")
 
@@ -504,8 +387,8 @@ class Helper:
         # @property values and plain class attributes live on the class, not in
         # vars(self), so they need the MRO walk. It runs most-derived-first and
         # the `key in values` guard keeps the first hit, so an instance
-        # attribute wins over a class default and a subclass property (d_ff)
-        # wins over a base-class one of the same name.
+        # attribute wins over a class default, and a subclass property wins
+        # over a base-class one of the same name.
         for klass in type(self).__mro__:
             if klass is object:
                 continue
@@ -718,11 +601,9 @@ class Helper:
                 "mask": torch.ones(n, L),
             }
 
-            # None for an MLP, which is why neither branch runs for it
+            # None for an MLP, which is why the branch does not run for it
             hidden = self.zero_hidden(n)
-            if self.is_lstm:
-                mb["hxs"], mb["cxs"] = hidden[0].squeeze(0), hidden[1].squeeze(0)
-            elif self.is_recurrent:
+            if self.is_recurrent:
                 mb["hxs"] = hidden.squeeze(0)
 
             loss, _ = loss_fn(mb, probe)
@@ -752,7 +633,7 @@ class Helper:
             batch_size = self.mini_batch_size
 
         # runs through the same OOM fallback as the real update: this probe
-        # forward pass can itself OOM on a wide transformer. Doesn't decide
+        # forward pass can itself OOM on a wide encoder. Doesn't decide
         # what training uses -- train() resolves its own size separately.
         def probe(bs):
             return summary(
@@ -809,6 +690,11 @@ class Helper:
             "input_size": self.input_size,
             "name_env": self.name_env,
             "force_cue_visible": self.force_cue_visible,
+            # not architecture, so load_model does not validate it -- recorded
+            # because a hand-picked run has an empty searched_params(), and two
+            # runs that differ only in backward reach would otherwise be
+            # indistinguishable on disk
+            "tbptt_length": self.tbptt_length,
             "params": self.searched_params(),
         }
         if optimizer is not None:
@@ -901,16 +787,7 @@ class Helper:
     @property
     def score_name(self):
         """ "mean_minus_1std(return_mean)" -- what the study maximizes, for printing next to a score."""
-        name = f"mean_minus_{self.hpo_lambda:g}std({self.hpo_metric})"
-        if self.searches_tbptt:
-            name += f"_minus_{self.tbptt_lambda:g}(tbptt/T)"
-        return name
-
-    @property
-    def searches_tbptt(self):
-        """True when tbptt_length is in this config's search_space -- i.e. the
-        tbptt study. The max study never pays the penalty."""
-        return any(entry["name"] == "tbptt_length" for entry in self.search_space)
+        return f"mean_minus_{self.hpo_lambda:g}std({self.hpo_metric})"
 
     def aggregate_scores(self, values):
         """Reduces per-seed metric values to the score the study maximizes:
@@ -919,21 +796,6 @@ class Helper:
         values = np.asarray(values, dtype=float)
         # ddof=0, population std -- the seeds ARE the population being compared
         return float(values.mean()) - self.hpo_lambda * float(values.std())
-
-    def trial_score(self, values, params=None):
-        """What a trial is ranked on: aggregate_scores, minus the tbptt penalty
-        when this trial drew a tbptt_length. In a "max" run params carries no
-        such key, so nothing is subtracted and this is aggregate_scores."""
-        score = self.aggregate_scores(values)
-
-        length = (params or {}).get("tbptt_length")
-        if length is None or length == "max":
-            return score
-
-        # normalized by T so the penalty lands in [0, tbptt_lambda] -- the same
-        # scale as the return, which makes tbptt_lambda readable as "the most
-        # return I will trade away to go from full BPTT to none"
-        return score - self.tbptt_lambda * (int(length) / self.worker_steps)
 
     def apply_params(self, params):
         """Writes a trial's drawn params onto this config's attributes. Returns
@@ -1110,12 +972,11 @@ class Helper:
         first check at iteration 0 -- one untrained network against the median
         of other untrained networks, i.e. a coin flip.
 
-        group_by is set only when this config searches tbptt_length, so that the
-        pruner cannot decide the axis the tbptt study exists to measure. In a
-        "max" study it is None and GroupedMedianPruner is plain MedianPruner.
+        Plain optuna MedianPruner: tbptt_length is fixed for a whole study now,
+        so every trial in one study is directly comparable and there is nothing
+        left to group by.
         """
-        return GroupedMedianPruner(
-            group_by="tbptt_length" if self.searches_tbptt else None,
+        return optuna.pruners.MedianPruner(
             n_startup_trials=self.hpo_pruner_startup_trials,
             n_warmup_steps=self.hpo_pruner_warmup,
             interval_steps=self.hpo_pruner_interval,
@@ -1131,26 +992,75 @@ class Helper:
 
     def csv_study_export(self, study, path_csv=None):
         """One row per trial: number, objective value, every drawn param, the
-        four across-seed numbers HPOPPO records, and state. Written at the
-        start of each trial. Needs pandas; returns None if missing.
+        four across-seed numbers HPOPPO records, state, and when the trial ran
+        (start, end, duration). Written at the start of each trial. Needs
+        pandas; returns None if missing.
         """
         if path_csv is None:
             path_csv = self.path_hpo_csv
 
         os.makedirs(os.path.dirname(path_csv) or ".", exist_ok=True)
         try:
-            # named attrs, not the default: the default also dumps datetimes
-            # and every user attr, which buries the params in the wide table
+            # named attrs, not the default: the default also dumps the system
+            # attrs and every user attr, which buries the params in the wide
+            # table. The clock columns are asked for by name and ordered last,
+            # so the params still come first.
             frame = study.trials_dataframe(
-                attrs=("number", "value", "params", "user_attrs", "state")
+                attrs=(
+                    "number",
+                    "value",
+                    "params",
+                    "user_attrs",
+                    "state",
+                    "datetime_start",
+                    "datetime_complete",
+                    "duration",
+                )
             )
         except (ImportError, AttributeError):
             return None
 
         frame.columns = [self._strip_prefix(name) for name in frame.columns]
         frame = frame.rename(columns={"value": "objective_value"})
+
+        # left raw, pandas writes microseconds on the timestamps and a duration
+        # as '0 days 00:12:34.567890'. The trial being exported is still
+        # RUNNING (this is called at the START of each trial), and a pruned or
+        # failed one can lack an end too -- those cells stay empty rather than
+        # reading 'NaT'.
+        for column in ("datetime_start", "datetime_complete"):
+            if column in frame:
+                frame[column] = [
+                    "" if self._is_missing(value) else value.strftime(_CSV_TIMESTAMP)
+                    for value in frame[column]
+                ]
+
+        if "duration" in frame:
+            # pandas' own rendering with the sub-second tail cut off:
+            # '0 days 00:12:34.567890' -> '0 days 00:12:34'. str().split('.'),
+            # not .dt.floor('s'), because on the first export of a study the
+            # only trial is RUNNING, so this column is all-None -> object
+            # dtype -> .dt raises, and that raise is outside the try above.
+            # Whole seconds, so it agrees exactly with duration_seconds --
+            # which is here because sorting/summing a string doesn't work, and
+            # it is how a tbptt_length's cost in wall time gets compared.
+            frame["duration_seconds"] = [
+                "" if self._is_missing(value) else int(value.total_seconds())
+                for value in frame["duration"]
+            ]
+            frame["duration"] = [
+                "" if self._is_missing(value) else str(value).split(".")[0]
+                for value in frame["duration"]
+            ]
+
         frame.to_csv(path_csv, index=False)
         return path_csv
+
+    @staticmethod
+    def _is_missing(value):
+        """True for None and for pandas' NaT/NaN, which are != themselves.
+        Written this way so this file still never imports pandas itself."""
+        return value is None or value != value
 
     @staticmethod
     def _strip_prefix(name):
@@ -1574,15 +1484,14 @@ class Helper:
         return best
 
     def zero_hidden(self, batch_size=None):
-        """Zeroed h_0 (and c_0 for LSTM), (1, batch_size, hidden_size); None for MLP."""
+        """Zeroed h_0, (1, batch_size, hidden_size); None for MLP."""
         if not self.is_recurrent:
             return None
 
         if batch_size is None:
             batch_size = self.n_workers
 
-        h = torch.zeros(1, batch_size, self.hidden_size, device=self.device)
-        return (h, h.clone()) if self.is_lstm else h
+        return torch.zeros(1, batch_size, self.hidden_size, device=self.device)
 
     def reset_hidden_of(self, hidden, w):
         """Zeros the hidden state of worker w only, in place, leaving other
@@ -1590,12 +1499,7 @@ class Helper:
         if not self.is_recurrent:
             return hidden
 
-        if self.is_lstm:
-            hidden[0][:, w] = 0.0  # h
-            hidden[1][:, w] = 0.0  # c
-        else:
-            hidden[:, w] = 0.0
-
+        hidden[:, w] = 0.0
         return hidden
 
     def watch_agent(self, path_model=None, deterministic=None, steps_per_sec=2.5):

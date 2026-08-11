@@ -1,8 +1,11 @@
-"""Entry point for the hyperparameter search: `python main.py MLP|LSTM|GRU|
-TRANSFORMER [max|tbptt]` runs hpo() (the optuna study) then final() (reports
-the winning trial's saved runs; trains nothing). --trials/--final-only/
---search-only run one phase at a time. Resumable: the study and sampler are
-checkpointed to disk, so re-running continues an interrupted search."""
+"""Entry point for the hyperparameter search: `python main.py MLP|GRU
+[--tbptt L]` runs hpo() (the optuna study) then final() (reports the winning
+trial's saved runs; trains nothing). Without --tbptt the GRU gets full BPTT;
+with it, the gradient's backward reach is fixed at L for the whole study and
+the results land in their own directory, so several lengths can be searched
+independently and compared afterwards. --trials/--final-only/--search-only run
+one phase at a time. Resumable: the study and sampler are checkpointed to disk,
+so re-running continues an interrupted search."""
 
 import argparse
 
@@ -21,14 +24,14 @@ def main():
         help="which feature extractor to tune (%(choices)s)",
     )
     parser.add_argument(
-        "tag",
-        nargs="?",
-        default="max",
-        type=str.lower,
-        choices=("max", "tbptt"),
-        help="GRU/LSTM only: 'max' fixes tbptt_length at max and writes to "
-        "pretrained_model_<ENC>_max, 'tbptt' searches it and writes to "
-        "pretrained_model_<ENC>_tbptt. Ignored for MLP/TRANSFORMER.",
+        "--tbptt",
+        type=int,
+        default=None,
+        metavar="L",
+        help="GRU only: fix the gradient's backward reach at L steps for this "
+        "whole study, writing to pretrained_model_GRU_tbptt<L>/. Omit for full "
+        "BPTT (pretrained_model_GRU/). Each length is its own study, so nothing "
+        "inside a study ever has to rank one length against another.",
     )
     parser.add_argument(
         "--trials",
@@ -48,7 +51,16 @@ def main():
     )
     args = parser.parse_args()
 
-    config = make_config(args.model, hpo_tag=args.tag)
+    if args.tbptt is not None and args.tbptt < 1:
+        parser.error(f"--tbptt {args.tbptt} must be at least 1 step")
+
+    # make_config raises for --tbptt on an MLP; turn it into a usage error
+    # rather than a traceback, since that is a command-line mistake
+    try:
+        config = make_config(args.model, tbptt_length=args.tbptt)
+    except ValueError as error:
+        parser.error(str(error))
+
     if args.trials is not None:
         config.n_trials = args.trials
 

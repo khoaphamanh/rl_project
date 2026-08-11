@@ -9,29 +9,23 @@ from config.helper import Helper
 
 class Config(Helper):
     """Hyperparameters shared by every encoder. Abstract -- subclass
-    (ConfigMLP/ConfigLSTM/ConfigGRU/ConfigTransformer) and fill in
-    _configure_model(), or build via make_config("MLP")."""
+    (ConfigMLP/ConfigGRU) and fill in _configure_model(), or build via
+    make_config("MLP")."""
 
     feature_extractor = None  # set by each subclass in _configure_model()
 
-    def __init__(self, hpo_tag=None):
+    def __init__(self, tbptt_length=None):
         self.seed_list = [0, 15, 12, 97, 98]
 
         self.input_size = 7 * 7 * 20  # 980 after flatten_obs one-hots each cell
 
-        # Which of the two GRU/LSTM studies this is. "max" keeps tbptt_length
-        # fixed below; "tbptt" puts it in the search space (config_gru.py).
-        # Narrowed to "" for MLP/Transformer once _configure_model names the
-        # encoder -- they share one untagged directory, as before.
-        self.hpo_tag = "max" if hpo_tag is None else str(hpo_tag).lower()
-
-        # how many steps the gradient may flow back through; "max" = cut on
-        # episode boundaries only. Read by PPOAgent.split_pad_mask.
-        self.tbptt_length = "max"
-
-        # only bites in a "tbptt" run: score loses tbptt_lambda * (L / T), so
-        # among lengths that score the same the shortest wins. See trial_score.
-        self.tbptt_lambda = 0.1
+        # How many steps the gradient may flow back through; "max" = cut on
+        # episode boundaries only. Read by PPOAgent.split_pad_mask. NOT
+        # searched -- each length is its own independent study, so that the
+        # three can be compared without a pruner or a sampler ever having to
+        # rank one length against another. It is fixed here and it names the
+        # directory the run writes to (suffix below).
+        self.tbptt_length = "max" if tbptt_length is None else int(tbptt_length)
 
         self.name_env = "MiniGrid-MemoryS17Random-v0"  # "MiniGrid-MemoryS11-v0" # "MiniGrid-DoorKey-8x8-v0"
         self.env_size = int(re.search(r"(\d+)", self.name_env).group(1))
@@ -95,21 +89,29 @@ class Config(Helper):
         # so a sampled and an argmax episode take the same actions.
         self.eval_deterministic = False
 
-        self.n_trials = 100
+        self.n_trials = 50
         self.seed_hpo = 42
         self.hpo_direction = "maximize"
 
-        # MedianPruner, in the units HPOPPO's step uses -- one step is one
-        # training ITERATION, offset per seed (step = seed_index * n_iterations
-        # + iteration), so all four numbers below read in iterations/trials.
+        # optuna.pruners.MedianPruner, in the units HPOPPO's step uses -- one
+        # step is one training ITERATION, offset per seed (step = seed_index *
+        # n_iterations + iteration), so all four numbers below read in
+        # iterations/trials.
         #
         # warmup is the one that must not be 0. Optuna judges a trial on its
         # best intermediate value so far against the median of completed trials
         # at the same step; at iteration 0 that is one untrained network vs the
         # median of other untrained networks, i.e. a coin flip, so a warmup of 0
         # would kill roughly half of every trial after its first evaluation.
-        # 200 = a fifth of the budget, enough for the curves to separate while
-        # still cutting a hopeless draw off before it burns four more seeds.
+        #
+        # 500, not 200, because MemoryS17 has a phase transition: a GRU sits at
+        # chance for hundreds of iterations and then jumps to ~0.95. Replaying
+        # this pruner over the 50-trial GRU study in no_need/logger_gpu_machine
+        # showed a warmup of 200 killing four trials that go on to finish at
+        # 0.937-0.972 -- at or above that study's winner -- by margins as thin
+        # as 0.001. 500 halves that (4 -> 2) and still saves 46% of the compute
+        # instead of 49%, i.e. two hours per study to stop throwing away
+        # late bloomers. Raising it to 600 saves only 42%.
         self.hpo_pruner_warmup = 200
 
         # how often to actually check, offset by the warmup. Tied to the eval
@@ -124,14 +126,11 @@ class Config(Helper):
 
         # no pruning at all until this many trials have COMPLETED, and no
         # pruning at a given step unless this many completed trials reported a
-        # value there -- a median over one or two trials is not a median.
-        #
-        # Both counts are per GROUP, and in a tbptt study the group is the drawn
-        # tbptt_length (GroupedMedianPruner in hpo_ppo.py). So with 6 lengths
-        # and n_trials=100 -- ~17 trials per length -- pruning only starts
-        # biting a length once 5 trials of that length have finished, roughly a
-        # third of the way in. That lateness is the price of not letting the
-        # pruner answer the question the tbptt study is asking.
+        # value there -- a median over one or two trials is not a median. Since
+        # every COMPLETE trial reports at the same steps, the second gate never
+        # binds independently of the first under a fixed config; it earns its
+        # keep only on a study resumed after n_iterations/n_iterations_report
+        # changed, which is what HPOPPO's n_iterations user-attr check warns on.
         self.hpo_pruner_startup_trials = 5
         self.hpo_pruner_min_trials = 5
 
@@ -143,7 +142,7 @@ class Config(Helper):
         # score = mean - lambda * std, both across seeds.
         self.hpo_lambda = 1.0
 
-        # The PPO half, shared by all four encoders so tuned values stay
+        # The PPO half, shared by both encoders so tuned values stay
         # comparable. Each subclass appends its architecture knobs in
         # _configure_model(); ConfigNoHPO replaces it with []. Every "name"
         # must already be an attribute above -- apply_params raises otherwise.
@@ -198,15 +197,26 @@ class Config(Helper):
 
         self._configure_model()
 
-        # only the recurrent encoders split into a max/tbptt pair: an MLP has
-        # no time dependence to truncate, and the Transformer is out of scope
-        # for this comparison. Both keep pretrained_model_<ENCODER>/.
-        if self.feature_extractor not in ("GRU", "LSTM"):
-            self.hpo_tag = ""
+        # An MLP has no time dependence to truncate, so a length would silently
+        # mean nothing but would still split its results across directories.
+        if self.tbptt_length != "max" and not self.is_recurrent:
+            raise ValueError(
+                f"tbptt_length={self.tbptt_length} makes no sense for "
+                f"{self.feature_extractor}: there is no recurrence to truncate. "
+                f"Drop --tbptt, or run it on GRU."
+            )
+        if self.tbptt_length != "max" and self.tbptt_length < 1:
+            raise ValueError(f"tbptt_length={self.tbptt_length} must be at least 1")
 
-        suffix = f"_{self.hpo_tag}" if self.hpo_tag else ""
+        # Full BPTT keeps the plain pretrained_model_<ENCODER>/ it always had;
+        # each truncated length gets its own sibling, so three independent
+        # studies at different L can never write over each other.
+        self.tbptt_suffix = (
+            "" if self.tbptt_length == "max" else f"_tbptt{self.tbptt_length}"
+        )
         self.dir_model = os.path.join(
-            "agents", f"pretrained_model_{self.feature_extractor.upper()}{suffix}"
+            "agents",
+            f"pretrained_model_{self.feature_extractor.upper()}{self.tbptt_suffix}",
         )
         self.dir_pretrained_model = self.dir_model
         self.dir_hpo = os.path.join(self.dir_model, "hpo")
@@ -215,15 +225,14 @@ class Config(Helper):
         """Overridden by each subclass to set feature_extractor and its
         architecture knobs. Config itself is abstract."""
         raise NotImplementedError(
-            "Config is abstract -- build a ConfigMLP / ConfigLSTM / ConfigGRU / "
-            "ConfigTransformer, or call make_config('MLP')."
+            "Config is abstract -- build a ConfigMLP / ConfigGRU, or call "
+            "make_config('MLP')."
         )
 
     @property
     def name_hpo(self):
         env = self.name_env.replace("/", "-")
-        tag = f"_{self.hpo_tag}" if self.hpo_tag else ""
-        return f"{self.feature_extractor.upper()}_{env}{tag}"
+        return f"{self.feature_extractor.upper()}_{env}{self.tbptt_suffix}"
 
     @property
     def name_study(self):

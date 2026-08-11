@@ -25,9 +25,12 @@ class HPOPPO:
         self.seed_list = config.seed_list
         self.n_trials = config.n_trials
 
-        # every make_config() below has to repeat it: the tag decides both the
-        # directory written to and whether tbptt_length is in the search space
-        self.hpo_tag = config.hpo_tag
+        # every make_config() below has to repeat it: the length decides the
+        # directory this study writes to, and the run it trains. Config stores
+        # "max" where the constructor wants None, so keep both forms -- one to
+        # report, one to pass on.
+        self.tbptt_length = config.tbptt_length
+        self._length_arg = None if self.tbptt_length == "max" else self.tbptt_length
 
         # all three parsed from the one config string, so they cannot drift
         self.hpo_objective = config.hpo_objective
@@ -88,7 +91,7 @@ class HPOPPO:
         """Train a fresh PPOAgent at these params/seed, checkpoint it, return
         its last-iteration scores. on_evaluate is handed straight to
         train_agent: it sees every evaluation and can stop the run early."""
-        config = make_config(self.feature_extractor, hpo_tag=self.hpo_tag)
+        config = make_config(self.feature_extractor, tbptt_length=self._length_arg)
 
         # before PPOAgent is built: the agent reads lr/wd and the architecture
         # sizes into the model at construction and never consults config again
@@ -185,19 +188,13 @@ class HPOPPO:
 
                     step = index_split * stride + iteration
 
-                    # one seed's metric, penalized exactly as the final value is:
-                    # trial_score of a single value has std 0, so this is the raw
-                    # metric minus the tbptt penalty (nothing at all in a "max"
-                    # run). The pruner then ranks trials on the same quantity the
-                    # study ranks them on -- a long-tbptt draw does not survive
-                    # pruning on a raw score its final value would never keep.
+                    # one seed's raw metric. Identical to what the final value
+                    # is built from: aggregate_scores of a single value has std
+                    # 0, so mean-minus-std of one seed IS that seed's metric.
                     # Not the running cross-seed mean-minus-std: at step 0 there
                     # is only ever one seed, so the std term would be noise.
                     trial.report(
-                        self.config.trial_score(
-                            [float(evaluation[self.hpo_metric])], params
-                        ),
-                        step=step,
+                        float(evaluation[self.hpo_metric]), step=step
                     )
 
                     pruned = trial.should_prune()
@@ -227,7 +224,7 @@ class HPOPPO:
                         f"iteration {result['iteration']} "
                         f"({self.hpo_metric} {result[self.hpo_metric]:.3f}, "
                         f"running {self.score_name} "
-                        f"{self.config.trial_score(scores, params):.3f})"
+                        f"{self.config.aggregate_scores(scores):.3f})"
                     )
                     # before the raise: the seeds that did finish still wrote
                     # checkpoints, and a pruned trial's curve is why it lost
@@ -236,7 +233,7 @@ class HPOPPO:
 
             self.plot_trial(trial.number)
 
-            value = self.config.trial_score(scores, params)
+            value = self.config.aggregate_scores(scores)
             self.logger.info(
                 f"TRIAL {trial.number} done: {self.score_name} {value:.3f}   "
                 f"per-seed {self.hpo_metric} over {self.seed_list} "
@@ -270,7 +267,7 @@ class HPOPPO:
     def score_saved(self, seed_index, seed):
         """Load one winning-trial checkpoint (no training) and score it in both eval modes, or None if missing."""
         # fresh config, same reason as run_split: nothing leaks to the next seed
-        config = make_config(self.feature_extractor, hpo_tag=self.hpo_tag)
+        config = make_config(self.feature_extractor, tbptt_length=self._length_arg)
 
         # the same two things watch.py sets to find this path
         path = config.select_run(trial="best", seed_index=seed_index)
@@ -382,11 +379,7 @@ class HPOPPO:
 
         # recomputed from the loaded runs; should equal best.value exactly
         # since these are the same runs the study ranked (checked below).
-        # best.params, not aggregate_scores: a tbptt trial's value carries the
-        # length penalty, and dropping it here would trip the WARNING below.
-        score = self.config.trial_score(
-            [r[self.hpo_metric] for r in results], best.params
-        )
+        score = self.config.aggregate_scores([r[self.hpo_metric] for r in results])
 
         report = {
             "feature_extractor": self.feature_extractor,
@@ -395,10 +388,7 @@ class HPOPPO:
             "metric": self.hpo_metric,
             "aggregation": self.config.hpo_aggregation,
             "hpo_lambda": getattr(self.config, "hpo_lambda", 1.0),
-            "hpo_tag": self.hpo_tag,
-            # only meaningful when the study searched tbptt_length
-            "tbptt_lambda": self.config.tbptt_lambda,
-            "searches_tbptt": self.config.searches_tbptt,
+            "tbptt_length": self.tbptt_length,
             "score_name": self.score_name,
             "score": score,
             "best_value_in_study": best.value,

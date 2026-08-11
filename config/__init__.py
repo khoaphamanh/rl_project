@@ -1,24 +1,20 @@
-MODEL_CHOICES = ("MLP", "LSTM", "GRU", "TRANSFORMER")
+MODEL_CHOICES = ("MLP", "GRU")
 
 
-def make_config(name, hpo_tag=None):
+def make_config(name, tbptt_length=None):
     """Name (case-insensitive) -> the matching Config subclass, built.
-    hpo_tag picks the GRU/LSTM study ("max" or "tbptt"); it is ignored for
-    MLP/TRANSFORMER, which keep one untagged directory."""
+    tbptt_length is the GRU's backward reach: None (full BPTT) or an int, which
+    also decides the directory the study writes to. MLP has no time dependence
+    to truncate, so anything but None raises."""
     key = name.upper()
 
     # deferred to avoid a circular import
-
     from config.config_mlp import ConfigMLP
-    from config.config_lstm import ConfigLSTM
     from config.config_gru import ConfigGRU
-    from config.config_transformer import ConfigTransformer
 
     table = {
         "MLP": ConfigMLP,
-        "LSTM": ConfigLSTM,
         "GRU": ConfigGRU,
-        "TRANSFORMER": ConfigTransformer,
     }
 
     if key not in table:
@@ -26,4 +22,4 @@ def make_config(name, hpo_tag=None):
             f"unknown model {name!r}. choose one of {', '.join(MODEL_CHOICES)}"
         )
 
-    return table[key](hpo_tag=hpo_tag)
+    return table[key](tbptt_length=tbptt_length)

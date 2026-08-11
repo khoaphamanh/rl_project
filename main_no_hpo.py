@@ -52,9 +52,9 @@ def report_run(logger, eval_history, fresh, curve_deterministic):
     return sampled, argmax
 
 
-def run_one(model_name, seed, logger):
+def run_one(model_name, seed, logger, tbptt=None):
     """Train encoder from seed. Returns a result_row (seed + SUMMARY_METRICS)."""
-    config = ConfigNoHPO(model_name)
+    config = ConfigNoHPO(model_name, tbptt_length=tbptt)
     agent = PPOAgent(config, seed=seed)
 
     logger.info("")
@@ -80,9 +80,9 @@ def run_one(model_name, seed, logger):
         agent.close()
 
 
-def report_saved(model_name, seed_index, seed, logger):
+def report_saved(model_name, seed_index, seed, logger, tbptt=None):
     """Load checkpoint and report it (no training). Returns dict or None if missing."""
-    config = ConfigNoHPO(model_name)
+    config = ConfigNoHPO(model_name, tbptt_length=tbptt)
     path = config.select_run(seed_index=seed_index)
     if not os.path.exists(path):
         logger.info(f"  seed {seed}: no checkpoint at {path}, skipped")
@@ -124,13 +124,32 @@ def main():
         help=f"which feature extractor to train (%(choices)s, default {FEATURE_EXTRACTOR})",
     )
     parser.add_argument(
+        "--tbptt",
+        type=int,
+        default=None,
+        metavar="L",
+        help="GRU only: truncate the gradient's backward reach to L steps "
+        "(default: full BPTT). Writes to pretrained_model_GRU_tbptt<L>/no_hpo/ "
+        "so it cannot overwrite the full-BPTT baseline in "
+        "pretrained_model_GRU/no_hpo/.",
+    )
+    parser.add_argument(
         "--report-only",
         action="store_true",
         help="skip training; load and report checkpoints in no_hpo/ (no retraining)",
     )
     args = parser.parse_args()
 
-    config = ConfigNoHPO(args.model)
+    if args.tbptt is not None and args.tbptt < 1:
+        parser.error(f"--tbptt {args.tbptt} must be at least 1 step")
+
+    # ConfigNoHPO raises for --tbptt on an MLP; a command-line mistake deserves
+    # a usage error, not a traceback
+    try:
+        config = ConfigNoHPO(args.model, tbptt_length=args.tbptt)
+    except ValueError as error:
+        parser.error(str(error))
+
     seeds = config.seed_list
     logger = config.build_logger()
 
@@ -138,6 +157,7 @@ def main():
     logger.info("")
     logger.info(f"NO-HPO {mode}: {args.model} on {config.name_env}")
     logger.info(f"  seeds        {seeds}")
+    logger.info(f"  tbptt_length {config.tbptt_length} (worker_steps {config.worker_steps})")
     if not args.report_only:
         logger.info(f"  iterations   {config.n_iterations}")
     logger.info(f"  checkpoints  {config.dir_pretrained_model}")
@@ -146,16 +166,18 @@ def main():
         results = [
             result
             for index, seed in enumerate(seeds)
-            if (result := report_saved(args.model, index, seed, logger)) is not None
+            if (result := report_saved(args.model, index, seed, logger, args.tbptt))
+            is not None
         ]
         if not results:
             raise SystemExit(
                 f"\nno checkpoint could be read under {config.dir_pretrained_model}. "
-                f"Run `python main_no_hpo.py {args.model}` first -- --report-only "
+                f"Run `python main_no_hpo.py {args.model}"
+                f"{'' if args.tbptt is None else f' --tbptt {args.tbptt}'}` first -- --report-only "
                 f"reads runs, it does not make them."
             )
     else:
-        results = [run_one(args.model, s, logger) for s in seeds]
+        results = [run_one(args.model, s, logger, args.tbptt) for s in seeds]
 
     log = logger.info
 

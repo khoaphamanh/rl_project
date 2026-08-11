@@ -10,21 +10,12 @@ class ConfigGRU(Config):
 
         self.hidden_size = 64  # width of h
 
-        # same low/high/step as the other encoders, so widths stay comparable
+        # same low/high/step as the MLP, so widths stay comparable
         self.search_space += [
             {"type": "int", "name": "hidden_size", "low": 32, "high": 512, "step": 8},
         ]
 
-        # only the tbptt study searches it; the max study leaves tbptt_length
-        # at "max", so the two differ in exactly one thing. Categorical, not an
-        # int range: TPE can resolve five buckets from n_trials, not T of them.
-        # The last choice IS "max" (no chunk can exceed T), so the search can
-        # rediscover full BPTT and the two studies overlap at one point.
-        if self.hpo_tag == "tbptt":
-            self.search_space += [
-                {
-                    "type": "categorical",
-                    "name": "tbptt_length",
-                    "choices": [8, 16, 32, 64, 128, self.worker_steps],
-                },
-            ]
+        # tbptt_length is deliberately NOT here. It is fixed per run (--tbptt L)
+        # and each length is its own study writing to its own directory, so no
+        # sampler or pruner ever ranks one length against another -- comparing
+        # them is the experiment, and it happens between studies, not inside one.

@@ -36,12 +36,13 @@ def main():
         "hand-picked one (no_hpo/)",
     )
     parser.add_argument(
-        "--tag",
-        type=str.lower,
-        default="max",
-        choices=("max", "tbptt"),
-        help="with --hpo, for GRU/LSTM: which of the two studies to watch "
-        "(default max). Ignored for MLP/TRANSFORMER and without --hpo.",
+        "--tbptt",
+        type=int,
+        default=None,
+        metavar="L",
+        help="GRU only: watch a run trained with --tbptt L "
+        "(pretrained_model_GRU_tbptt<L>/) instead of the full-BPTT one. Works "
+        "with and without --hpo -- the length names the directory either way.",
     )
     parser.add_argument(
         "--seed",
@@ -71,11 +72,14 @@ def main():
     # the flag picks the config class, and the class knows where its own
     # checkpoints live -- nothing here spells a directory, so the viewer
     # cannot drift from the trainer.
-    config = (
-        make_config(args.model, hpo_tag=args.tag)
-        if args.hpo
-        else ConfigNoHPO(args.model)
-    )
+    try:
+        config = (
+            make_config(args.model, tbptt_length=args.tbptt)
+            if args.hpo
+            else ConfigNoHPO(args.model, tbptt_length=args.tbptt)
+        )
+    except ValueError as error:
+        parser.error(str(error))
     trial = (args.trial or "best") if args.hpo else None
 
     # sets dir_pretrained_model and config.seed, returns the path they imply.

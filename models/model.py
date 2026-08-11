@@ -8,9 +8,9 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 try:  # when imported from the repo root as models.model
-    from models.feature_extractor import MLP, LSTM, GRU, CELL_SIZE, random_obs
+    from models.feature_extractor import MLP, GRU, CELL_SIZE, random_obs
 except ImportError:  # when run directly: python models/model.py
-    from feature_extractor import MLP, LSTM, GRU, CELL_SIZE, random_obs
+    from feature_extractor import MLP, GRU, CELL_SIZE, random_obs
 
 
 class Network(nn.Module):
@@ -19,7 +19,7 @@ class Network(nn.Module):
     def __init__(self, feature_extractor, hidden_size, n_actions):
         super().__init__()
         self.feature_extractor = feature_extractor
-        self.is_recurrent = isinstance(feature_extractor, (LSTM, GRU))
+        self.is_recurrent = isinstance(feature_extractor, GRU)
         self.fc_actor = nn.Linear(hidden_size, n_actions)
         self.fc_critic = nn.Linear(hidden_size, 1)
 
@@ -58,7 +58,6 @@ def main():
     x = random_obs(NUM_SEQUENCES, SEQ_LEN)
     extractors = [
         ("MLP", MLP(INPUT_SIZE, HIDDEN_SIZE, N_LAYERS)),
-        ("LSTM", LSTM(INPUT_SIZE, HIDDEN_SIZE)),
         ("GRU", GRU(INPUT_SIZE, HIDDEN_SIZE)),
     ]
 
@@ -78,19 +77,13 @@ def main():
         )
         if hidden is None:
             print(f"        hidden   None")
-        elif isinstance(hidden, tuple):
-            print(f"        hidden   (h {tuple(hidden[0].shape)}, c {tuple(hidden[1].shape)})")
         else:
             print(f"        hidden   {tuple(hidden.shape)}")
 
     print("\nWITH AN INITIAL HIDDEN STATE")
     h0 = torch.zeros(1, NUM_SEQUENCES, HIDDEN_SIZE)
-    c0 = torch.zeros(1, NUM_SEQUENCES, HIDDEN_SIZE)
-
-    lstm_net = Network(LSTM(INPUT_SIZE, HIDDEN_SIZE), HIDDEN_SIZE, N_ACTIONS)
     gru_net = Network(GRU(INPUT_SIZE, HIDDEN_SIZE), HIDDEN_SIZE, N_ACTIONS)
 
-    print(f"  LSTM  value {tuple(lstm_net(x, (h0, c0))[1].shape)}")
     print(f"  GRU   value {tuple(gru_net(x, h0)[1].shape)}")
 
     print("\nSHARED ENCODER CHECK (GRU)")

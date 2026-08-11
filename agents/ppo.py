@@ -27,7 +27,6 @@ class PPOAgent:
         self.tbptt_length = config.tbptt_length
         self.hidden_size = config.hidden_size
         self.is_recurrent = config.is_recurrent
-        self.is_lstm = config.is_lstm
         self.zero_hidden = config.zero_hidden
         self.reset_hidden_of = config.reset_hidden_of
         self.build_env = config.build_env
@@ -91,8 +90,6 @@ class PPOAgent:
         }
         if self.is_recurrent:
             buf["hxs"] = torch.zeros(W, T, H)
-            if self.is_lstm:
-                buf["cxs"] = torch.zeros(W, T, H)
 
         finished_returns, finished_lengths = [], []
 
@@ -102,10 +99,7 @@ class PPOAgent:
             # store hidden state before the step, so a sequence starting at
             # t can be replayed from here.
             if self.is_recurrent:
-                h = self.hidden[0] if self.is_lstm else self.hidden
-                buf["hxs"][:, t] = h[0].cpu()  # (1, W, H) -> (W, H)
-                if self.is_lstm:
-                    buf["cxs"][:, t] = self.hidden[1][0].cpu()
+                buf["hxs"][:, t] = self.hidden[0].cpu()  # (1, W, H) -> (W, H)
 
             # (W, 7, 7, 3) -> (W, 1, 7, 7, 3): seq_len = 1 while acting
             obs_t = torch.from_numpy(self.obs).to(self.device).unsqueeze(1)
@@ -211,7 +205,7 @@ class PPOAgent:
 
         lengths = [stop - start + 1 for _, start, stop in segments]
         n_seq, L = len(segments), max(lengths)
-        keys = [k for k in buf if k not in ("hxs", "cxs")]
+        keys = [k for k in buf if k != "hxs"]
         out = {
             k: torch.zeros(n_seq, L, *buf[k].shape[2:], dtype=buf[k].dtype)
             for k in keys
@@ -220,8 +214,6 @@ class PPOAgent:
 
         if self.is_recurrent:
             out["hxs"] = torch.zeros(1, n_seq, H)
-            if self.is_lstm:
-                out["cxs"] = torch.zeros(1, n_seq, H)
 
         for i, (w, start, stop) in enumerate(segments):
             n = stop - start + 1
@@ -231,8 +223,6 @@ class PPOAgent:
 
             if self.is_recurrent:
                 out["hxs"][0, i] = buf["hxs"][w, start]
-                if self.is_lstm:
-                    out["cxs"][0, i] = buf["cxs"][w, start]
 
         return out
 
@@ -272,15 +262,9 @@ class PPOAgent:
 
         # h_0 per sequence, already detached (sample() wrote it under no_grad).
         # unsqueeze(0) restores the (num_layers, mb, H) shape nn.GRU wants.
-        if self.is_lstm:
-            hidden = (
-                mb["hxs"].to(self.device).unsqueeze(0),
-                mb["cxs"].to(self.device).unsqueeze(0),
-            )
-        elif self.is_recurrent:
-            hidden = mb["hxs"].to(self.device).unsqueeze(0)
-        else:
-            hidden = None
+        hidden = (
+            mb["hxs"].to(self.device).unsqueeze(0) if self.is_recurrent else None
+        )
 
         # returned hidden is dropped: padding sits at the end of each sequence,
         # so no real output depends on a padded step.
