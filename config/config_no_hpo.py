@@ -30,7 +30,7 @@ class ConfigNoHPO(Config):
         self.feature_extractor = self._chosen_model
         self.seed_list = [0]  # five seeds for each encode
         self.n_iterations = 2000
-        self.mini_batch_size = [256]
+        self.mini_batch_size = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4]
         self.calculate_time = True
 
         # 2. PPO -- hand-picked hyperparameters (tunable params, fixed here)
