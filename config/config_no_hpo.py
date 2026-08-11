@@ -32,6 +32,7 @@ class ConfigNoHPO(Config):
         self.n_iterations = 2000
         self.mini_batch_size = [256]
         self.calculate_time = True
+        self.force_gpu = True
 
         # 2. PPO -- hand-picked hyperparameters (tunable params, fixed here)
         self.lr = 1e-3

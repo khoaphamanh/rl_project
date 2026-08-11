@@ -37,6 +37,12 @@ class Config(Helper):
         # required in notebooks and scripts without an __main__ guard.
         self.async_envs = True
 
+        # Force CPU even on a machine with a working CUDA GPU -- e.g. to
+        # reproduce a run on the CPU-only path, or for CPU-vs-GPU timing
+        # comparisons (see Helper.device, which reads this). False (default)
+        # picks cuda whenever torch.cuda.is_available().
+        self.force_cpu = False
+
         # T: build_env feeds this back as the env's max_steps, so MiniGrid's
         # truncation and success reward (1 - 0.9*step_count/max_steps) move
         # with it. Derived from env_max_steps so it tracks name_env.

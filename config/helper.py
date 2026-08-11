@@ -296,8 +296,9 @@ class Helper:
 
     @property
     def device(self):
-        """cuda when a GPU exists, cpu otherwise. This machine has no GPU."""
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        """cuda when a GPU exists and force_cpu isn't set, cpu otherwise."""
+        use_cuda = torch.cuda.is_available() and not self.force_cpu
+        return torch.device("cuda" if use_cuda else "cpu")
 
     @property
     def is_recurrent(self):
