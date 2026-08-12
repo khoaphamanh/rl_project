@@ -966,11 +966,12 @@ class Helper:
     def build_pruner(self):
         """The study's pruner, wired from this config's hpo_pruner_* knobs.
 
-        Every argument is passed on purpose: optuna's defaults are
-        n_warmup_steps=0 and n_min_trials=1, and since a step here is a training
-        iteration (HPOPPO offsets it per seed), a warmup of 0 would put the
-        first check at iteration 0 -- one untrained network against the median
-        of other untrained networks, i.e. a coin flip.
+        A step here is one SEED, not one training iteration: HPOPPO reports
+        once per finished run, between two seeds, so the whole trial only ever
+        has len(seed_list) steps. All four knobs are therefore small integers,
+        and n_min_trials is passed rather than left at optuna's default of 1 --
+        a median over one other trial is not a median, and with so few steps
+        there is no later check to correct an early bad call.
 
         Plain optuna MedianPruner: tbptt_length is fixed for a whole study now,
         so every trial in one study is directly comparable and there is nothing

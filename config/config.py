@@ -94,43 +94,36 @@ class Config(Helper):
         self.hpo_direction = "maximize"
 
         # optuna.pruners.MedianPruner, in the units HPOPPO's step uses -- one
-        # step is one training ITERATION, offset per seed (step = seed_index *
-        # n_iterations + iteration), so all four numbers below read in
-        # iterations/trials.
+        # step is one SEED (step = index into seed_list), so a trial reports
+        # len(seed_list) times and the numbers below read in seeds/trials. A
+        # trial is therefore killed between two full training runs, never
+        # inside one: the finest granularity is 1/len(seed_list) of a trial.
         #
-        # warmup is the one that must not be 0. Optuna judges a trial on its
-        # best intermediate value so far against the median of completed trials
-        # at the same step; at iteration 0 that is one untrained network vs the
-        # median of other untrained networks, i.e. a coin flip, so a warmup of 0
-        # would kill roughly half of every trial after its first evaluation.
-        #
-        # 500, not 200, because MemoryS17 has a phase transition: a GRU sits at
-        # chance for hundreds of iterations and then jumps to ~0.95. Replaying
-        # this pruner over the 50-trial GRU study in no_need/logger_gpu_machine
-        # showed a warmup of 200 killing four trials that go on to finish at
-        # 0.937-0.972 -- at or above that study's winner -- by margins as thin
-        # as 0.001. 500 halves that (4 -> 2) and still saves 46% of the compute
-        # instead of 49%, i.e. two hours per study to stop throwing away
-        # late bloomers. Raising it to 600 saves only 42%.
-        self.hpo_pruner_warmup = 200
+        # 0 = the first check happens after the first seed, which is the point
+        # of pruning per seed at all -- a hopeless draw costs one run out of
+        # five instead of five. It is also the most aggressive setting the
+        # scheme allows, and the cost is visible in the 50-trial GRU study in
+        # no_need/log_2026-08-06_22-46-09.log, which ran exactly this: all 25 of
+        # its prunes fired after seed 0, and four of them killed draws whose
+        # seed-0 return_mean was 0.937-0.956, i.e. level with the eventual
+        # winner's per-seed values. Raise this to 1 to judge on two seeds
+        # instead of one: half the prunes' savings, far fewer good draws lost.
+        self.hpo_pruner_warmup = 0
 
-        # how often to actually check, offset by the warmup. Tied to the eval
-        # cadence because a check is only possible where a value was reported:
-        # optuna postpones a check that lands on a step with no value, so any
-        # interval from 1 to n_iterations_report means the same thing -- "check
-        # at every evaluation". Writing it as n_iterations_report says that on
-        # purpose instead of by accident, and follows if the cadence changes.
-        # Cost is not a reason to raise it: should_prune() measures ~4 ms
-        # against a 50-trial sqlite study, i.e. ~2 s over a whole trial.
-        self.hpo_pruner_interval = self.n_iterations_report
+        # how often to check, offset by the warmup. 1 = at every seed. Any
+        # larger value skips seeds, and with only len(seed_list) steps in a
+        # whole trial there is nothing to gain by it: should_prune() measures
+        # ~4 ms against a 50-trial sqlite study, against minutes to hours per
+        # seed. Use hpo_pruner_warmup, not this, to delay the first check.
+        self.hpo_pruner_interval = 1
 
         # no pruning at all until this many trials have COMPLETED, and no
         # pruning at a given step unless this many completed trials reported a
         # value there -- a median over one or two trials is not a median. Since
-        # every COMPLETE trial reports at the same steps, the second gate never
-        # binds independently of the first under a fixed config; it earns its
-        # keep only on a study resumed after n_iterations/n_iterations_report
-        # changed, which is what HPOPPO's n_iterations user-attr check warns on.
+        # every COMPLETE trial reports at all len(seed_list) steps, the second
+        # gate never binds independently of the first under a fixed config; it
+        # earns its keep only on a study resumed after seed_list changed length,
+        # which is what HPOPPO's seed-count user-attr check warns on.
         self.hpo_pruner_startup_trials = 5
         self.hpo_pruner_min_trials = 5
 

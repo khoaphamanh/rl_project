@@ -482,20 +482,13 @@ class PPOAgent:
         }
 
     # ---- whole run ----
-    def train_agent(
-        self,
-        n_iterations=None,
-        n_iterations_report=None,
-        logger=None,
-        on_evaluate=None,
-    ):
+    def train_agent(self, n_iterations=None, n_iterations_report=None, logger=None):
         """Run n_iterations of train(), evaluating every n_iterations_report. Checkpoints, returns the history.
 
-        on_evaluate(iteration, evaluation) is called after every evaluation and
-        is the only window anything outside this class gets into a run in
-        progress. Return True from it to stop the run early -- the checkpoint
-        and the curve are still written, from however far it got. HPOPPO uses
-        it to feed optuna's pruner, so optuna stays out of this file."""
+        A run is indivisible: it trains all n_iterations or raises. Nothing
+        outside this class gets a window into a run in progress -- HPOPPO
+        prunes between seeds, on whole finished runs, so optuna needs no hook
+        in here and none is offered."""
         if n_iterations is None:
             n_iterations = self.n_iterations
         if n_iterations_report is None:
@@ -529,8 +522,6 @@ class PPOAgent:
         # the clocks start here, so building the envs and probing the
         # minibatch size are not billed to the training loop
         self.timing.start()
-
-        stop = False
 
         for i in range(n_iterations):
             # before train(), so this iteration's updates all run at one lr
@@ -584,16 +575,7 @@ class PPOAgent:
                 # empties the window, so the next report starts fresh
                 self.timing.report(log)
 
-                # after the log line and the timing window, so a stopped run's
-                # last evaluation is reported exactly like any other
-                stop = on_evaluate is not None and bool(on_evaluate(i, evaluation))
-
             history.append(stats)
-
-            if stop:
-                log("")
-                log(f"stopped early at iteration {i} -- on_evaluate asked to stop")
-                break
 
         # after the loop, so the last report() has folded its window into totals
         self.timing.summary(log, self.seed)
