@@ -1,0 +1,30 @@
+{
+  "feature_extractor": "MLP",
+  "name_env": "MiniGrid-MemoryS17Random-v0",
+  "objective": "return_mean_minus-std",
+  "metric": "return_mean",
+  "aggregation": "mean_minus-std",
+  "score_name": "mean_minus_1std(return_mean)",
+  "direction": "maximize",
+  "best_trial": 3,
+  "best_value": 0.5271981088430069,
+  "best_params": {
+    "lr": 0.0006647135865318024,
+    "gamma": 0.9917,
+    "gae_lambda": 0.9,
+    "entropy_coef": 0.07025166339242159,
+    "value_coef": 0.8536189862866826,
+    "clip_eps": 0.26,
+    "wd": 6.724850206557239e-07,
+    "max_grad_norm": 0.13399060561509787,
+    "hidden_size": 360,
+    "n_layers_mlp": 2
+  },
+  "user_attrs": {
+    "return_mean": 0.5557706371191136,
+    "return_mean_std": 0.028572528276106707,
+    "success_rate": 0.5920000000000001,
+    "success_rate_std": 0.027129319932501048
+  },
+  "copied_from": "agents/pretrained_model_MLP/hpo/trial_3"
+}

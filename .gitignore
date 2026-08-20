@@ -43,3 +43,7 @@ no_need/
 
 # note
 note.txt
+
+# HPO artefacts: keep hpo/best_trial/ (a copy of the winning trial, all watch.py
+# needs) and the small study files; drop the ~5 GB of per-trial checkpoints.
+agents/pretrained_model_*/hpo/trial_*/

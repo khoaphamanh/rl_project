@@ -1,0 +1,4795 @@
+{
+  "feature_extractor": "GRU",
+  "name_env": "MiniGrid-MemoryS17Random-v0",
+  "objective": "return_mean_minus-std",
+  "metric": "return_mean",
+  "aggregation": "mean_minus-std",
+  "hpo_lambda": 1.0,
+  "tbptt_length": "max",
+  "score_name": "mean_minus_1std(return_mean)",
+  "score": 0.9559039087962541,
+  "best_value_in_study": 0.9559039087962541,
+  "retrained": false,
+  "best_trial": 36,
+  "best_params": {
+    "lr": 0.0018223909279876938,
+    "gamma": 0.9968,
+    "gae_lambda": 0.96,
+    "entropy_coef": 0.009564637490370193,
+    "value_coef": 0.08949479373335777,
+    "clip_eps": 0.25,
+    "wd": 2.8740878859785488e-08,
+    "max_grad_norm": 0.5004010742061973,
+    "hidden_size": 280
+  },
+  "seed_list": [
+    0,
+    15,
+    12,
+    97,
+    98
+  ],
+  "seeds_scored": [
+    0,
+    15,
+    12,
+    97,
+    98
+  ],
+  "eval_seed": 10000,
+  "n_eval_episodes": 50,
+  "n_iterations": 1000,
+  "n_iterations_report": 10,
+  "scored_at_iteration": 999,
+  "curve_deterministic": false,
+  "trials_deterministic": false,
+  "results": [
+    {
+      "seed": 0,
+      "iteration": 999,
+      "success_rate": 1.0,
+      "return_mean": 0.9577673130193908,
+      "return_std_episodes": 0.012489384078732369,
+      "timeout_rate": 0.0,
+      "length_mean": 16.94,
+      "argmax_success_rate": 1.0,
+      "argmax_return_mean": 0.9587645429362882,
+      "argmax_return_std_episodes": 0.011822643287330478,
+      "argmax_timeout_rate": 0.0,
+      "argmax_length_mean": 16.54,
+      "curve_deterministic": false,
+      "path": "agents/pretrained_model_GRU/hpo/best_trial/ppo_0_GRU_MiniGrid-MemoryS17Random-v0.pth",
+      "eval_history": [
+        {
+          "iteration": 0,
+          "eval_episodes": 50,
+          "success_rate": 0.16,
+          "timeout_rate": 0.56,
+          "return_mean": 0.103606648199446,
+          "return_std": 0.2590913412483317,
+          "length_mean": 267.3
+        },
+        {
+          "iteration": 10,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48030470914127427,
+          "return_std": 0.480826707328788,
+          "length_mean": 15.8
+        },
+        {
+          "iteration": 20,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5066371191135733,
+          "return_std": 0.4868303429778189,
+          "length_mean": 11.94
+        },
+        {
+          "iteration": 30,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48863157894736836,
+          "return_std": 0.48866040683594986,
+          "length_mean": 9.92
+        },
+        {
+          "iteration": 40,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48833240997229915,
+          "return_std": 0.48836394347663536,
+          "length_mean": 9.66
+        },
+        {
+          "iteration": 50,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48838227146814406,
+          "return_std": 0.4884132520014447,
+          "length_mean": 9.8
+        },
+        {
+          "iteration": 60,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.46898060941828257,
+          "return_std": 0.48817454380379,
+          "length_mean": 9.78
+        },
+        {
+          "iteration": 70,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5080831024930748,
+          "return_std": 0.4882566382794347,
+          "length_mean": 9.02
+        },
+        {
+          "iteration": 80,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4901772853185596,
+          "return_std": 0.49020044342642216,
+          "length_mean": 8.48
+        },
+        {
+          "iteration": 90,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.509180055401662,
+          "return_std": 0.48923408787716444,
+          "length_mean": 8.66
+        },
+        {
+          "iteration": 100,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4904764542936288,
+          "return_std": 0.490499233334096,
+          "length_mean": 8.44
+        },
+        {
+          "iteration": 110,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5092797783933518,
+          "return_std": 0.4893364000508543,
+          "length_mean": 8.76
+        },
+        {
+          "iteration": 120,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5279335180055401,
+          "return_std": 0.48730712508670115,
+          "length_mean": 10.0
+        },
+        {
+          "iteration": 130,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5077839335180054,
+          "return_std": 0.48790026659682895,
+          "length_mean": 9.64
+        },
+        {
+          "iteration": 140,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49032686980609413,
+          "return_std": 0.4903482361385816,
+          "length_mean": 8.54
+        },
+        {
+          "iteration": 150,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4909750692520776,
+          "return_std": 0.49099666055313956,
+          "length_mean": 8.04
+        },
+        {
+          "iteration": 160,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49127423822714683,
+          "return_std": 0.49130460121077435,
+          "length_mean": 7.9
+        },
+        {
+          "iteration": 170,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.47117451523545706,
+          "return_std": 0.49044156473041806,
+          "length_mean": 7.56
+        },
+        {
+          "iteration": 180,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49147368421052634,
+          "return_std": 0.4914920668190619,
+          "length_mean": 7.56
+        },
+        {
+          "iteration": 190,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49137396121883653,
+          "return_std": 0.49139519095346346,
+          "length_mean": 7.2
+        },
+        {
+          "iteration": 200,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49187257617728536,
+          "return_std": 0.49188928606259824,
+          "length_mean": 7.12
+        },
+        {
+          "iteration": 210,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49172299168975075,
+          "return_std": 0.4917398987808883,
+          "length_mean": 7.24
+        },
+        {
+          "iteration": 220,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.491573407202216,
+          "return_std": 0.4915878918800769,
+          "length_mean": 7.34
+        },
+        {
+          "iteration": 230,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4915734072022161,
+          "return_std": 0.49159143206464984,
+          "length_mean": 7.52
+        },
+        {
+          "iteration": 240,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49167313019390574,
+          "return_std": 0.4916879759946124,
+          "length_mean": 7.4
+        },
+        {
+          "iteration": 250,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4917728531855956,
+          "return_std": 0.4917897888946518,
+          "length_mean": 7.14
+        },
+        {
+          "iteration": 260,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49182271468144045,
+          "return_std": 0.4918384051823654,
+          "length_mean": 7.28
+        },
+        {
+          "iteration": 270,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49192243767313015,
+          "return_std": 0.4919373770268228,
+          "length_mean": 7.12
+        },
+        {
+          "iteration": 280,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49187257617728525,
+          "return_std": 0.49188776976248544,
+          "length_mean": 7.1
+        },
+        {
+          "iteration": 290,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49172299168975075,
+          "return_std": 0.4917396459877539,
+          "length_mean": 7.18
+        },
+        {
+          "iteration": 300,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49182271468144045,
+          "return_std": 0.4918401743762603,
+          "length_mean": 7.62
+        },
+        {
+          "iteration": 310,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4918227146814404,
+          "return_std": 0.4918381524398609,
+          "length_mean": 7.14
+        },
+        {
+          "iteration": 320,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49182271468144045,
+          "return_std": 0.4918378996972265,
+          "length_mean": 7.1
+        },
+        {
+          "iteration": 330,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4910249307479224,
+          "return_std": 0.49108138244035066,
+          "length_mean": 7.58
+        },
+        {
+          "iteration": 340,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4913240997229916,
+          "return_std": 0.49135179814902386,
+          "length_mean": 7.52
+        },
+        {
+          "iteration": 350,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49187257617728536,
+          "return_std": 0.49188928606259824,
+          "length_mean": 7.1
+        },
+        {
+          "iteration": 360,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49162326869806094,
+          "return_std": 0.49164185810216293,
+          "length_mean": 7.24
+        },
+        {
+          "iteration": 370,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49192243767313015,
+          "return_std": 0.4919373770268228,
+          "length_mean": 7.1
+        },
+        {
+          "iteration": 380,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49187257617728525,
+          "return_std": 0.4918880224794955,
+          "length_mean": 7.14
+        },
+        {
+          "iteration": 390,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49177285318559555,
+          "return_std": 0.49178852505590476,
+          "length_mean": 7.28
+        },
+        {
+          "iteration": 400,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49152354570637125,
+          "return_std": 0.491545800784546,
+          "length_mean": 7.24
+        },
+        {
+          "iteration": 410,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.47142382271468136,
+          "return_std": 0.490700240667845,
+          "length_mean": 7.78
+        },
+        {
+          "iteration": 420,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49162326869806094,
+          "return_std": 0.49164109957113733,
+          "length_mean": 7.46
+        },
+        {
+          "iteration": 430,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49177285318559555,
+          "return_std": 0.491788777823914,
+          "length_mean": 7.34
+        },
+        {
+          "iteration": 440,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49137396121883653,
+          "return_std": 0.4914005033031645,
+          "length_mean": 7.34
+        },
+        {
+          "iteration": 450,
+          "eval_episodes": 50,
+          "success_rate": 0.56,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5488808864265928,
+          "return_std": 0.48660281832943375,
+          "length_mean": 7.76
+        },
+        {
+          "iteration": 460,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5282825484764543,
+          "return_std": 0.4877837793535516,
+          "length_mean": 9.08
+        },
+        {
+          "iteration": 470,
+          "eval_episodes": 50,
+          "success_rate": 0.56,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5403545706371191,
+          "return_std": 0.48191881929481917,
+          "length_mean": 11.4
+        },
+        {
+          "iteration": 480,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5309252077562326,
+          "return_std": 0.4900396853574107,
+          "length_mean": 8.04
+        },
+        {
+          "iteration": 490,
+          "eval_episodes": 50,
+          "success_rate": 0.56,
+          "timeout_rate": 0.0,
+          "return_mean": 0.54997783933518,
+          "return_std": 0.48753462632208516,
+          "length_mean": 7.44
+        },
+        {
+          "iteration": 500,
+          "eval_episodes": 50,
+          "success_rate": 0.56,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5492299168975069,
+          "return_std": 0.4868976985316465,
+          "length_mean": 7.76
+        },
+        {
+          "iteration": 510,
+          "eval_episodes": 50,
+          "success_rate": 0.58,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5675346260387811,
+          "return_std": 0.4830285115784315,
+          "length_mean": 8.42
+        },
+        {
+          "iteration": 520,
+          "eval_episodes": 50,
+          "success_rate": 0.62,
+          "timeout_rate": 0.0,
+          "return_mean": 0.6075346260387813,
+          "return_std": 0.47567351473841657,
+          "length_mean": 7.92
+        },
+        {
+          "iteration": 530,
+          "eval_episodes": 50,
+          "success_rate": 0.58,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5693296398891966,
+          "return_std": 0.4845121433623243,
+          "length_mean": 7.34
+        },
+        {
+          "iteration": 540,
+          "eval_episodes": 50,
+          "success_rate": 0.62,
+          "timeout_rate": 0.0,
+          "return_mean": 0.6076842105263158,
+          "return_std": 0.4758066906261801,
+          "length_mean": 7.74
+        },
+        {
+          "iteration": 550,
+          "eval_episodes": 50,
+          "success_rate": 0.7,
+          "timeout_rate": 0.0,
+          "return_mean": 0.6766149584487535,
+          "return_std": 0.44391678964490205,
+          "length_mean": 11.8
+        },
+        {
+          "iteration": 560,
+          "eval_episodes": 50,
+          "success_rate": 0.84,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7958227146814404,
+          "return_std": 0.3492506267810187,
+          "length_mean": 19.38
+        },
+        {
+          "iteration": 570,
+          "eval_episodes": 50,
+          "success_rate": 0.84,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7914847645429361,
+          "return_std": 0.34839560080916326,
+          "length_mean": 20.98
+        },
+        {
+          "iteration": 580,
+          "eval_episodes": 50,
+          "success_rate": 0.84,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8005096952908588,
+          "return_std": 0.35067004588548756,
+          "length_mean": 17.14
+        },
+        {
+          "iteration": 590,
+          "eval_episodes": 50,
+          "success_rate": 0.86,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8240000000000001,
+          "return_std": 0.3335756880387945,
+          "length_mean": 16.7
+        },
+        {
+          "iteration": 600,
+          "eval_episodes": 50,
+          "success_rate": 0.86,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8222049861495845,
+          "return_std": 0.332911553063453,
+          "length_mean": 16.96
+        },
+        {
+          "iteration": 610,
+          "eval_episodes": 50,
+          "success_rate": 0.84,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8004099722991691,
+          "return_std": 0.35044271839905883,
+          "length_mean": 17.56
+        },
+        {
+          "iteration": 620,
+          "eval_episodes": 50,
+          "success_rate": 0.86,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8220055401662052,
+          "return_std": 0.33274070877915973,
+          "length_mean": 16.52
+        },
+        {
+          "iteration": 630,
+          "eval_episodes": 50,
+          "success_rate": 0.84,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8009584487534624,
+          "return_std": 0.3507405288062379,
+          "length_mean": 18.18
+        },
+        {
+          "iteration": 640,
+          "eval_episodes": 50,
+          "success_rate": 0.8,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7628531855955678,
+          "return_std": 0.3824075041983278,
+          "length_mean": 18.12
+        },
+        {
+          "iteration": 650,
+          "eval_episodes": 50,
+          "success_rate": 0.8,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7615069252077563,
+          "return_std": 0.38144177880541963,
+          "length_mean": 25.26
+        },
+        {
+          "iteration": 660,
+          "eval_episodes": 50,
+          "success_rate": 0.78,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7431024930747923,
+          "return_std": 0.39533555412009164,
+          "length_mean": 19.56
+        },
+        {
+          "iteration": 670,
+          "eval_episodes": 50,
+          "success_rate": 0.82,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7833019390581717,
+          "return_std": 0.3677982115306201,
+          "length_mean": 18.54
+        },
+        {
+          "iteration": 680,
+          "eval_episodes": 50,
+          "success_rate": 0.88,
+          "timeout_rate": 0.0,
+          "return_mean": 0.838814404432133,
+          "return_std": 0.3110738135936588,
+          "length_mean": 18.06
+        },
+        {
+          "iteration": 690,
+          "eval_episodes": 50,
+          "success_rate": 0.88,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8342770083102493,
+          "return_std": 0.30901831275141844,
+          "length_mean": 29.44
+        },
+        {
+          "iteration": 700,
+          "eval_episodes": 50,
+          "success_rate": 0.84,
+          "timeout_rate": 0.02,
+          "return_mean": 0.7946260387811634,
+          "return_std": 0.3478103062244593,
+          "length_mean": 33.46
+        },
+        {
+          "iteration": 710,
+          "eval_episodes": 50,
+          "success_rate": 0.88,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8286426592797784,
+          "return_std": 0.30777736537670225,
+          "length_mean": 30.52
+        },
+        {
+          "iteration": 720,
+          "eval_episodes": 50,
+          "success_rate": 0.84,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7944265927977839,
+          "return_std": 0.34778969378695906,
+          "length_mean": 20.16
+        },
+        {
+          "iteration": 730,
+          "eval_episodes": 50,
+          "success_rate": 0.94,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8863988919667589,
+          "return_std": 0.22526453577863753,
+          "length_mean": 23.26
+        },
+        {
+          "iteration": 740,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.941612188365651,
+          "return_std": 0.027369783069723482,
+          "length_mean": 23.42
+        },
+        {
+          "iteration": 750,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.944354570637119,
+          "return_std": 0.025002644253617683,
+          "length_mean": 22.32
+        },
+        {
+          "iteration": 760,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9442548476454293,
+          "return_std": 0.02460330113888023,
+          "length_mean": 22.36
+        },
+        {
+          "iteration": 770,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9431578947368422,
+          "return_std": 0.02432505224572946,
+          "length_mean": 22.8
+        },
+        {
+          "iteration": 780,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9263490304709141,
+          "return_std": 0.13459416924971945,
+          "length_mean": 21.7
+        },
+        {
+          "iteration": 790,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9241551246537395,
+          "return_std": 0.1341415767017871,
+          "length_mean": 26.36
+        },
+        {
+          "iteration": 800,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9253019390581717,
+          "return_std": 0.1344488147587258,
+          "length_mean": 22.62
+        },
+        {
+          "iteration": 810,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9242548476454293,
+          "return_std": 0.13433308481206432,
+          "length_mean": 23.64
+        },
+        {
+          "iteration": 820,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9207645429362882,
+          "return_std": 0.13379087254076083,
+          "length_mean": 23.94
+        },
+        {
+          "iteration": 830,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9247036011080333,
+          "return_std": 0.13432950356422857,
+          "length_mean": 22.6
+        },
+        {
+          "iteration": 840,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9241551246537395,
+          "return_std": 0.13521135144742735,
+          "length_mean": 22.58
+        },
+        {
+          "iteration": 850,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9467479224376731,
+          "return_std": 0.024588138935268337,
+          "length_mean": 21.36
+        },
+        {
+          "iteration": 860,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.950786703601108,
+          "return_std": 0.01882104705422959,
+          "length_mean": 19.74
+        },
+        {
+          "iteration": 870,
+          "eval_episodes": 50,
+          "success_rate": 0.94,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8971689750692521,
+          "return_std": 0.22734080824859984,
+          "length_mean": 18.08
+        },
+        {
+          "iteration": 880,
+          "eval_episodes": 50,
+          "success_rate": 0.92,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8716842105263157,
+          "return_std": 0.259508169941415,
+          "length_mean": 20.8
+        },
+        {
+          "iteration": 890,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9538282548476453,
+          "return_std": 0.016710967078069128,
+          "length_mean": 18.52
+        },
+        {
+          "iteration": 900,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9561218836565095,
+          "return_std": 0.015743920291924927,
+          "length_mean": 17.6
+        },
+        {
+          "iteration": 910,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.013396792048289186,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 920,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9587146814404433,
+          "return_std": 0.01263533986874628,
+          "length_mean": 16.56
+        },
+        {
+          "iteration": 930,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9579168975069252,
+          "return_std": 0.0128352439491957,
+          "length_mean": 16.88
+        },
+        {
+          "iteration": 940,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9581163434903048,
+          "return_std": 0.01234512638540271,
+          "length_mean": 16.8
+        },
+        {
+          "iteration": 950,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9298393351800555,
+          "return_std": 0.14338405075692345,
+          "length_mean": 20.36
+        },
+        {
+          "iteration": 960,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9589639889196677,
+          "return_std": 0.011717027162705219,
+          "length_mean": 16.46
+        },
+        {
+          "iteration": 970,
+          "eval_episodes": 50,
+          "success_rate": 0.9,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8338337950138505,
+          "return_std": 0.2906243245436217,
+          "length_mean": 28.9
+        },
+        {
+          "iteration": 980,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9530803324099724,
+          "return_std": 0.017406518939001157,
+          "length_mean": 18.82
+        },
+        {
+          "iteration": 990,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9591634349030472,
+          "return_std": 0.011607023708216974,
+          "length_mean": 16.38
+        },
+        {
+          "iteration": 999,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9577673130193908,
+          "return_std": 0.012489384078732369,
+          "length_mean": 16.94
+        }
+      ]
+    },
+    {
+      "seed": 15,
+      "iteration": 999,
+      "success_rate": 1.0,
+      "return_mean": 0.9573684210526315,
+      "return_std_episodes": 0.015491205257191566,
+      "timeout_rate": 0.0,
+      "length_mean": 17.1,
+      "argmax_success_rate": 1.0,
+      "argmax_return_mean": 0.9573684210526315,
+      "argmax_return_std_episodes": 0.015491205257191566,
+      "argmax_timeout_rate": 0.0,
+      "argmax_length_mean": 17.1,
+      "curve_deterministic": false,
+      "path": "agents/pretrained_model_GRU/hpo/best_trial/ppo_15_GRU_MiniGrid-MemoryS17Random-v0.pth",
+      "eval_history": [
+        {
+          "iteration": 0,
+          "eval_episodes": 50,
+          "success_rate": 0.28,
+          "timeout_rate": 0.34,
+          "return_mean": 0.21034349030470914,
+          "return_std": 0.35312115260214505,
+          "length_mean": 192.32
+        },
+        {
+          "iteration": 10,
+          "eval_episodes": 50,
+          "success_rate": 0.46,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4412520775623269,
+          "return_std": 0.4785569394711127,
+          "length_mean": 19.66
+        },
+        {
+          "iteration": 20,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5011523545706372,
+          "return_std": 0.4816573863877671,
+          "length_mean": 14.2
+        },
+        {
+          "iteration": 30,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5238448753462605,
+          "return_std": 0.48378122617396235,
+          "length_mean": 13.5
+        },
+        {
+          "iteration": 40,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4695290858725762,
+          "return_std": 0.4887721387991869,
+          "length_mean": 9.44
+        },
+        {
+          "iteration": 50,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4710249307479225,
+          "return_std": 0.4902783222159211,
+          "length_mean": 8.38
+        },
+        {
+          "iteration": 60,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5042437673130193,
+          "return_std": 0.4861851963186036,
+          "length_mean": 10.38
+        },
+        {
+          "iteration": 70,
+          "eval_episodes": 50,
+          "success_rate": 0.46,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4484819944598338,
+          "return_std": 0.4860421675490237,
+          "length_mean": 11.02
+        },
+        {
+          "iteration": 80,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4702770083102493,
+          "return_std": 0.4895286665665852,
+          "length_mean": 8.98
+        },
+        {
+          "iteration": 90,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4894293628808864,
+          "return_std": 0.48945174365730176,
+          "length_mean": 9.08
+        },
+        {
+          "iteration": 100,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5297285318559556,
+          "return_std": 0.48893869036153337,
+          "length_mean": 8.38
+        },
+        {
+          "iteration": 110,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.47087534626038774,
+          "return_std": 0.4901177696116547,
+          "length_mean": 8.34
+        },
+        {
+          "iteration": 120,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48947922437673136,
+          "return_std": 0.4895005769184005,
+          "length_mean": 8.96
+        },
+        {
+          "iteration": 130,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49087534626038776,
+          "return_std": 0.4908907226491597,
+          "length_mean": 8.2
+        },
+        {
+          "iteration": 140,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4907257617728532,
+          "return_std": 0.4907480732942867,
+          "length_mean": 7.98
+        },
+        {
+          "iteration": 150,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4906759002770083,
+          "return_std": 0.4906994908456898,
+          "length_mean": 7.9
+        },
+        {
+          "iteration": 160,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4902271468144044,
+          "return_std": 0.4902620575216768,
+          "length_mean": 8.54
+        },
+        {
+          "iteration": 170,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4903268698060942,
+          "return_std": 0.49034341941496395,
+          "length_mean": 8.96
+        },
+        {
+          "iteration": 180,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4909750692520775,
+          "return_std": 0.4909877993225975,
+          "length_mean": 8.16
+        },
+        {
+          "iteration": 190,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4909252077562327,
+          "return_std": 0.4909405319423968,
+          "length_mean": 8.46
+        },
+        {
+          "iteration": 200,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4705761772853186,
+          "return_std": 0.48981159700142457,
+          "length_mean": 8.18
+        },
+        {
+          "iteration": 210,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4714736842105263,
+          "return_std": 0.49074216674163673,
+          "length_mean": 7.84
+        },
+        {
+          "iteration": 220,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4906759002770083,
+          "return_std": 0.4906911309156557,
+          "length_mean": 8.02
+        },
+        {
+          "iteration": 230,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49142382271468144,
+          "return_std": 0.4914393337110852,
+          "length_mean": 7.74
+        },
+        {
+          "iteration": 240,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49147368421052634,
+          "return_std": 0.4914948489371153,
+          "length_mean": 7.9
+        },
+        {
+          "iteration": 250,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4912742382271468,
+          "return_std": 0.4912949864689849,
+          "length_mean": 7.56
+        },
+        {
+          "iteration": 260,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49172299168975075,
+          "return_std": 0.49173939319448945,
+          "length_mean": 7.3
+        },
+        {
+          "iteration": 270,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4917229916897506,
+          "return_std": 0.49173939319448945,
+          "length_mean": 7.18
+        },
+        {
+          "iteration": 280,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.49172299168975075,
+          "return_std": 0.4917404043667673,
+          "length_mean": 7.24
+        },
+        {
+          "iteration": 290,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.491573407202216,
+          "return_std": 0.4915894091051585,
+          "length_mean": 7.32
+        },
+        {
+          "iteration": 300,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4912243767313019,
+          "return_std": 0.4912409467136756,
+          "length_mean": 7.48
+        },
+        {
+          "iteration": 310,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5113739612188365,
+          "return_std": 0.49132889386997075,
+          "length_mean": 7.28
+        },
+        {
+          "iteration": 320,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5111246537396121,
+          "return_std": 0.4910895649751633,
+          "length_mean": 7.22
+        },
+        {
+          "iteration": 330,
+          "eval_episodes": 50,
+          "success_rate": 0.58,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5697285318559556,
+          "return_std": 0.48483513546949436,
+          "length_mean": 7.44
+        },
+        {
+          "iteration": 340,
+          "eval_episodes": 50,
+          "success_rate": 0.64,
+          "timeout_rate": 0.0,
+          "return_mean": 0.6282825484764543,
+          "return_std": 0.4712397709001336,
+          "length_mean": 7.22
+        },
+        {
+          "iteration": 350,
+          "eval_episodes": 50,
+          "success_rate": 0.62,
+          "timeout_rate": 0.0,
+          "return_mean": 0.6075346260387812,
+          "return_std": 0.475742239939018,
+          "length_mean": 7.88
+        },
+        {
+          "iteration": 360,
+          "eval_episodes": 50,
+          "success_rate": 0.86,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8254958448753462,
+          "return_std": 0.3339112311792238,
+          "length_mean": 14.84
+        },
+        {
+          "iteration": 370,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.950038781163435,
+          "return_std": 0.020271994294022995,
+          "length_mean": 20.04
+        },
+        {
+          "iteration": 380,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.927994459833795,
+          "return_std": 0.13489446251844375,
+          "length_mean": 21.16
+        },
+        {
+          "iteration": 390,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9515844875346261,
+          "return_std": 0.022001805258360187,
+          "length_mean": 19.42
+        },
+        {
+          "iteration": 400,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9537285318559557,
+          "return_std": 0.015784609252139127,
+          "length_mean": 18.56
+        },
+        {
+          "iteration": 410,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9548753462603878,
+          "return_std": 0.014280335891919906,
+          "length_mean": 18.1
+        },
+        {
+          "iteration": 420,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9546759002770083,
+          "return_std": 0.016803324099722985,
+          "length_mean": 18.18
+        },
+        {
+          "iteration": 430,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9554736842105264,
+          "return_std": 0.014966839751782056,
+          "length_mean": 17.86
+        },
+        {
+          "iteration": 440,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9561218836565096,
+          "return_std": 0.014085321000158425,
+          "length_mean": 17.6
+        },
+        {
+          "iteration": 450,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9560720221606648,
+          "return_std": 0.014346686938966872,
+          "length_mean": 17.62
+        },
+        {
+          "iteration": 460,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9561218836565096,
+          "return_std": 0.014129379040193103,
+          "length_mean": 17.6
+        },
+        {
+          "iteration": 470,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9562714681440443,
+          "return_std": 0.014122427012691017,
+          "length_mean": 17.54
+        },
+        {
+          "iteration": 480,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9558725761772854,
+          "return_std": 0.014496324192904109,
+          "length_mean": 17.7
+        },
+        {
+          "iteration": 490,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9560720221606647,
+          "return_std": 0.014277201795534438,
+          "length_mean": 17.62
+        },
+        {
+          "iteration": 500,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9561717451523546,
+          "return_std": 0.014103754002037635,
+          "length_mean": 17.58
+        },
+        {
+          "iteration": 510,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9569196675900277,
+          "return_std": 0.015132286284550796,
+          "length_mean": 17.28
+        },
+        {
+          "iteration": 520,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566204986149585,
+          "return_std": 0.014950136194469206,
+          "length_mean": 17.4
+        },
+        {
+          "iteration": 530,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 540,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9376675900277007,
+          "return_std": 0.134798397355646,
+          "length_mean": 17.12
+        },
+        {
+          "iteration": 550,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 560,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9572686980609418,
+          "return_std": 0.015585287125731002,
+          "length_mean": 17.14
+        },
+        {
+          "iteration": 570,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573185595567867,
+          "return_std": 0.015510371841318473,
+          "length_mean": 17.12
+        },
+        {
+          "iteration": 580,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 590,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9380166204986149,
+          "return_std": 0.13488692117238338,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 600,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 610,
+          "eval_episodes": 50,
+          "success_rate": 0.92,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8813573407202216,
+          "return_std": 0.26034156629474,
+          "length_mean": 17.18
+        },
+        {
+          "iteration": 620,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9571191135734071,
+          "return_std": 0.015712305962249155,
+          "length_mean": 17.2
+        },
+        {
+          "iteration": 630,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9570692520775624,
+          "return_std": 0.015864185393665416,
+          "length_mean": 17.22
+        },
+        {
+          "iteration": 640,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 650,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9576675900277009,
+          "return_std": 0.01592050312387982,
+          "length_mean": 16.98
+        },
+        {
+          "iteration": 660,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9582659279778395,
+          "return_std": 0.015187798538743693,
+          "length_mean": 16.74
+        },
+        {
+          "iteration": 670,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9572686980609418,
+          "return_std": 0.015505321861334838,
+          "length_mean": 17.14
+        },
+        {
+          "iteration": 680,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 690,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 700,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9561717451523546,
+          "return_std": 0.017466404419308308,
+          "length_mean": 17.58
+        },
+        {
+          "iteration": 710,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 720,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 730,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 740,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 750,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9379667590027699,
+          "return_std": 0.13487551875754525,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 760,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 770,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 780,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9568698060941828,
+          "return_std": 0.015555268410887368,
+          "length_mean": 17.3
+        },
+        {
+          "iteration": 790,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 800,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9380664819944599,
+          "return_std": 0.13489738269291318,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 810,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 820,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 830,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 840,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573185595567867,
+          "return_std": 0.015510371841318473,
+          "length_mean": 17.12
+        },
+        {
+          "iteration": 850,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 860,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 870,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 880,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 890,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 900,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 910,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 920,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 930,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 940,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 950,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9568698060941827,
+          "return_std": 0.016410796195843888,
+          "length_mean": 17.3
+        },
+        {
+          "iteration": 960,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 970,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 980,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573185595567867,
+          "return_std": 0.015430018337256653,
+          "length_mean": 17.12
+        },
+        {
+          "iteration": 990,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 999,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573684210526315,
+          "return_std": 0.015491205257191566,
+          "length_mean": 17.1
+        }
+      ]
+    },
+    {
+      "seed": 12,
+      "iteration": 999,
+      "success_rate": 1.0,
+      "return_mean": 0.9564709141274238,
+      "return_std_episodes": 0.015141894529531219,
+      "timeout_rate": 0.0,
+      "length_mean": 17.46,
+      "argmax_success_rate": 1.0,
+      "argmax_return_mean": 0.9564709141274238,
+      "argmax_return_std_episodes": 0.015141894529531219,
+      "argmax_timeout_rate": 0.0,
+      "argmax_length_mean": 17.46,
+      "curve_deterministic": false,
+      "path": "agents/pretrained_model_GRU/hpo/best_trial/ppo_12_GRU_MiniGrid-MemoryS17Random-v0.pth",
+      "eval_history": [
+        {
+          "iteration": 0,
+          "eval_episodes": 50,
+          "success_rate": 0.22,
+          "timeout_rate": 0.58,
+          "return_mean": 0.14445983379501384,
+          "return_std": 0.29099849036131,
+          "length_mean": 265.58
+        },
+        {
+          "iteration": 10,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4881385041551246,
+          "return_std": 0.471175269583915,
+          "length_mean": 22.98
+        },
+        {
+          "iteration": 20,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4596066481994459,
+          "return_std": 0.4785666653418179,
+          "length_mean": 18.36
+        },
+        {
+          "iteration": 30,
+          "eval_episodes": 50,
+          "success_rate": 0.46,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4436454293628808,
+          "return_std": 0.4807827420550494,
+          "length_mean": 12.22
+        },
+        {
+          "iteration": 40,
+          "eval_episodes": 50,
+          "success_rate": 0.36,
+          "timeout_rate": 0.0,
+          "return_mean": 0.34838227146814404,
+          "return_std": 0.4646583226288304,
+          "length_mean": 11.72
+        },
+        {
+          "iteration": 50,
+          "eval_episodes": 50,
+          "success_rate": 0.46,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4448421052631579,
+          "return_std": 0.4822228218220811,
+          "length_mean": 12.94
+        },
+        {
+          "iteration": 60,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.46748476454293625,
+          "return_std": 0.4866218472763081,
+          "length_mean": 11.72
+        },
+        {
+          "iteration": 70,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.46947922437673134,
+          "return_std": 0.48867795517652257,
+          "length_mean": 9.4
+        },
+        {
+          "iteration": 80,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.46883102493074785,
+          "return_std": 0.48806055817654687,
+          "length_mean": 9.14
+        },
+        {
+          "iteration": 90,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4879335180055402,
+          "return_std": 0.48820520540861806,
+          "length_mean": 9.5
+        },
+        {
+          "iteration": 100,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.47152354570637117,
+          "return_std": 0.4907942154791617,
+          "length_mean": 8.78
+        },
+        {
+          "iteration": 110,
+          "eval_episodes": 50,
+          "success_rate": 0.56,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5475346260387811,
+          "return_std": 0.4853762282487945,
+          "length_mean": 9.88
+        },
+        {
+          "iteration": 120,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.47117451523545706,
+          "return_std": 0.4904392835645711,
+          "length_mean": 9.74
+        },
+        {
+          "iteration": 130,
+          "eval_episodes": 50,
+          "success_rate": 0.46,
+          "timeout_rate": 0.0,
+          "return_mean": 0.45087534626038783,
+          "return_std": 0.48853465056509177,
+          "length_mean": 10.26
+        },
+        {
+          "iteration": 140,
+          "eval_episodes": 50,
+          "success_rate": 0.62,
+          "timeout_rate": 0.0,
+          "return_mean": 0.6075844875346261,
+          "return_std": 0.47570458922413134,
+          "length_mean": 8.68
+        },
+        {
+          "iteration": 150,
+          "eval_episodes": 50,
+          "success_rate": 0.56,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5492797783933517,
+          "return_std": 0.4869319847840413,
+          "length_mean": 8.7
+        },
+        {
+          "iteration": 160,
+          "eval_episodes": 50,
+          "success_rate": 0.44,
+          "timeout_rate": 0.0,
+          "return_mean": 0.43142382271468144,
+          "return_std": 0.48673486139848654,
+          "length_mean": 7.98
+        },
+        {
+          "iteration": 170,
+          "eval_episodes": 50,
+          "success_rate": 0.56,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5490304709141275,
+          "return_std": 0.4866876898185394,
+          "length_mean": 8.08
+        },
+        {
+          "iteration": 180,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5101274238227147,
+          "return_std": 0.4901389430097351,
+          "length_mean": 8.02
+        },
+        {
+          "iteration": 190,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4901772853185596,
+          "return_std": 0.49020171135956353,
+          "length_mean": 7.84
+        },
+        {
+          "iteration": 200,
+          "eval_episodes": 50,
+          "success_rate": 0.58,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5686315789473683,
+          "return_std": 0.4839131028711278,
+          "length_mean": 8.12
+        },
+        {
+          "iteration": 210,
+          "eval_episodes": 50,
+          "success_rate": 0.56,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5489806094182825,
+          "return_std": 0.486658214057429,
+          "length_mean": 8.06
+        },
+        {
+          "iteration": 220,
+          "eval_episodes": 50,
+          "success_rate": 0.6,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5865373961218836,
+          "return_std": 0.47897715429939164,
+          "length_mean": 8.58
+        },
+        {
+          "iteration": 230,
+          "eval_episodes": 50,
+          "success_rate": 0.68,
+          "timeout_rate": 0.0,
+          "return_mean": 0.6659889196675901,
+          "return_std": 0.45695639901969265,
+          "length_mean": 8.3
+        },
+        {
+          "iteration": 240,
+          "eval_episodes": 50,
+          "success_rate": 0.58,
+          "timeout_rate": 0.0,
+          "return_mean": 0.566786703601108,
+          "return_std": 0.4824159466705195,
+          "length_mean": 8.9
+        },
+        {
+          "iteration": 250,
+          "eval_episodes": 50,
+          "success_rate": 0.66,
+          "timeout_rate": 0.0,
+          "return_mean": 0.6268421052631579,
+          "return_std": 0.4506496284159223,
+          "length_mean": 18.8
+        },
+        {
+          "iteration": 260,
+          "eval_episodes": 50,
+          "success_rate": 0.82,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7669972299168974,
+          "return_std": 0.36038748378070556,
+          "length_mean": 24.04
+        },
+        {
+          "iteration": 270,
+          "eval_episodes": 50,
+          "success_rate": 0.8,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7565207756232687,
+          "return_std": 0.37871828928245205,
+          "length_mean": 20.4
+        },
+        {
+          "iteration": 280,
+          "eval_episodes": 50,
+          "success_rate": 0.94,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8953739612188366,
+          "return_std": 0.22662840139118626,
+          "length_mean": 19.4
+        },
+        {
+          "iteration": 290,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9332299168975071,
+          "return_std": 0.13404016196157265,
+          "length_mean": 19.04
+        },
+        {
+          "iteration": 300,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9507368421052631,
+          "return_std": 0.035234688749267266,
+          "length_mean": 19.76
+        },
+        {
+          "iteration": 310,
+          "eval_episodes": 50,
+          "success_rate": 0.96,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9166703601108032,
+          "return_std": 0.18766199588767862,
+          "length_mean": 18.24
+        },
+        {
+          "iteration": 320,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9545263157894737,
+          "return_std": 0.015004582598156898,
+          "length_mean": 18.24
+        },
+        {
+          "iteration": 330,
+          "eval_episodes": 50,
+          "success_rate": 0.74,
+          "timeout_rate": 0.0,
+          "return_mean": 0.6948753462603879,
+          "return_std": 0.4148402438625771,
+          "length_mean": 22.64
+        },
+        {
+          "iteration": 340,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9551246537396122,
+          "return_std": 0.013772969069517804,
+          "length_mean": 18.0
+        },
+        {
+          "iteration": 350,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9552243767313019,
+          "return_std": 0.013862571950497175,
+          "length_mean": 17.96
+        },
+        {
+          "iteration": 360,
+          "eval_episodes": 50,
+          "success_rate": 0.94,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8974681440443213,
+          "return_std": 0.22714832112195368,
+          "length_mean": 17.72
+        },
+        {
+          "iteration": 370,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9513351800554019,
+          "return_std": 0.0212847273311104,
+          "length_mean": 19.52
+        },
+        {
+          "iteration": 380,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9553739612188366,
+          "return_std": 0.013963444618777172,
+          "length_mean": 17.9
+        },
+        {
+          "iteration": 390,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9553240997229918,
+          "return_std": 0.013762495464588496,
+          "length_mean": 17.92
+        },
+        {
+          "iteration": 400,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9544265927977839,
+          "return_std": 0.014382600118316451,
+          "length_mean": 18.28
+        },
+        {
+          "iteration": 410,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9554736842105263,
+          "return_std": 0.013916717759129973,
+          "length_mean": 17.86
+        },
+        {
+          "iteration": 420,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9367202216066483,
+          "return_std": 0.13452593841332033,
+          "length_mean": 17.6
+        },
+        {
+          "iteration": 430,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9372188365650971,
+          "return_std": 0.13473906043151263,
+          "length_mean": 17.5
+        },
+        {
+          "iteration": 440,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9563711911357342,
+          "return_std": 0.01501857721179627,
+          "length_mean": 17.5
+        },
+        {
+          "iteration": 450,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564210526315791,
+          "return_std": 0.015207674492310188,
+          "length_mean": 17.48
+        },
+        {
+          "iteration": 460,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 470,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564210526315791,
+          "return_std": 0.015150348026581434,
+          "length_mean": 17.48
+        },
+        {
+          "iteration": 480,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 490,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9563711911357341,
+          "return_std": 0.015101120164894215,
+          "length_mean": 17.5
+        },
+        {
+          "iteration": 500,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 510,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 520,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 530,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564210526315791,
+          "return_std": 0.015092803821325513,
+          "length_mean": 17.48
+        },
+        {
+          "iteration": 540,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 550,
+          "eval_episodes": 50,
+          "success_rate": 0.96,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9176177285318559,
+          "return_std": 0.1878943264135989,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 560,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 570,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 580,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9362216066481994,
+          "return_std": 0.13453441885417808,
+          "length_mean": 17.7
+        },
+        {
+          "iteration": 590,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9563213296398893,
+          "return_std": 0.015337901860837532,
+          "length_mean": 17.52
+        },
+        {
+          "iteration": 600,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 610,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 620,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 630,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9563711911357341,
+          "return_std": 0.015264867106213264,
+          "length_mean": 17.5
+        },
+        {
+          "iteration": 640,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 650,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 660,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9359224376731302,
+          "return_std": 0.13480593340805125,
+          "length_mean": 17.9
+        },
+        {
+          "iteration": 670,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 680,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 690,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 700,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 710,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 720,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9562714681440444,
+          "return_std": 0.015418493563064725,
+          "length_mean": 17.54
+        },
+        {
+          "iteration": 730,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564210526315791,
+          "return_std": 0.015076322278176476,
+          "length_mean": 17.48
+        },
+        {
+          "iteration": 740,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9563711911357341,
+          "return_std": 0.01501857721179627,
+          "length_mean": 17.5
+        },
+        {
+          "iteration": 750,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9528808864265926,
+          "return_std": 0.018076081719215282,
+          "length_mean": 18.9
+        },
+        {
+          "iteration": 760,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9560720221606648,
+          "return_std": 0.01492425454575084,
+          "length_mean": 17.62
+        },
+        {
+          "iteration": 770,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 780,
+          "eval_episodes": 50,
+          "success_rate": 0.96,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9176675900277007,
+          "return_std": 0.18790592661551167,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 790,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 800,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 810,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 820,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 830,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9561717451523546,
+          "return_std": 0.01491758962583881,
+          "length_mean": 17.58
+        },
+        {
+          "iteration": 840,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9563711911357341,
+          "return_std": 0.015068157243917359,
+          "length_mean": 17.5
+        },
+        {
+          "iteration": 850,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 860,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 870,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564210526315791,
+          "return_std": 0.015109267386031517,
+          "length_mean": 17.48
+        },
+        {
+          "iteration": 880,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 890,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 900,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 910,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 920,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 930,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 940,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 950,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 960,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 970,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 980,
+          "eval_episodes": 50,
+          "success_rate": 0.96,
+          "timeout_rate": 0.04,
+          "return_mean": 0.9116343490304709,
+          "return_std": 0.18722670170464847,
+          "length_mean": 33.84
+        },
+        {
+          "iteration": 990,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9563711911357341,
+          "return_std": 0.015125795214300018,
+          "length_mean": 17.5
+        },
+        {
+          "iteration": 999,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.015141894529531219,
+          "length_mean": 17.46
+        }
+      ]
+    },
+    {
+      "seed": 97,
+      "iteration": 999,
+      "success_rate": 1.0,
+      "return_mean": 0.9626537396121883,
+      "return_std_episodes": 0.016351910127494058,
+      "timeout_rate": 0.0,
+      "length_mean": 14.98,
+      "argmax_success_rate": 1.0,
+      "argmax_return_mean": 0.9626537396121883,
+      "argmax_return_std_episodes": 0.016351910127494058,
+      "argmax_timeout_rate": 0.0,
+      "argmax_length_mean": 14.98,
+      "curve_deterministic": false,
+      "path": "agents/pretrained_model_GRU/hpo/best_trial/ppo_97_GRU_MiniGrid-MemoryS17Random-v0.pth",
+      "eval_history": [
+        {
+          "iteration": 0,
+          "eval_episodes": 50,
+          "success_rate": 0.22,
+          "timeout_rate": 0.5,
+          "return_mean": 0.14874792243767312,
+          "return_std": 0.3013921219328811,
+          "length_mean": 262.34
+        },
+        {
+          "iteration": 10,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4412576177285319,
+          "return_std": 0.461424879433972,
+          "length_mean": 39.18
+        },
+        {
+          "iteration": 20,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5162160664819945,
+          "return_std": 0.4769457531344629,
+          "length_mean": 17.32
+        },
+        {
+          "iteration": 30,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.494819944598338,
+          "return_std": 0.47568083599492306,
+          "length_mean": 18.78
+        },
+        {
+          "iteration": 40,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5172631578947369,
+          "return_std": 0.4783121686133071,
+          "length_mean": 14.86
+        },
+        {
+          "iteration": 50,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48618836565096957,
+          "return_std": 0.48627654665581277,
+          "length_mean": 11.52
+        },
+        {
+          "iteration": 60,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5137728531855956,
+          "return_std": 0.4747055488651918,
+          "length_mean": 17.2
+        },
+        {
+          "iteration": 70,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5231966759002771,
+          "return_std": 0.48296006315496764,
+          "length_mean": 12.4
+        },
+        {
+          "iteration": 80,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5066869806094182,
+          "return_std": 0.48686746409487186,
+          "length_mean": 12.06
+        },
+        {
+          "iteration": 90,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4884819944598338,
+          "return_std": 0.48851998161674426,
+          "length_mean": 8.5
+        },
+        {
+          "iteration": 100,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48673684210526313,
+          "return_std": 0.48679427115143437,
+          "length_mean": 9.92
+        },
+        {
+          "iteration": 110,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4876343490304709,
+          "return_std": 0.48768454557197977,
+          "length_mean": 9.02
+        },
+        {
+          "iteration": 120,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4867368421052632,
+          "return_std": 0.48679886763389085,
+          "length_mean": 9.7
+        },
+        {
+          "iteration": 130,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48788365650969534,
+          "return_std": 0.487924553871121,
+          "length_mean": 8.64
+        },
+        {
+          "iteration": 140,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4865872576177285,
+          "return_std": 0.4866499152609404,
+          "length_mean": 10.04
+        },
+        {
+          "iteration": 150,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4869362880886427,
+          "return_std": 0.48699349961983224,
+          "length_mean": 9.64
+        },
+        {
+          "iteration": 160,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48643767313019387,
+          "return_std": 0.4865121138356819,
+          "length_mean": 9.46
+        },
+        {
+          "iteration": 170,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4884321329639889,
+          "return_std": 0.48846865816130774,
+          "length_mean": 8.6
+        },
+        {
+          "iteration": 180,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48803324099723,
+          "return_std": 0.4880915668018091,
+          "length_mean": 9.0
+        },
+        {
+          "iteration": 190,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48803324099722983,
+          "return_std": 0.4880757762240245,
+          "length_mean": 8.98
+        },
+        {
+          "iteration": 200,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4866869806094183,
+          "return_std": 0.4868572428739301,
+          "length_mean": 9.46
+        },
+        {
+          "iteration": 210,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48598891966759006,
+          "return_std": 0.4863091280061854,
+          "length_mean": 9.88
+        },
+        {
+          "iteration": 220,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.506387811634349,
+          "return_std": 0.4866410421154491,
+          "length_mean": 9.6
+        },
+        {
+          "iteration": 230,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48853185595567866,
+          "return_std": 0.4885684958260792,
+          "length_mean": 8.38
+        },
+        {
+          "iteration": 240,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4874349030470914,
+          "return_std": 0.48748078511567944,
+          "length_mean": 9.44
+        },
+        {
+          "iteration": 250,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.468781163434903,
+          "return_std": 0.48797966734129666,
+          "length_mean": 8.8
+        },
+        {
+          "iteration": 260,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48823268698060945,
+          "return_std": 0.4882815898290651,
+          "length_mean": 8.82
+        },
+        {
+          "iteration": 270,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4886814404432133,
+          "return_std": 0.488718811818403,
+          "length_mean": 8.54
+        },
+        {
+          "iteration": 280,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.48813296398891964,
+          "return_std": 0.48816711793004136,
+          "length_mean": 8.6
+        },
+        {
+          "iteration": 290,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5065373961218836,
+          "return_std": 0.48671546959485257,
+          "length_mean": 9.22
+        },
+        {
+          "iteration": 300,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5065872576177286,
+          "return_std": 0.4867605265025748,
+          "length_mean": 9.22
+        },
+        {
+          "iteration": 310,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5065373961218836,
+          "return_std": 0.48678493416849333,
+          "length_mean": 9.38
+        },
+        {
+          "iteration": 320,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5087313019390582,
+          "return_std": 0.48880165012887816,
+          "length_mean": 8.58
+        },
+        {
+          "iteration": 330,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5076842105263158,
+          "return_std": 0.48782588822394024,
+          "length_mean": 8.38
+        },
+        {
+          "iteration": 340,
+          "eval_episodes": 50,
+          "success_rate": 0.58,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5643434903047091,
+          "return_std": 0.4803922523084568,
+          "length_mean": 9.6
+        },
+        {
+          "iteration": 350,
+          "eval_episodes": 50,
+          "success_rate": 0.58,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5612520775623269,
+          "return_std": 0.47784683968574115,
+          "length_mean": 11.26
+        },
+        {
+          "iteration": 360,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5175623268698061,
+          "return_std": 0.47816801895722916,
+          "length_mean": 15.06
+        },
+        {
+          "iteration": 370,
+          "eval_episodes": 50,
+          "success_rate": 0.78,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7274459833795013,
+          "return_std": 0.38855794765874524,
+          "length_mean": 23.5
+        },
+        {
+          "iteration": 380,
+          "eval_episodes": 50,
+          "success_rate": 0.82,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7782659279778393,
+          "return_std": 0.3658063642352025,
+          "length_mean": 18.88
+        },
+        {
+          "iteration": 390,
+          "eval_episodes": 50,
+          "success_rate": 0.78,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7338282548476456,
+          "return_std": 0.39105195810105464,
+          "length_mean": 20.32
+        },
+        {
+          "iteration": 400,
+          "eval_episodes": 50,
+          "success_rate": 0.76,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7165207756232688,
+          "return_std": 0.4041179926705335,
+          "length_mean": 19.64
+        },
+        {
+          "iteration": 410,
+          "eval_episodes": 50,
+          "success_rate": 0.84,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7988642659279778,
+          "return_std": 0.34968709834731115,
+          "length_mean": 18.18
+        },
+        {
+          "iteration": 420,
+          "eval_episodes": 50,
+          "success_rate": 0.78,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7419058171745152,
+          "return_std": 0.3949489755695771,
+          "length_mean": 17.28
+        },
+        {
+          "iteration": 430,
+          "eval_episodes": 50,
+          "success_rate": 0.8,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7627534626038782,
+          "return_std": 0.3821889035651121,
+          "length_mean": 16.68
+        },
+        {
+          "iteration": 440,
+          "eval_episodes": 50,
+          "success_rate": 0.78,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7406094182825486,
+          "return_std": 0.39431160649913377,
+          "length_mean": 17.8
+        },
+        {
+          "iteration": 450,
+          "eval_episodes": 50,
+          "success_rate": 0.8,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7616565096952909,
+          "return_std": 0.381817149795987,
+          "length_mean": 17.26
+        },
+        {
+          "iteration": 460,
+          "eval_episodes": 50,
+          "success_rate": 0.82,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7835013850415511,
+          "return_std": 0.3679159854627428,
+          "length_mean": 16.5
+        },
+        {
+          "iteration": 470,
+          "eval_episodes": 50,
+          "success_rate": 0.9,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8598614958448754,
+          "return_std": 0.28808105812517665,
+          "length_mean": 17.58
+        },
+        {
+          "iteration": 480,
+          "eval_episodes": 50,
+          "success_rate": 0.8,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7594626038781165,
+          "return_std": 0.3808552255566044,
+          "length_mean": 18.28
+        },
+        {
+          "iteration": 490,
+          "eval_episodes": 50,
+          "success_rate": 0.78,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7402105263157894,
+          "return_std": 0.39397445689232746,
+          "length_mean": 18.52
+        },
+        {
+          "iteration": 500,
+          "eval_episodes": 50,
+          "success_rate": 0.82,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7786648199445984,
+          "return_std": 0.36548063055788427,
+          "length_mean": 18.44
+        },
+        {
+          "iteration": 510,
+          "eval_episodes": 50,
+          "success_rate": 0.92,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8731800554016621,
+          "return_std": 0.2582275075014374,
+          "length_mean": 20.12
+        },
+        {
+          "iteration": 520,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9305373961218837,
+          "return_std": 0.13410654714465925,
+          "length_mean": 20.02
+        },
+        {
+          "iteration": 530,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9510360110803323,
+          "return_std": 0.02406177545383564,
+          "length_mean": 19.64
+        },
+        {
+          "iteration": 540,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9372686980609417,
+          "return_std": 0.13487154535014792,
+          "length_mean": 17.28
+        },
+        {
+          "iteration": 550,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9325817174515234,
+          "return_std": 0.13461266522724472,
+          "length_mean": 19.16
+        },
+        {
+          "iteration": 560,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9553240997229915,
+          "return_std": 0.016819221952439643,
+          "length_mean": 17.92
+        },
+        {
+          "iteration": 570,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.93796675900277,
+          "return_std": 0.13493909783533967,
+          "length_mean": 17.0
+        },
+        {
+          "iteration": 580,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9386149584487533,
+          "return_std": 0.1351216326229967,
+          "length_mean": 16.78
+        },
+        {
+          "iteration": 590,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9599113573407201,
+          "return_std": 0.017634623164745195,
+          "length_mean": 16.08
+        },
+        {
+          "iteration": 600,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9601108033240996,
+          "return_std": 0.01761459230957355,
+          "length_mean": 16.0
+        },
+        {
+          "iteration": 610,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.960060941828255,
+          "return_std": 0.018001933582965497,
+          "length_mean": 16.02
+        },
+        {
+          "iteration": 620,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9401606648199445,
+          "return_std": 0.13537179864354135,
+          "length_mean": 16.12
+        },
+        {
+          "iteration": 630,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9603601108033242,
+          "return_std": 0.017693806885358564,
+          "length_mean": 15.9
+        },
+        {
+          "iteration": 640,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9406094182825485,
+          "return_std": 0.13556790099697663,
+          "length_mean": 16.0
+        },
+        {
+          "iteration": 650,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9607590027700832,
+          "return_std": 0.01758499808128344,
+          "length_mean": 15.74
+        },
+        {
+          "iteration": 660,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9611578947368422,
+          "return_std": 0.017523247939612775,
+          "length_mean": 15.58
+        },
+        {
+          "iteration": 670,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9600110803324101,
+          "return_std": 0.01824522001361457,
+          "length_mean": 16.04
+        },
+        {
+          "iteration": 680,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9424044321329639,
+          "return_std": 0.13571878301591336,
+          "length_mean": 15.36
+        },
+        {
+          "iteration": 690,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9615567867036012,
+          "return_std": 0.016990190389479704,
+          "length_mean": 15.42
+        },
+        {
+          "iteration": 700,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9422049861495845,
+          "return_std": 0.13566787644729458,
+          "length_mean": 15.38
+        },
+        {
+          "iteration": 710,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9612576177285317,
+          "return_std": 0.016281210034915776,
+          "length_mean": 15.54
+        },
+        {
+          "iteration": 720,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9626038781163436,
+          "return_std": 0.0163785716732312,
+          "length_mean": 15.0
+        },
+        {
+          "iteration": 730,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9621551246537396,
+          "return_std": 0.016085182544981907,
+          "length_mean": 15.18
+        },
+        {
+          "iteration": 740,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9425041551246537,
+          "return_std": 0.1355787246024835,
+          "length_mean": 15.18
+        },
+        {
+          "iteration": 750,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9616066481994459,
+          "return_std": 0.016279606587903665,
+          "length_mean": 15.4
+        },
+        {
+          "iteration": 760,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9425041551246537,
+          "return_std": 0.13560897802789493,
+          "length_mean": 15.22
+        },
+        {
+          "iteration": 770,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9617562326869805,
+          "return_std": 0.016261346694581943,
+          "length_mean": 15.34
+        },
+        {
+          "iteration": 780,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9614570637119114,
+          "return_std": 0.01763018166469622,
+          "length_mean": 15.46
+        },
+        {
+          "iteration": 790,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9481939058171744,
+          "return_std": 0.09650781075725552,
+          "length_mean": 20.78
+        },
+        {
+          "iteration": 800,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.96195567867036,
+          "return_std": 0.016580803011973837,
+          "length_mean": 15.26
+        },
+        {
+          "iteration": 810,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9618559556786704,
+          "return_std": 0.016120384315007747,
+          "length_mean": 15.3
+        },
+        {
+          "iteration": 820,
+          "eval_episodes": 50,
+          "success_rate": 0.94,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9031024930747921,
+          "return_std": 0.2287413393953322,
+          "length_mean": 15.3
+        },
+        {
+          "iteration": 830,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9623545706371192,
+          "return_std": 0.0160585757602982,
+          "length_mean": 15.1
+        },
+        {
+          "iteration": 840,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9624542936288089,
+          "return_std": 0.016167815882937534,
+          "length_mean": 15.06
+        },
+        {
+          "iteration": 850,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.96195567867036,
+          "return_std": 0.016415037533692268,
+          "length_mean": 15.26
+        },
+        {
+          "iteration": 860,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9623047091412741,
+          "return_std": 0.01609252259710515,
+          "length_mean": 15.12
+        },
+        {
+          "iteration": 870,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9622548476454292,
+          "return_std": 0.016619742365066397,
+          "length_mean": 15.14
+        },
+        {
+          "iteration": 880,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9625540166204984,
+          "return_std": 0.016563400537562646,
+          "length_mean": 15.02
+        },
+        {
+          "iteration": 890,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9626537396121883,
+          "return_std": 0.016351910127494058,
+          "length_mean": 14.98
+        },
+        {
+          "iteration": 900,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.962354570637119,
+          "return_std": 0.016395639604112628,
+          "length_mean": 15.1
+        },
+        {
+          "iteration": 910,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9430027700831023,
+          "return_std": 0.13571034401681553,
+          "length_mean": 15.02
+        },
+        {
+          "iteration": 920,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9627534626038781,
+          "return_std": 0.016472490567492254,
+          "length_mean": 14.94
+        },
+        {
+          "iteration": 930,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9624542936288089,
+          "return_std": 0.016198541228509517,
+          "length_mean": 15.06
+        },
+        {
+          "iteration": 940,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9624542936288089,
+          "return_std": 0.016167815882937534,
+          "length_mean": 15.06
+        },
+        {
+          "iteration": 950,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9626537396121883,
+          "return_std": 0.016351910127494058,
+          "length_mean": 14.98
+        },
+        {
+          "iteration": 960,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9626537396121883,
+          "return_std": 0.016351910127494058,
+          "length_mean": 14.98
+        },
+        {
+          "iteration": 970,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9612576177285317,
+          "return_std": 0.01652372658507412,
+          "length_mean": 15.54
+        },
+        {
+          "iteration": 980,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9623047091412741,
+          "return_std": 0.01620030616418665,
+          "length_mean": 15.12
+        },
+        {
+          "iteration": 990,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.962354570637119,
+          "return_std": 0.0160585757602982,
+          "length_mean": 15.1
+        },
+        {
+          "iteration": 999,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9626537396121883,
+          "return_std": 0.016351910127494058,
+          "length_mean": 14.98
+        }
+      ]
+    },
+    {
+      "seed": 98,
+      "iteration": 999,
+      "success_rate": 1.0,
+      "return_mean": 0.9566703601108033,
+      "return_std_episodes": 0.01614072919722868,
+      "timeout_rate": 0.0,
+      "length_mean": 17.38,
+      "argmax_success_rate": 1.0,
+      "argmax_return_mean": 0.9566703601108033,
+      "argmax_return_std_episodes": 0.01614072919722868,
+      "argmax_timeout_rate": 0.0,
+      "argmax_length_mean": 17.38,
+      "curve_deterministic": false,
+      "path": "agents/pretrained_model_GRU/hpo/best_trial/ppo_98_GRU_MiniGrid-MemoryS17Random-v0.pth",
+      "eval_history": [
+        {
+          "iteration": 0,
+          "eval_episodes": 50,
+          "success_rate": 0.22,
+          "timeout_rate": 0.46,
+          "return_mean": 0.14186703601108033,
+          "return_std": 0.29995085070952643,
+          "length_mean": 234.86
+        },
+        {
+          "iteration": 10,
+          "eval_episodes": 50,
+          "success_rate": 0.6,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5764155124653739,
+          "return_std": 0.4710689007836682,
+          "length_mean": 20.32
+        },
+        {
+          "iteration": 20,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.46319667590027697,
+          "return_std": 0.48226982935309576,
+          "length_mean": 12.78
+        },
+        {
+          "iteration": 30,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.507584487534626,
+          "return_std": 0.4877374606077764,
+          "length_mean": 9.06
+        },
+        {
+          "iteration": 40,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4886315789473684,
+          "return_std": 0.48867083655669935,
+          "length_mean": 9.62
+        },
+        {
+          "iteration": 50,
+          "eval_episodes": 50,
+          "success_rate": 0.46,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4492299168975069,
+          "return_std": 0.48677577570316655,
+          "length_mean": 8.36
+        },
+        {
+          "iteration": 60,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5085817174515236,
+          "return_std": 0.4886697076388918,
+          "length_mean": 8.12
+        },
+        {
+          "iteration": 70,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4900775623268698,
+          "return_std": 0.49011065753187855,
+          "length_mean": 7.54
+        },
+        {
+          "iteration": 80,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4890803324099723,
+          "return_std": 0.48911217350682773,
+          "length_mean": 8.0
+        },
+        {
+          "iteration": 90,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4693296398891967,
+          "return_std": 0.48852759947104296,
+          "length_mean": 8.12
+        },
+        {
+          "iteration": 100,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4696288088642659,
+          "return_std": 0.48882771026332333,
+          "length_mean": 7.98
+        },
+        {
+          "iteration": 110,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4894792243767313,
+          "return_std": 0.48950768745342194,
+          "length_mean": 7.8
+        },
+        {
+          "iteration": 120,
+          "eval_episodes": 50,
+          "success_rate": 0.5,
+          "timeout_rate": 0.0,
+          "return_mean": 0.490775623268698,
+          "return_std": 0.49079765898286404,
+          "length_mean": 7.16
+        },
+        {
+          "iteration": 130,
+          "eval_episodes": 50,
+          "success_rate": 0.58,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5692299168975069,
+          "return_std": 0.4844268197228473,
+          "length_mean": 7.16
+        },
+        {
+          "iteration": 140,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.47097506925207755,
+          "return_std": 0.49022895729199684,
+          "length_mean": 7.18
+        },
+        {
+          "iteration": 150,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.50997783933518,
+          "return_std": 0.4899973855381993,
+          "length_mean": 7.12
+        },
+        {
+          "iteration": 160,
+          "eval_episodes": 50,
+          "success_rate": 0.56,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5498282548476454,
+          "return_std": 0.48739842166907726,
+          "length_mean": 7.14
+        },
+        {
+          "iteration": 170,
+          "eval_episodes": 50,
+          "success_rate": 0.58,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5695290858725762,
+          "return_std": 0.48467652861468663,
+          "length_mean": 7.06
+        },
+        {
+          "iteration": 180,
+          "eval_episodes": 50,
+          "success_rate": 0.4,
+          "timeout_rate": 0.0,
+          "return_mean": 0.3931689750692521,
+          "return_std": 0.4815454386655741,
+          "length_mean": 7.2
+        },
+        {
+          "iteration": 190,
+          "eval_episodes": 50,
+          "success_rate": 0.48,
+          "timeout_rate": 0.0,
+          "return_mean": 0.4701772853185595,
+          "return_std": 0.4894060017449049,
+          "length_mean": 7.52
+        },
+        {
+          "iteration": 200,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.529628808864266,
+          "return_std": 0.48884987522234996,
+          "length_mean": 7.16
+        },
+        {
+          "iteration": 210,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5101274238227147,
+          "return_std": 0.4901384357719223,
+          "length_mean": 7.34
+        },
+        {
+          "iteration": 220,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5293296398891967,
+          "return_std": 0.488586009492513,
+          "length_mean": 7.24
+        },
+        {
+          "iteration": 230,
+          "eval_episodes": 50,
+          "success_rate": 0.52,
+          "timeout_rate": 0.0,
+          "return_mean": 0.50997783933518,
+          "return_std": 0.48999814661374086,
+          "length_mean": 7.34
+        },
+        {
+          "iteration": 240,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.529180055401662,
+          "return_std": 0.4884478465749172,
+          "length_mean": 7.3
+        },
+        {
+          "iteration": 250,
+          "eval_episodes": 50,
+          "success_rate": 0.54,
+          "timeout_rate": 0.0,
+          "return_mean": 0.5277340720221607,
+          "return_std": 0.487143949614057,
+          "length_mean": 8.74
+        },
+        {
+          "iteration": 260,
+          "eval_episodes": 50,
+          "success_rate": 0.82,
+          "timeout_rate": 0.0,
+          "return_mean": 0.7845983379501387,
+          "return_std": 0.368800025859723,
+          "length_mean": 26.0
+        },
+        {
+          "iteration": 270,
+          "eval_episodes": 50,
+          "success_rate": 0.96,
+          "timeout_rate": 0.02,
+          "return_mean": 0.9129806094182825,
+          "return_std": 0.18724144736685544,
+          "length_mean": 26.22
+        },
+        {
+          "iteration": 280,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.02,
+          "return_mean": 0.9340277008310249,
+          "return_std": 0.13428843320265924,
+          "length_mean": 25.66
+        },
+        {
+          "iteration": 290,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9563213296398891,
+          "return_std": 0.016197236587228957,
+          "length_mean": 17.52
+        },
+        {
+          "iteration": 300,
+          "eval_episodes": 50,
+          "success_rate": 0.9,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8599113573407203,
+          "return_std": 0.28730187175312494,
+          "length_mean": 19.64
+        },
+        {
+          "iteration": 310,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9342271468144046,
+          "return_std": 0.13518583566952513,
+          "length_mean": 18.48
+        },
+        {
+          "iteration": 320,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9565207756232686,
+          "return_std": 0.01610425972192013,
+          "length_mean": 17.44
+        },
+        {
+          "iteration": 330,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9573185595567867,
+          "return_std": 0.016474226154140983,
+          "length_mean": 17.12
+        },
+        {
+          "iteration": 340,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564210526315788,
+          "return_std": 0.016011985136757275,
+          "length_mean": 17.48
+        },
+        {
+          "iteration": 350,
+          "eval_episodes": 50,
+          "success_rate": 0.86,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8245484764542936,
+          "return_std": 0.33298407436619054,
+          "length_mean": 17.34
+        },
+        {
+          "iteration": 360,
+          "eval_episodes": 50,
+          "success_rate": 0.86,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8245484764542936,
+          "return_std": 0.3329672747013635,
+          "length_mean": 17.76
+        },
+        {
+          "iteration": 370,
+          "eval_episodes": 50,
+          "success_rate": 0.86,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8241994459833795,
+          "return_std": 0.33281954343081926,
+          "length_mean": 18.04
+        },
+        {
+          "iteration": 380,
+          "eval_episodes": 50,
+          "success_rate": 0.96,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9114847645429363,
+          "return_std": 0.18905628004289352,
+          "length_mean": 20.1
+        },
+        {
+          "iteration": 390,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9565207756232686,
+          "return_std": 0.0161196902868708,
+          "length_mean": 17.44
+        },
+        {
+          "iteration": 400,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9571191135734073,
+          "return_std": 0.016294871107513993,
+          "length_mean": 17.2
+        },
+        {
+          "iteration": 410,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 420,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9370193905817173,
+          "return_std": 0.1347788282920064,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 430,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9565207756232686,
+          "return_std": 0.016142808478545587,
+          "length_mean": 17.44
+        },
+        {
+          "iteration": 440,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566204986149585,
+          "return_std": 0.01611845638528549,
+          "length_mean": 17.4
+        },
+        {
+          "iteration": 450,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 460,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 470,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566204986149585,
+          "return_std": 0.016149275641696936,
+          "length_mean": 17.4
+        },
+        {
+          "iteration": 480,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 490,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 500,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 510,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 520,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9373185595567867,
+          "return_std": 0.13486292941287084,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 530,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566204986149585,
+          "return_std": 0.016164663235127535,
+          "length_mean": 17.4
+        },
+        {
+          "iteration": 540,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 550,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 560,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 570,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566204986149585,
+          "return_std": 0.016126166721237237,
+          "length_mean": 17.4
+        },
+        {
+          "iteration": 580,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 590,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 600,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 610,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 620,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566204986149585,
+          "return_std": 0.01611845638528549,
+          "length_mean": 17.4
+        },
+        {
+          "iteration": 630,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 640,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 650,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 660,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 670,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 680,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 690,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 700,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566204986149585,
+          "return_std": 0.01611845638528549,
+          "length_mean": 17.4
+        },
+        {
+          "iteration": 710,
+          "eval_episodes": 50,
+          "success_rate": 0.96,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9178171745152354,
+          "return_std": 0.18801867537856962,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 720,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 730,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 740,
+          "eval_episodes": 50,
+          "success_rate": 0.86,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8250969529085873,
+          "return_std": 0.33318053807812503,
+          "length_mean": 17.1
+        },
+        {
+          "iteration": 750,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9562714681440444,
+          "return_std": 0.015926123943657944,
+          "length_mean": 17.54
+        },
+        {
+          "iteration": 760,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 770,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9564709141274238,
+          "return_std": 0.016189329747694187,
+          "length_mean": 17.46
+        },
+        {
+          "iteration": 780,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9548254847645429,
+          "return_std": 0.01789909640471235,
+          "length_mean": 18.12
+        },
+        {
+          "iteration": 790,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566204986149585,
+          "return_std": 0.016195394561795615,
+          "length_mean": 17.4
+        },
+        {
+          "iteration": 800,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9370193905817173,
+          "return_std": 0.1347788282920064,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 810,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 820,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9565706371191135,
+          "return_std": 0.016165355332438403,
+          "length_mean": 17.42
+        },
+        {
+          "iteration": 830,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9565207756232686,
+          "return_std": 0.016150507188685815,
+          "length_mean": 17.44
+        },
+        {
+          "iteration": 840,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 850,
+          "eval_episodes": 50,
+          "success_rate": 0.9,
+          "timeout_rate": 0.0,
+          "return_mean": 0.8598614958448754,
+          "return_std": 0.2870201913365706,
+          "length_mean": 17.42
+        },
+        {
+          "iteration": 860,
+          "eval_episodes": 50,
+          "success_rate": 0.98,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9380166204986149,
+          "return_std": 0.134927464387142,
+          "length_mean": 17.34
+        },
+        {
+          "iteration": 870,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9561218836565096,
+          "return_std": 0.016149275641696936,
+          "length_mean": 17.6
+        },
+        {
+          "iteration": 880,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9565706371191136,
+          "return_std": 0.016157663697057376,
+          "length_mean": 17.42
+        },
+        {
+          "iteration": 890,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 900,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 910,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 920,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9563711911357341,
+          "return_std": 0.015793190989740354,
+          "length_mean": 17.5
+        },
+        {
+          "iteration": 930,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9556731301939059,
+          "return_std": 0.018192887673490185,
+          "length_mean": 17.78
+        },
+        {
+          "iteration": 940,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 950,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 960,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 970,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 980,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 990,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        },
+        {
+          "iteration": 999,
+          "eval_episodes": 50,
+          "success_rate": 1.0,
+          "timeout_rate": 0.0,
+          "return_mean": 0.9566703601108033,
+          "return_std": 0.01614072919722868,
+          "length_mean": 17.38
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "argmax_length_mean": {
+      "mean": 16.692,
+      "std_across_seeds": 0.914732747855897,
+      "per_seed": [
+        16.54,
+        17.1,
+        17.46,
+        14.98,
+        17.38
+      ]
+    },
+    "argmax_return_mean": {
+      "mean": 0.9583855955678671,
+      "std_across_seeds": 0.0022804971553193826,
+      "per_seed": [
+        0.9587645429362882,
+        0.9573684210526315,
+        0.9564709141274238,
+        0.9626537396121883,
+        0.9566703601108033
+      ]
+    },
+    "argmax_return_std_episodes": {
+      "mean": 0.014989676479755201,
+      "std_across_seeds": 0.0016422791212598032,
+      "per_seed": [
+        0.011822643287330478,
+        0.015491205257191566,
+        0.015141894529531219,
+        0.016351910127494058,
+        0.01614072919722868
+      ]
+    },
+    "argmax_success_rate": {
+      "mean": 1.0,
+      "std_across_seeds": 0.0,
+      "per_seed": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "argmax_timeout_rate": {
+      "mean": 0.0,
+      "std_across_seeds": 0.0,
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "length_mean": {
+      "mean": 16.772,
+      "std_across_seeds": 0.9154321383914812,
+      "per_seed": [
+        16.94,
+        17.1,
+        17.46,
+        14.98,
+        17.38
+      ]
+    },
+    "return_mean": {
+      "mean": 0.9581861495844877,
+      "std_across_seeds": 0.002282240788233567,
+      "per_seed": [
+        0.9577673130193908,
+        0.9573684210526315,
+        0.9564709141274238,
+        0.9626537396121883,
+        0.9566703601108033
+      ]
+    },
+    "return_std_episodes": {
+      "mean": 0.015123024638035578,
+      "std_across_seeds": 0.00138692881956776,
+      "per_seed": [
+        0.012489384078732369,
+        0.015491205257191566,
+        0.015141894529531219,
+        0.016351910127494058,
+        0.01614072919722868
+      ]
+    },
+    "success_rate": {
+      "mean": 1.0,
+      "std_across_seeds": 0.0,
+      "per_seed": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "timeout_rate": {
+      "mean": 0.0,
+      "std_across_seeds": 0.0,
+      "per_seed": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  }
+}

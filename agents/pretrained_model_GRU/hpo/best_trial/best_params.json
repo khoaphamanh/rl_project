@@ -1,0 +1,29 @@
+{
+  "feature_extractor": "GRU",
+  "name_env": "MiniGrid-MemoryS17Random-v0",
+  "objective": "return_mean_minus-std",
+  "metric": "return_mean",
+  "aggregation": "mean_minus-std",
+  "score_name": "mean_minus_1std(return_mean)",
+  "direction": "maximize",
+  "best_trial": 36,
+  "best_value": 0.9559039087962541,
+  "best_params": {
+    "lr": 0.0018223909279876938,
+    "gamma": 0.9968,
+    "gae_lambda": 0.96,
+    "entropy_coef": 0.009564637490370193,
+    "value_coef": 0.08949479373335777,
+    "clip_eps": 0.25,
+    "wd": 2.8740878859785488e-08,
+    "max_grad_norm": 0.5004010742061973,
+    "hidden_size": 280
+  },
+  "user_attrs": {
+    "return_mean": 0.9581861495844877,
+    "return_mean_std": 0.002282240788233567,
+    "success_rate": 1.0,
+    "success_rate_std": 0.0
+  },
+  "copied_from": "agents/pretrained_model_GRU/hpo/trial_36"
+}
