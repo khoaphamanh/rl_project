@@ -912,11 +912,25 @@ class Helper:
             return None
 
         source = self.dir_hpo_trial(best.number)
+        target = self.dir_hpo_best_trial
         if not os.path.isdir(source):
+            # trial_*/ is gitignored, so a fresh clone never has it -- but if
+            # best_trial/ already holds the copy for this exact winner (i.e.
+            # it was copied out before trial_*/ was pruned/deleted), that
+            # copy is still correct and there is nothing to redo. Only bail
+            # when best_trial/ can't be confirmed to match.
+            best_params_path = os.path.join(target, "best_params.json")
+            if os.path.isfile(best_params_path):
+                with open(best_params_path) as f:
+                    recorded = json.load(f)
+                if recorded.get("best_trial") == best.number:
+                    say(
+                        f"trial {best.number} has no directory at {source}, "
+                        f"but {target} already holds its copy -- keeping it"
+                    )
+                    return target
             say(f"trial {best.number} has no directory at {source}, nothing to copy")
             return None
-
-        target = self.dir_hpo_best_trial
         if os.path.isdir(target):
             shutil.rmtree(target)
         os.makedirs(target, exist_ok=True)
