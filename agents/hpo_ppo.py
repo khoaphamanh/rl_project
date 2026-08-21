@@ -17,6 +17,15 @@ class HPOPPO:
     """An Optuna study over one encoder: draws params, trains a PPOAgent per seed, scores them."""
 
     def __init__(self, config, logger=None):
+        """Open (or resume) the study: restore the sampler, build the pruner,
+        create the sqlite-backed study, and check that a resumed one was run
+        under the same seeds, budget and step unit as this config.
+
+        Args:
+            config (Config): a built config; names the study, the directory
+                and the objective, and is the template every trial copies.
+            logger (logging.Logger | None): where output goes; None builds one.
+        """
         self.config = config
         self.logger = logger if logger is not None else config.build_logger()
 
@@ -25,10 +34,8 @@ class HPOPPO:
         self.seed_list = config.seed_list
         self.n_trials = config.n_trials
 
-        # every make_config() below has to repeat it: the length decides the
-        # directory this study writes to, and the run it trains. Config stores
-        # "max" where the constructor wants None, so keep both forms -- one to
-        # report, one to pass on.
+        # Every make_config() below has to repeat the length. Config stores
+        # "max" where the constructor wants None, so keep both forms.
         self.tbptt_length = config.tbptt_length
         self._length_arg = None if self.tbptt_length == "max" else self.tbptt_length
 
@@ -50,11 +57,8 @@ class HPOPPO:
         else:
             self.logger.info(f"resumed the sampler from {config.path_hpo_sampler}")
 
-        # what the knobs mean and why none is left at optuna's default lives in
-        # helper.build_pruner. What this file owns is the step they are counted
-        # in: one seed, i.e. the index into seed_list (see objective()). A bad
-        # draw is killed BETWEEN two runs, never inside one -- so the finest
-        # granularity is one whole seed, and PPOAgent needs no hook for optuna.
+        # The knobs live in helper.build_pruner; this file owns the step they
+        # count in: one seed, so a draw is killed between runs, never inside.
         self.pruner = config.build_pruner()
 
         self.study = optuna.create_study(
@@ -66,19 +70,8 @@ class HPOPPO:
             load_if_exists=True,  # the whole resume mechanism
         )
 
-        # A step is a seed index and the value at it is one finished run, so
-        # three things have to hold for the median at step s to mean anything:
-        # every trial counted its steps in seeds, ran the same seeds in the
-        # same order, and trained each of them equally long. Break any one and
-        # step s compares things that are not the same measurement -- optuna
-        # cannot notice, so they are recorded on the study and checked here.
-        #
-        # pruner_step_unit is what catches a study from before this scheme:
-        # those trials reported once per training ITERATION, at steps up to
-        # n_iterations * len(seed_list), so their step 0 is an UNTRAINED network
-        # and sits in the median every new trial is judged against. A missing
-        # marker on a study that already has trials means exactly that; on a
-        # study with no trials yet it just means nobody has written it.
+        # The median at step s only means something if every trial counted
+        # steps in seeds, in the same order, trained equally long -- so check.
         existing = len(self.study.get_trials(deepcopy=False)) > 0
 
         for name, current in (
@@ -112,9 +105,23 @@ class HPOPPO:
 
     # ---- one training run ----
     def run_split(self, seed, params, trial_number):
-        """Train a fresh PPOAgent at these params/seed, checkpoint it, return
-        its last-iteration scores. The run is never cut short: pruning happens
-        in objective(), between two calls to this method."""
+        """Train one fresh PPOAgent at these params and this seed, checkpoint
+        it, and hand back its last-iteration scores.
+
+        The run is never cut short: pruning happens in objective(), between
+        two calls to this method.
+
+        Args:
+            seed (int): the seed to train at (a value, not an index).
+            params (dict): this trial's drawn hyperparameters, {name: value},
+                applied to a fresh config before the agent is built.
+            trial_number (int): which trial, i.e. which trial_<n>/ the
+                checkpoint lands in.
+
+        Returns:
+            dict: seed, iteration, success_rate, return_mean,
+            return_std_episodes, deterministic and the full eval_history.
+        """
         config = make_config(self.feature_extractor, tbptt_length=self._length_arg)
 
         # before PPOAgent is built: the agent reads lr/wd and the architecture
@@ -150,18 +157,45 @@ class HPOPPO:
             agent.close()
 
     def plot_trial(self, trial_number):
-        """Draw one trial's curves from the checkpoints it just wrote. Called
-        per trial rather than only at the end, so a study that is pruned,
-        crashed or ctrl-c'd still leaves a figure for every trial it ran."""
+        """Draw one trial's learning curves from the checkpoints it just wrote.
+
+        Called per trial rather than only at the end, so a study that is
+        pruned, crashed or ctrl-c'd still leaves a figure for every trial
+        it ran.
+
+        Args:
+            trial_number (int): which trial's directory to read.
+
+        Returns:
+            list[str]: the figure paths written, [] if there was no curve.
+        """
         return self.config.plot_eval_curves(
             self.config.dir_hpo_trial(trial_number), logger=self.logger
         )
 
     # ---- the search ----
     def hpo(self):
-        """Run (or resume) the study. Returns the best trial, or None."""
+        """Run (or resume) the search, then summarise it, copy the winner out
+        of trial_<n>/ and redraw every figure.
+
+        Returns:
+            optuna.trial.FrozenTrial | None: the best trial, or None if
+            nothing has completed.
+        """
 
         def objective(trial):
+            """One trial: draw params, train every seed, report the running
+            score between seeds so the pruner can kill a bad draw.
+
+            Args:
+                trial (optuna.Trial): the trial optuna is running.
+
+            Returns:
+                float: the score across all seeds, what the study ranks on.
+
+            Raises:
+                optuna.TrialPruned: when the pruner calls it after a seed.
+            """
             # exported first so an interrupted study still leaves a csv of
             # how far it got
             self.config.csv_study_export(self.study, self.config.path_hpo_csv)
@@ -187,22 +221,15 @@ class HPOPPO:
                 result = self.run_split(seed, params, trial_number=trial.number)
                 scores.append(result[self.hpo_metric])
 
-                # four numbers, rewritten after every seed so a pruned trial
-                # carries them too. These are the only user attrs, and so the
-                # only non-param columns csv_study_export writes -- the per-seed
-                # values stay in the log, the curves in the checkpoints.
+                # Rewritten after every seed so a pruned trial carries them
+                # too; the only non-param columns csv_study_export writes.
                 for metric, values in per_seed.items():
                     values.append(result[metric])
                     trial.set_user_attr(metric, float(np.mean(values)))
                     trial.set_user_attr(f"{metric}_std", float(np.std(values)))
 
-                # between seeds, not inside train_agent, so optuna stays out of
-                # the agent. The running cross-seed aggregate, not this seed's
-                # raw metric: it is the same quantity the trial's final value is
-                # built from, over the same number of seeds for every trial at
-                # this step, so the pruner ranks on exactly what the study
-                # ranks on. At step 0 the two coincide anyway -- the std of one
-                # value is 0, so mean-minus-std of one seed IS that seed.
+                # Between seeds, so optuna stays out of the agent. The running
+                # aggregate, so the pruner ranks on what the study ranks on.
                 running = self.config.aggregate_scores(scores)
                 trial.report(running, step=index_split)
 
@@ -243,16 +270,28 @@ class HPOPPO:
         # copied out of trial_<n>/ so it survives deleting the other trials
         self.config.copy_best_trial(self.study, self.logger)
 
-        # a refresh, not the only pass: plot_trial already drew each trial as
-        # it finished. This still redraws them, so trials from a study resumed
-        # from before per-trial plotting also get a figure, plus best_trial/.
+        # A refresh, not the only pass: plot_trial already drew each trial as
+        # it finished. This catches resumed studies, plus best_trial/.
         self.config.plot_hpo(logger=self.logger)
 
         return best
 
     # ---- the number to report ----
     def score_saved(self, seed_index, seed):
-        """Load one winning-trial checkpoint (no training) and score it in both eval modes, or None if missing."""
+        """Load one winning-trial checkpoint and score it in both eval modes,
+        training nothing.
+
+        Args:
+            seed_index (int): position in seed_list, which picks the file.
+            seed (int): the seed value that index stands for -- the agent is
+                built at it, and it labels the result.
+
+        Returns:
+            dict | None: the sampled numbers under their plain names, the
+            greedy ones prefixed argmax_ (reported, never scored), plus seed,
+            iteration, path, curve_deterministic and eval_history. None when
+            there is no checkpoint or it carries no eval_history.
+        """
         # fresh config, same reason as run_split: nothing leaks to the next seed
         config = make_config(self.feature_extractor, tbptt_length=self._length_arg)
 
@@ -262,9 +301,8 @@ class HPOPPO:
             self.logger.info(f"seed {seed}: no checkpoint at {path}, skipped")
             return None
 
-        # the architecture the file was trained with -- a fresh make_config()
-        # describes a different network. Read from the checkpoint, so this is
-        # right even if optuna no longer has a record of the trial.
+        # The architecture the file was trained with, read from the checkpoint
+        # -- right even if optuna no longer has a record of the trial.
         config.apply_params(config.checkpoint_params(path))
 
         agent = PPOAgent(config, seed=seed)
@@ -318,7 +356,16 @@ class HPOPPO:
             agent.close()
 
     def final(self):
-        """Report the winning trial's saved runs, training nothing. Writes the final JSON and curve plots."""
+        """Report the winning trial's saved runs, training nothing.
+
+        Reloads every seed from best_trial/, prints the two eval modes apart
+        and the shared closing table, and writes final_<name_hpo>.json plus
+        the curve figures beside them.
+
+        Returns:
+            dict | None: the report written to that json, or None when no
+            trial completed or nothing could be scored.
+        """
         try:
             best = self.study.best_trial
         except ValueError:
@@ -349,9 +396,8 @@ class HPOPPO:
             self.logger.info("no checkpoint could be scored -- nothing to report")
             return None
 
-        # every metric summarised, in both eval modes -- which are NOT
-        # comparable to each other, see score_saved. `skip` holds the labels
-        # and lists that don't belong in a mean; they stay raw in "results".
+        # Every metric summarised, in both eval modes -- which are NOT
+        # comparable to each other. `skip` holds what doesn't belong in a mean.
         summary = {}
         skip = {"seed", "path", "curve_deterministic", "iteration", "eval_history"}
         for key in sorted(set(results[0]) - skip):
@@ -462,9 +508,8 @@ class HPOPPO:
                 f"std_across_seeds {s['std_across_seeds']:.3f}"
             )
 
-        # the same closing table main_no_hpo.py ends with, so a tuned run and a
-        # hand-picked one are read the same way. The two blocks above stay --
-        # they carry timeout/length and keep the eval modes visibly apart.
+        # The same closing table main_no_hpo.py ends with, so a tuned run and
+        # a hand-picked one are read the same way.
         self.config.log_seed_summary(
             self.logger,
             [

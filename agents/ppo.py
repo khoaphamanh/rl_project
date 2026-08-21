@@ -16,6 +16,17 @@ class PPOAgent:
     """PPO over n_workers parallel MiniGrid envs."""
 
     def __init__(self, config, seed=None):
+        """Seed the run, build the vector env, the network and the optimizer,
+        and copy every hyperparameter off the config.
+
+        The config is read HERE and not consulted again, so any
+        apply_params() must already have happened.
+
+        Args:
+            config (Config): a built config; supplies the hyperparameters, the
+                env/encoder builders and the checkpoint paths.
+            seed (int | None): the seed to train at; None uses seed_list[0].
+        """
         self.config = config
         self.seed = config.set_seed(seed=seed)
 
@@ -75,7 +86,15 @@ class PPOAgent:
 
     # ---- rollout ----
     def sample(self):
-        """Play n_workers x worker_steps env steps and return the filled rollout buffer plus episode stats."""
+        """Play n_workers x worker_steps env steps under the current policy.
+
+        Returns:
+            tuple[dict, dict]: (buf, stats). buf holds obs/actions/log_probs/
+            values/rewards/dones as (W, T, ...) tensors -- values is (W, T+1),
+            with the bootstrap V(s_T) in the last column -- plus hxs (W, T, H)
+            when the encoder is recurrent. stats holds the episodes that
+            finished during the rollout: episodes, return_mean, length_mean.
+        """
         W, T, H = self.n_workers, self.worker_steps, self.hidden_size
 
         buf = {
@@ -122,8 +141,7 @@ class PPOAgent:
                 buf["values"][:, t] = value[:, 0].cpu()
 
             # Two clocks: "env_step" is envs.step() alone, "env_loop" adds the
-            # python around it. If env_loop >> env_step, the fix belongs here
-            # rather than in how the envs are stepped. Neither syncs.
+            # python around it. env_loop >> env_step points the fix here.
             with self.timing.phase("env_loop", W, sync=False):
                 # one call steps all W envs; shapes are (W,) sync or async
                 with self.timing.phase("env_step", W, sync=False):
@@ -164,7 +182,16 @@ class PPOAgent:
         return buf, stats
 
     def gae(self, buf):
-        """Generalized Advantage Estimation: values -> standardized advantages and returns."""
+        """Generalized Advantage Estimation over one rollout.
+
+        Args:
+            buf (dict): sample()'s buffer; reads rewards, dones and values.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: (advantages, returns), both
+            (W, T). Advantages are standardized over the whole rollout, not
+            per minibatch; returns are not.
+        """
         W, T = self.n_workers, self.worker_steps
         V = buf["values"]
         rewards = buf["rewards"]
@@ -184,15 +211,26 @@ class PPOAgent:
         return advantages, returns
 
     def split_pad_mask(self, buf):
-        """Cut rollout at done and every tbptt_length steps, pad to rectangle,
-        build mask: (W, T, ...) -> (n_seq, L, ...). A chunk that starts
-        mid-episode is seeded from the hidden state sample() recorded there, so
-        only the BACKWARD pass is truncated -- the forward pass is unchanged."""
+        """Cut the rollout at episode ends and every tbptt_length steps, then
+        pad the pieces to one rectangle.
+
+        A chunk that starts mid-episode is seeded from the hidden state
+        sample() recorded there, so only the BACKWARD pass is truncated -- the
+        forward pass is unchanged.
+
+        Args:
+            buf (dict): sample()'s buffer, with gae()'s advantages and returns
+                already added; every (W, T, ...) entry is cut and padded.
+
+        Returns:
+            dict: the same keys as (n_seq, L, ...) tensors, plus "mask"
+            (n_seq, L) marking the real steps, plus "hxs" (1, n_seq, H) --
+            each sequence's h_0 -- when the encoder is recurrent.
+        """
         W, T, H = self.n_workers, self.worker_steps, self.hidden_size
 
         # "max" = cut on episode boundaries only. T is already the longest an
-        # episode can be (build_env passes worker_steps as the env's
-        # max_steps), so chunk=T never fires and this stays a no-op.
+        # episode can be, so chunk=T never fires and this stays a no-op.
         chunk = T if self.tbptt_length == "max" else int(self.tbptt_length)
 
         segments = []
@@ -228,11 +266,32 @@ class PPOAgent:
 
     @staticmethod
     def masked_mean(x, mask):
-        """Mean over unmasked slots only."""
+        """Mean over the real slots only, ignoring padding.
+
+        Args:
+            x (torch.Tensor): per-timestep values, (n_seq, L).
+            mask (torch.Tensor): 1.0 on a real step, 0.0 on padding, (n_seq, L).
+
+        Returns:
+            torch.Tensor: a scalar.
+        """
         return (x * mask).sum() / mask.sum().clamp(min=1.0)
 
     def clip_loss(self, new_log_probs, old_log_probs, advantages, mask):
-        """PPO clipped surrogate loss. Returns (loss, {clip_fraction, approx_kl})."""
+        """PPO's clipped surrogate objective, as a loss to minimize.
+
+        Args:
+            new_log_probs (torch.Tensor): log pi_new of the actions taken,
+                recomputed this update, (n_seq, L).
+            old_log_probs (torch.Tensor): the same quantity as the rollout
+                recorded it, (n_seq, L).
+            advantages (torch.Tensor): standardized advantages, (n_seq, L).
+            mask (torch.Tensor): 1.0 on a real step, 0.0 on padding.
+
+        Returns:
+            tuple[torch.Tensor, dict]: (loss, info), info holding
+            clip_fraction and approx_kl as floats, for logging only.
+        """
         eps = self.clip_eps
         log_ratio = new_log_probs - old_log_probs
         ratio = torch.exp(log_ratio)
@@ -252,9 +311,22 @@ class PPOAgent:
         return loss, info
 
     def minibatch_loss(self, mb, model=None):
-        """Replay one minibatch with grad on: policy + value_coef*value +
-        entropy, combined into one scalar. Returns (loss, info). `model`
-        defaults to this agent's; probe_batch_size passes a throwaway copy."""
+        """Replay one minibatch with grad on, combining the three PPO terms --
+        policy + value_coef*value - entropy_coef*entropy -- into one scalar.
+
+        Args:
+            mb (dict): one collated minibatch from SequenceDataset: obs,
+                actions, log_probs, advantages, returns, mask, and hxs when
+                recurrent, each (mini_batch_size, L, ...).
+            model (Network | None): the network to run; None uses this
+                agent's. probe_batch_size passes a throwaway deep copy so the
+                real weights never see the probe.
+
+        Returns:
+            tuple[torch.Tensor, dict]: (loss, info) -- the scalar to backward
+            through, and clip_fraction/approx_kl/policy_loss/value_loss/
+            entropy/loss as floats for logging.
+        """
         if model is None:
             model = self.model
 
@@ -304,7 +376,13 @@ class PPOAgent:
 
     # ---- training loop ----
     def train(self):
-        """One PPO iteration: sample -> gae -> split_pad_mask -> learn. Returns a flat stats dict."""
+        """One PPO iteration: sample -> gae -> split_pad_mask -> learn.
+
+        Returns:
+            dict: flat stats for the iteration -- sample()'s episode numbers,
+            the resolved mini_batch_size, epochs_run, updates, and every
+            minibatch_loss key averaged over the updates.
+        """
         # "iteration" is the outer clock; the phases inside sum to just under it
         with self.timing.phase("iteration"):
             # ---- collect ----
@@ -316,7 +394,7 @@ class PPOAgent:
                 batch = self.split_pad_mask(buf)
 
             # ---- learn, at the largest minibatch that fits ----
-            # a callable so run_with_batch_size_fallback can retry smaller on
+            # A callable so run_with_batch_size_fallback can retry smaller on
             # OOM. Already probed before iteration 0, so this is just a net.
             self.mini_batch_size, (epochs_run, logs) = self.run_with_batch_size_fallback(
                 lambda mini_batch_size: self.learn(batch, mini_batch_size),
@@ -336,11 +414,22 @@ class PPOAgent:
         return stats
 
     def anneal_lr(self, iteration, n_iterations):
-        """Linear decay lr_initial -> 0 across the run; returns the lr in force.
+        """Set the optimizer's lr for this iteration, decaying it linearly.
+
         Called once per iteration, never inside the epoch loop: every epoch
         replays the SAME rollout. Without it the policy random-walks around the
         optimum -- once solved, the advantage spread collapses ~100x and gae()
-        normalizes mostly noise, so success oscillates (1.00 -> 0.38 -> 0.98)."""
+        normalizes mostly noise, so success oscillates (1.00 -> 0.38 -> 0.98).
+
+        Args:
+            iteration (int): the current iteration, 0-based.
+            n_iterations (int): the whole run's budget, i.e. what the schedule
+                counts down across.
+
+        Returns:
+            float: the lr now in force -- lr_initial unchanged when
+            lr_anneal is falsy.
+        """
         if not self.lr_anneal:
             return self.lr_initial
 
@@ -352,7 +441,19 @@ class PPOAgent:
         return lr
 
     def learn(self, batch, mini_batch_size):
-        """n_epochs of minibatch updates over one rollout, with an optional early stop on target_kl."""
+        """Up to n_epochs of minibatch updates over one rollout, stopping early
+        if approx_kl passes target_kl.
+
+        Args:
+            batch (dict): split_pad_mask's output, the whole rollout as
+                padded sequences.
+            mini_batch_size (int): sequences per update -- resolved by the
+                probe, and retried smaller by the OOM fallback around this call.
+
+        Returns:
+            tuple[int, list[dict]]: (epochs_run, logs), logs holding one
+            minibatch_loss info dict per update, each with grad_norm added.
+        """
         # rebuilt every iteration since each rollout has a different number
         # of sequences. num_workers=0: data is already in-memory tensors.
         loader = DataLoader(
@@ -394,7 +495,19 @@ class PPOAgent:
 
     # ---- evaluation ----
     def evaluate(self, n_episodes=None, deterministic=None):
-        """Play complete episodes on private envs, no gradients. Returns success/timeout/return/length stats."""
+        """Play complete episodes on private, fixed-seed envs, no gradients.
+
+        Args:
+            n_episodes (int | None): how many episodes; None uses
+                n_eval_episodes. Episode i always runs seed eval_seed + i, so
+                the set is the same across calls and across runs.
+            deterministic (bool | None): True takes the argmax action, False
+                samples from pi; None uses config.eval_deterministic.
+
+        Returns:
+            dict: eval_episodes, success_rate, timeout_rate, return_mean,
+            return_std (across EPISODES, not seeds) and length_mean.
+        """
         if n_episodes is None:
             n_episodes = self.n_eval_episodes
         if deterministic is None:
@@ -418,9 +531,8 @@ class PPOAgent:
         # every phase below is sync=False: innermost loop, where a cuda
         # synchronize() per step would cost more than what it measures.
         for first in range(0, n_episodes, n_slots):
-            # fixed seed per episode index, so episode i is reproducible across
-            # calls. Clip pins a short final wave's surplus slots to the last
-            # episode; `counts` drops the duplicate.
+            # Fixed seed per episode index, so episode i is reproducible. Clip
+            # pins a short wave's surplus slots; `counts` drops the duplicate.
             episode = np.minimum(first + np.arange(n_slots), n_episodes - 1)
 
             # units=0: a reset is not an env step
@@ -483,12 +595,28 @@ class PPOAgent:
 
     # ---- whole run ----
     def train_agent(self, n_iterations=None, n_iterations_report=None, logger=None):
-        """Run n_iterations of train(), evaluating every n_iterations_report. Checkpoints, returns the history.
+        """The whole run: probe the minibatch size, then train, evaluating
+        periodically and checkpointing at the end.
 
         A run is indivisible: it trains all n_iterations or raises. Nothing
         outside this class gets a window into a run in progress -- HPOPPO
         prunes between seeds, on whole finished runs, so optuna needs no hook
-        in here and none is offered."""
+        in here and none is offered.
+
+        Args:
+            n_iterations (int | None): iterations to run; None uses the
+                config's. This is the budget every encoder is compared at.
+            n_iterations_report (int | None): evaluate and print every this
+                many iterations; None uses the config's. The last iteration
+                always reports.
+            logger (logging.Logger | None): where output goes; None prints.
+
+        Returns:
+            list[dict]: one train() stats dict per iteration, with lr and
+            iteration added, and the eval_* numbers on reporting iterations.
+            The learning curve itself is left on self.eval_history and
+            written into the checkpoint.
+        """
         if n_iterations is None:
             n_iterations = self.n_iterations
         if n_iterations_report is None:
@@ -540,9 +668,8 @@ class PPOAgent:
             report = i % n_iterations_report == 0 or i == n_iterations - 1
 
             if report:
-                # one call, reused below: twice could give different numbers and
-                # desync printed vs stored. Timed outside the "iteration" clock
-                # -- it's the cost of measuring, not of training.
+                # One call, reused below, so printed and stored can't desync.
+                # Timed outside "iteration": measuring is not training.
                 with self.timing.phase("evaluate"):
                     evaluation = self.evaluate()
 
@@ -558,9 +685,8 @@ class PPOAgent:
                 # evaluation, no rollout number to collide with
                 eval_history.append({"iteration": i, **evaluation})
 
-                # std is the spread over episodes, NOT an error bar on the mean:
-                # returns are bimodal (0 or ~0.9), so it pins near 0.45 whenever
-                # success is mid-range. The error bar is std/sqrt(n_eval_episodes).
+                # Spread over episodes, NOT an error bar on the mean: returns
+                # are bimodal, so this pins near 0.45 at mid-range success.
                 log(
                     f"{i:>5} {stats['episodes']:>4} {stats['return_mean']:>7.3f} "
                     f"{stats['length_mean']:>6.1f} {stats['entropy']:>8.4f} "

@@ -1,3 +1,8 @@
+"""Config: every hyperparameter the project shares, plus the paths and names
+derived from them. Abstract -- an encoder subclass fills in _configure_model().
+The toolbox it inherits (env builders, checkpoints, HPO bookkeeping, viewers)
+lives in helper.py."""
+
 import random
 import os
 import re
@@ -15,16 +20,23 @@ class Config(Helper):
     feature_extractor = None  # set by each subclass in _configure_model()
 
     def __init__(self, tbptt_length=None):
+        """Set every shared hyperparameter, call the subclass's
+        _configure_model(), then derive the directories this run writes to.
+
+        Args:
+            tbptt_length (int | None): how many steps the gradient may flow
+                back through. None (stored as "max") = cut on episode
+                boundaries only, i.e. full BPTT. GRU only.
+
+        Raises:
+            ValueError: a length on a non-recurrent encoder, or one below 1.
+        """
         self.seed_list = [0, 15, 12, 97, 98]
 
         self.input_size = 7 * 7 * 20  # 980 after flatten_obs one-hots each cell
 
-        # How many steps the gradient may flow back through; "max" = cut on
-        # episode boundaries only. Read by PPOAgent.split_pad_mask. NOT
-        # searched -- each length is its own independent study, so that the
-        # three can be compared without a pruner or a sampler ever having to
-        # rank one length against another. It is fixed here and it names the
-        # directory the run writes to (suffix below).
+        # How far the gradient may flow back; "max" = episode boundaries only.
+        # Never searched: each length is its own study, in its own directory.
         self.tbptt_length = "max" if tbptt_length is None else int(tbptt_length)
 
         self.name_env = "MiniGrid-MemoryS17Random-v0"  # "MiniGrid-MemoryS11-v0" # "MiniGrid-DoorKey-8x8-v0"
@@ -37,17 +49,13 @@ class Config(Helper):
         # required in notebooks and scripts without an __main__ guard.
         self.async_envs = True
 
-        # T: build_env feeds this back as the env's max_steps, so MiniGrid's
-        # truncation and success reward (1 - 0.9*step_count/max_steps) move
-        # with it. Derived from env_max_steps so it tracks name_env.
+        # T: build_env feeds this back as the env's max_steps, so truncation
+        # and the success reward (1 - 0.9*step_count/max_steps) move with it.
         self.worker_steps = self.env_max_steps // 4
         self.n_total_steps = self.n_workers * self.worker_steps  # W * T
 
-        # Declared, not chosen: every name below is drawn per trial and written
-        # by apply_params, which refuses names the config lacks -- hence the
-        # placeholders. None, not a default, so a path that forgets to apply
-        # params fails loudly instead of training something it didn't report.
-        # Hand-picked runs get real numbers from ConfigNoHPO, only there.
+        # Declared, not chosen: drawn per trial and written by apply_params.
+        # None, not a default, so a path that forgets to apply params fails.
         self.lr = None
         self.wd = None
         self.gamma = None
@@ -67,78 +75,48 @@ class Config(Helper):
         # candidates, largest first: run_with_batch_size_fallback uses the largest that fits
         self.mini_batch_size = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4]
 
-        # the budget every encoder is compared at: change it for all or none.
-        # Raising n_iterations is safe -- the lr schedule spans it, so it just
-        # decays more slowly. Deliberately NOT searched: how much compute a
-        # trial gets to spend must not be a tuned hyperparameter, or a study
-        # could "win" by buying more passes over the same rollout instead of by
-        # having the better encoder.
+        # The budget every encoder is compared at: change it for all or none.
+        # Never searched -- a trial must not be able to win by buying compute.
         self.n_epochs = 3
         self.n_iterations = 1000
         self.n_iterations_report = 10
 
-        # master switch for every clock (Timing in helper.py). Off: each
-        # `timing.phase(...)` becomes a bare yield, no cuda.synchronize() is
-        # issued to measure, no TIME table printed. "took ..." stays either way.
+        # Master switch for every clock (Timing in helper.py). Off: phases
+        # become bare yields, no cuda.synchronize(), no TIME table printed.
         self.calculate_time = False
 
         self.n_eval_episodes = 50
         self.eval_seed = 10_000
-        # False = sample actions, True = argmax. Sampling is safe: entropy_coef
-        # plus the lr decay drive entropy to ~0 by the time the task is solved,
-        # so a sampled and an argmax episode take the same actions.
+        # False = sample actions, True = argmax. Sampling is safe: entropy is
+        # ~0 by the time the task is solved, so both take the same actions.
         self.eval_deterministic = False
 
         self.n_trials = 50
         self.seed_hpo = 42
         self.hpo_direction = "maximize"
 
-        # optuna.pruners.MedianPruner, in the units HPOPPO's step uses -- one
-        # step is one SEED (step = index into seed_list), so a trial reports
-        # len(seed_list) times and the numbers below read in seeds/trials. A
-        # trial is therefore killed between two full training runs, never
-        # inside one: the finest granularity is 1/len(seed_list) of a trial.
-        #
-        # 0 = the first check happens after the first seed, which is the point
-        # of pruning per seed at all -- a hopeless draw costs one run out of
-        # five instead of five. It is also the most aggressive setting the
-        # scheme allows, and the cost is visible in the 50-trial GRU study in
-        # no_need/log_2026-08-06_22-46-09.log, which ran exactly this: all 25 of
-        # its prunes fired after seed 0, and four of them killed draws whose
-        # seed-0 return_mean was 0.937-0.956, i.e. level with the eventual
-        # winner's per-seed values. Raise this to 1 to judge on two seeds
-        # instead of one: half the prunes' savings, far fewer good draws lost.
+        # MedianPruner knobs, in HPOPPO's units: one step is one SEED. 0 means
+        # the first check runs after seed 0 -- aggressive; 1 judges on two.
         self.hpo_pruner_warmup = 0
 
-        # how often to check, offset by the warmup. 1 = at every seed. Any
-        # larger value skips seeds, and with only len(seed_list) steps in a
-        # whole trial there is nothing to gain by it: should_prune() measures
-        # ~4 ms against a 50-trial sqlite study, against minutes to hours per
-        # seed. Use hpo_pruner_warmup, not this, to delay the first check.
+        # How often to check, offset by the warmup. 1 = at every seed; with so
+        # few steps per trial there is nothing to gain by skipping any.
         self.hpo_pruner_interval = 1
 
-        # no pruning at all until this many trials have COMPLETED, and no
-        # pruning at a given step unless this many completed trials reported a
-        # value there -- a median over one or two trials is not a median. Since
-        # every COMPLETE trial reports at all len(seed_list) steps, the second
-        # gate never binds independently of the first under a fixed config; it
-        # earns its keep only on a study resumed after seed_list changed length,
-        # which is what HPOPPO's seed-count user-attr check warns on.
+        # No pruning until this many trials COMPLETED, and none at a step
+        # unless that many reported there -- a median over two is not a median.
         self.hpo_pruner_startup_trials = 5
         self.hpo_pruner_min_trials = 5
 
-        # Exactly two values are accepted -- "return_mean_minus-std" or
-        # "success_rate_mean_minus-std". Both score mean - hpo_lambda*std
-        # across seeds; they differ only in the metric aggregated.
+        # Exactly two values: "return_mean_minus-std" or
+        # "success_rate_mean_minus-std". Both score mean - lambda*std.
         self.hpo_objective = "return_mean_minus-std"
 
         # score = mean - lambda * std, both across seeds.
         self.hpo_lambda = 1.0
 
-        # The PPO half, shared by both encoders so tuned values stay
-        # comparable. Each subclass appends its architecture knobs in
-        # _configure_model(); ConfigNoHPO replaces it with []. Every "name"
-        # must already be an attribute above -- apply_params raises otherwise.
+        # The PPO half, shared by both encoders; subclasses append their
+        # architecture knobs. Every "name" must be an attribute above.
         self.search_space = [
             {"type": "float", "name": "lr", "low": 1e-5, "high": 1e-2, "log": True},
             {
@@ -201,9 +179,8 @@ class Config(Helper):
         if self.tbptt_length != "max" and self.tbptt_length < 1:
             raise ValueError(f"tbptt_length={self.tbptt_length} must be at least 1")
 
-        # Full BPTT keeps the plain pretrained_model_<ENCODER>/ it always had;
-        # each truncated length gets its own sibling, so three independent
-        # studies at different L can never write over each other.
+        # Full BPTT keeps the plain pretrained_model_<ENCODER>/; each truncated
+        # length gets a sibling, so studies never write over each other.
         self.tbptt_suffix = (
             "" if self.tbptt_length == "max" else f"_tbptt{self.tbptt_length}"
         )
@@ -224,28 +201,47 @@ class Config(Helper):
 
     @property
     def name_hpo(self):
+        """What this study IS, in one filename-safe token: encoder, env and
+        backward reach, e.g. GRU_MiniGrid-MemoryS17Random-v0_tbptt8 (str)."""
         env = self.name_env.replace("/", "-")
         return f"{self.feature_extractor.upper()}_{env}{self.tbptt_suffix}"
 
     @property
     def name_study(self):
+        """The optuna study name, "ppo_" + name_hpo (str). Two runs agreeing on
+        this resume one study; differing on it start two."""
         return f"ppo_{self.name_hpo}"
 
     @property
     def path_hpo_csv(self):
+        """Where csv_study_export writes the one-row-per-trial table (str)."""
         return os.path.join(self.dir_hpo, f"hpo_csv_{self.name_hpo}.csv")
 
     @property
     def path_hpo_db(self):
+        """The study's sqlite URL (str) -- optuna's storage, and the thing that
+        makes a search resumable."""
         path = os.path.join(self.dir_hpo, f"hpo_db_{self.name_hpo}.db")
         return "sqlite:///" + path
 
     @property
     def path_hpo_sampler(self):
+        """Where the pickled TPE sampler lives (str). Restoring it is what
+        makes a resumed study exploit rather than re-explore."""
         return os.path.join(self.dir_hpo, f"hpo_sampler_{self.name_hpo}.pkl")
 
     def set_seed(self, env=None, seed=None):
-        """Seed python/numpy/torch and env. Defaults to seed_list[0]."""
+        """Seed python, numpy, torch (and cudnn) and optionally an env, then
+        record the seed on the config as self.seed.
+
+        Args:
+            env (gym.Env | None): also seed this env's reset and its two
+                spaces. None seeds the libraries only.
+            seed (int | None): the seed; None uses seed_list[0].
+
+        Returns:
+            int: the seed applied.
+        """
         if seed is None:
             seed = self.seed_list[0]
         self.seed = seed

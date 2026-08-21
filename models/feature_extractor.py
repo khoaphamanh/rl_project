@@ -16,7 +16,15 @@ CELL_SIZE = sum(OBS_CHANNEL_SIZES)  # 20 per cell
 
 
 def flatten_obs(x):
-    """One-hot each cell's channels: (batch, seq_len, 7, 7, 3) -> (batch, seq_len, 980)."""
+    """One-hot each cell's channels: (batch, seq_len, 7, 7, 3) -> (batch, seq_len, 980).
+
+    Args:
+        x (torch.Tensor): uint8 observations, (batch, seq_len, 7, 7, 3), each
+            channel an index into OBS_CHANNEL_SIZES.
+
+    Returns:
+        torch.Tensor: float, (batch, seq_len, 980).
+    """
     x = x.long()
     channels = [F.one_hot(x[..., c], n) for c, n in enumerate(OBS_CHANNEL_SIZES)]
     onehot = torch.cat(channels, dim=-1)
@@ -24,7 +32,14 @@ def flatten_obs(x):
 
 
 def random_obs(*shape):
-    """A random but valid observation, (*shape, 7, 7, 3) uint8, each channel drawn from its own valid range."""
+    """A random but valid observation, each channel drawn from its own valid range.
+
+    Args:
+        *shape (int): the leading dimensions, e.g. (batch, seq_len).
+
+    Returns:
+        torch.Tensor: uint8, (*shape, 7, 7, 3).
+    """
     channels = [torch.randint(0, n, (*shape, 7, 7)) for n in OBS_CHANNEL_SIZES]
     return torch.stack(channels, dim=-1).to(torch.uint8)
 
@@ -32,6 +47,13 @@ def random_obs(*shape):
 class MLP(nn.Module):
     """Memoryless: n_layers x (Linear -> ReLU)."""
     def __init__(self, input_size, hidden_size, n_layers):
+        """Stacks n_layers Linear+ReLU blocks.
+
+        Args:
+            input_size (int): features per timestep after flatten_obs, i.e. 980.
+            hidden_size (int): width of every hidden layer, and of the output.
+            n_layers (int): how many Linear+ReLU blocks.
+        """
         super().__init__()
         layers = []
         for i in range(n_layers):
@@ -41,16 +63,42 @@ class MLP(nn.Module):
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
+        """Encode each timestep on its own -- no state crosses the sequence.
+
+        Args:
+            x (torch.Tensor): uint8 observations, (batch, seq_len, 7, 7, 3).
+
+        Returns:
+            torch.Tensor: features, (batch, seq_len, hidden_size).
+        """
         return self.layers(flatten_obs(x))
 
 
 class GRU(nn.Module):
     """Single-layer GRU. Hidden: optional h_0."""
     def __init__(self, input_size, hidden_size):
+        """One batch_first nn.GRU layer; no dropout, deliberately.
+
+        Args:
+            input_size (int): features per timestep after flatten_obs, i.e. 980.
+            hidden_size (int): width of h, and of the output.
+        """
         super().__init__()
         self.gru = nn.GRU(input_size, hidden_size, batch_first=True)
 
     def forward(self, x, hidden=None, return_hidden=False):
+        """Encode the sequence, carrying h forward from step to step.
+
+        Args:
+            x (torch.Tensor): uint8 observations, (batch, seq_len, 7, 7, 3).
+            hidden (torch.Tensor | None): h_0, (1, batch, hidden_size). None
+                starts from zeros; a stored h continues an earlier sequence.
+            return_hidden (bool): also return the final h.
+
+        Returns:
+            torch.Tensor: features (batch, seq_len, hidden_size) -- or
+            (features, h_final) when return_hidden is True.
+        """
         output, hidden = self.gru(flatten_obs(x), hidden)
         return (output, hidden) if return_hidden else output
 
@@ -70,11 +118,26 @@ NUM_SEQUENCES = N_TOTAL_STEPS // SEQ_LEN
 
 
 def n_params(model):
+    """Total number of parameters.
+
+    Args:
+        model (nn.Module): any module.
+
+    Returns:
+        int: the parameter count.
+    """
     return sum(p.numel() for p in model.parameters())
 
 
 def memory_test(model, x, name):
-    """Perturbs t=0 and prints which output timesteps change, to check the encoder carries memory forward."""
+    """Perturb t=0 and print which output timesteps change -- does the encoder
+    carry memory forward?
+
+    Args:
+        model (nn.Module): the encoder under test.
+        x (torch.Tensor): uint8 observations, (batch, seq_len, 7, 7, 3).
+        name (str): label for the printed row.
+    """
     x_changed = x.clone()
 
     # perturb the first observation only. Modulo per channel keeps every index
@@ -91,7 +154,14 @@ def memory_test(model, x, name):
 
 
 def causality_test(model, x, name):
-    """Perturbs the last step and prints which earlier outputs change: checks for future leakage."""
+    """Perturb the last step and print which EARLIER outputs change -- any that
+    do would be future leakage.
+
+    Args:
+        model (nn.Module): the encoder under test.
+        x (torch.Tensor): uint8 observations, (batch, seq_len, 7, 7, 3).
+        name (str): label for the printed row.
+    """
     x_changed = x.clone()
 
     ranges = torch.tensor(OBS_CHANNEL_SIZES, dtype=x.dtype)
@@ -107,6 +177,8 @@ def causality_test(model, x, name):
 
 
 def main():
+    """The file's self-check: shapes, parameter counts, and the memory and
+    causality tests for both encoders. No training, a few seconds to run."""
     print(f"obs_shape={OBS_SHAPE}  input_size={INPUT_SIZE}  hidden_size={HIDDEN_SIZE}")
     print(
         f"workers={N_WORKERS} x worker_steps={WORKER_STEPS}  ->  n_total_steps={N_TOTAL_STEPS}"

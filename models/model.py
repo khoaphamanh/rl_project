@@ -17,6 +17,14 @@ class Network(nn.Module):
     """Shared encoder feeding an actor head and a critic head, trained jointly by one optimizer."""
 
     def __init__(self, feature_extractor, hidden_size, n_actions):
+        """Put an actor head and a critic head on an already-built encoder.
+
+        Args:
+            feature_extractor (nn.Module): an MLP or GRU from
+                models/feature_extractor.py; a GRU sets is_recurrent.
+            hidden_size (int): the encoder's output width, so the heads' input.
+            n_actions (int): size of the action space, 7 on MiniGrid.
+        """
         super().__init__()
         self.feature_extractor = feature_extractor
         self.is_recurrent = isinstance(feature_extractor, GRU)
@@ -24,7 +32,18 @@ class Network(nn.Module):
         self.fc_critic = nn.Linear(hidden_size, 1)
 
     def forward(self, x, hidden=None):
-        """(batch, seq_len, ...) -> (dist, value, hidden)."""
+        """Encode once, then read the actor and the critic off the same features.
+
+        Args:
+            x (torch.Tensor): uint8 observations, (batch, seq_len, 7, 7, 3).
+            hidden (torch.Tensor | None): h_0, (1, batch, hidden_size);
+                ignored by a memoryless encoder.
+
+        Returns:
+            tuple: (dist, value, hidden) -- a Categorical over actions
+            (batch, seq_len), values (batch, seq_len), and the final h
+            (None when the encoder is not recurrent).
+        """
         if self.is_recurrent:
             features, hidden = self.feature_extractor(x, hidden, return_hidden=True)
         else:
@@ -48,10 +67,20 @@ SEQ_LEN = 5
 
 
 def n_params(model):
+    """Total number of parameters.
+
+    Args:
+        model (nn.Module): any module.
+
+    Returns:
+        int: the parameter count.
+    """
     return sum(p.numel() for p in model.parameters())
 
 
 def main():
+    """The file's self-check: a forward pass per encoder, the shapes of every
+    head's output, and proof that one backward reaches the shared encoder."""
     print(f"obs_shape={OBS_SHAPE}  hidden_size={HIDDEN_SIZE}  n_actions={N_ACTIONS}")
     print(f"input: ({NUM_SEQUENCES}, {SEQ_LEN}, {OBS_SHAPE})\n")
 

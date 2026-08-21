@@ -1,3 +1,6 @@
+"""The MLP arm of the ablation: the memoryless control the GRU is measured
+against. Everything but the architecture comes from Config."""
+
 from config.config import Config
 
 
@@ -6,6 +9,9 @@ class ConfigMLP(Config):
     with no hidden state. Sets hidden_size and n_layers_mlp."""
 
     def _configure_model(self):
+        """Names the encoder, sets its two architecture knobs (hidden_size,
+        n_layers_mlp) and appends both to the shared search_space. Called by
+        Config.__init__; sets attributes, returns nothing."""
         self.feature_extractor = "MLP"
 
         # Architecture only -- the PPO half lives in Config, edited there once.

@@ -18,6 +18,9 @@ from config import make_config
 
 
 def main():
+    """Parse the command line and open the viewer. Takes no arguments --
+    everything comes from argv: --detail and --fullscreen, both flags. Blocks
+    until the window closes."""
     parser = argparse.ArgumentParser(
         description="Play the configured MiniGrid env by hand in a pygame window."
     )
@@ -37,8 +40,7 @@ def main():
     args = parser.parse_args()
 
     # Config is abstract, so this needs an encoder to build -- but nothing the
-    # explorer reads is per-encoder: name_env, force_cue_visible and
-    # worker_steps all live on the shared base. MLP is just the cheapest build.
+    # explorer reads is per-encoder. MLP is just the cheapest build.
     config = make_config("MLP")
 
     print(f"{config.name_env}   (max_steps {config.worker_steps})")

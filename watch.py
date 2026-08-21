@@ -11,6 +11,11 @@ from config.config_no_hpo import ConfigNoHPO
 
 
 def main():
+    """Parse the command line, resolve it to exactly one checkpoint, and play
+    it. Takes no arguments -- everything comes from argv: model (str, MLP|GRU),
+    steps_per_sec (float), --hpo / --fullscreen (flags), --tbptt (int, GRU
+    only), --seed (int, an INDEX into seed_list), --trial (str, best|N|final,
+    --hpo only). Blocks until the window closes."""
     parser = argparse.ArgumentParser(
         description="Watch a trained PPO policy play in a pygame window."
     )
@@ -76,9 +81,8 @@ def main():
             f"-- it is one run, in no_hpo/, and --seed alone picks the file."
         )
 
-    # the flag picks the config class, and the class knows where its own
-    # checkpoints live -- nothing here spells a directory, so the viewer
-    # cannot drift from the trainer.
+    # The flag picks the config class, and the class knows where its own
+    # checkpoints live, so the viewer cannot drift from the trainer.
     try:
         config = (
             make_config(args.model, tbptt_length=args.tbptt)
@@ -105,9 +109,8 @@ def main():
         "         F11 fullscreen   Q quit"
     )
 
-    # Blocks until the window closes. A missing file is not a bug -- naming a
-    # run that was never trained is the ordinary way to mistype this command --
-    # so it gets the path, not a traceback.
+    # Blocks until the window closes. A missing file is not a bug (an untrained
+    # run is the ordinary mistype), so it gets the path, not a traceback.
     try:
         if args.steps_per_sec is not None:
             config.watch_agent(

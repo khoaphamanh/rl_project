@@ -14,6 +14,10 @@ from config import make_config, MODEL_CHOICES
 
 
 def main():
+    """Parse the command line, build the config it names, and run the search
+    and/or the final report. Takes no arguments -- everything comes from argv:
+    model (str, MLP|GRU), --tbptt (int, GRU only), --trials (int, a TOTAL not
+    an increment), --final-only / --search-only (flags)."""
     parser = argparse.ArgumentParser(
         description="Search hyperparameters for PPO with one feature extractor."
     )

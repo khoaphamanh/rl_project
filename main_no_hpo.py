@@ -13,7 +13,22 @@ from config.config_no_hpo import ConfigNoHPO, FEATURE_EXTRACTOR
 
 
 def report_run(logger, eval_history, fresh, curve_deterministic):
-    """Log learning curve and FINAL blocks (sampled/argmax). Returns (sampled, argmax)."""
+    """Log the learning curve, then one FINAL block per eval mode.
+
+    The two blocks measure the same weights two ways and are NOT comparable to
+    each other, which is why they are printed apart.
+
+    Args:
+        logger (logging.Logger): where the lines go.
+        eval_history (list[dict]): one evaluation per report iteration, as
+            train_agent stored it; the last entry is the run's own final one.
+        fresh (dict): an evaluation just measured in the OTHER mode.
+        curve_deterministic (bool): was eval_history measured by argmax
+            (True) or by sampling (False)? Decides which of the two is which.
+
+    Returns:
+        tuple[dict, dict]: (sampled, argmax), the two evaluations sorted out.
+    """
     last = eval_history[-1]
     if curve_deterministic:
         argmax, sampled = last, fresh
@@ -28,6 +43,8 @@ def report_run(logger, eval_history, fresh, curve_deterministic):
         )
 
     def block(title, evaluation, note):
+        """One FINAL block: title (str) names the eval mode, evaluation (dict)
+        holds its numbers, note (str) says where they came from."""
         logger.info("")
         logger.info(f"FINAL ({title})   {note}")
         logger.info(f"  success_rate  {evaluation['success_rate']:.3f}")
@@ -53,7 +70,17 @@ def report_run(logger, eval_history, fresh, curve_deterministic):
 
 
 def run_one(model_name, seed, logger, tbptt=None):
-    """Train encoder from seed. Returns a result_row (seed + SUMMARY_METRICS)."""
+    """Train one encoder at one seed, checkpoint it, and report it.
+
+    Args:
+        model_name (str): "MLP" or "GRU".
+        seed (int): the seed to train at (a value, not an index).
+        logger (logging.Logger): where the run's output goes.
+        tbptt (int | None): the GRU's backward reach; None = full BPTT.
+
+    Returns:
+        dict: one seed's row for log_seed_summary, from seed_result_row.
+    """
     config = ConfigNoHPO(model_name, tbptt_length=tbptt)
     agent = PPOAgent(config, seed=seed)
 
@@ -81,7 +108,20 @@ def run_one(model_name, seed, logger, tbptt=None):
 
 
 def report_saved(model_name, seed_index, seed, logger, tbptt=None):
-    """Load checkpoint and report it (no training). Returns dict or None if missing."""
+    """Load one no_hpo/ checkpoint and report it, training nothing.
+
+    Args:
+        model_name (str): "MLP" or "GRU".
+        seed_index (int): position in seed_list, which picks the file.
+        seed (int): the seed value that index stands for, for the log lines.
+        logger (logging.Logger): where the report goes.
+        tbptt (int | None): the GRU's backward reach; None = full BPTT. Names
+            the directory read from.
+
+    Returns:
+        dict | None: one seed's row for log_seed_summary, or None when there
+        is no checkpoint or it carries no eval_history.
+    """
     config = ConfigNoHPO(model_name, tbptt_length=tbptt)
     path = config.select_run(seed_index=seed_index)
     if not os.path.exists(path):
@@ -112,6 +152,10 @@ def report_saved(model_name, seed_index, seed, logger, tbptt=None):
 
 
 def main():
+    """Parse the command line, then train (or just report) every seed in
+    seed_list and close with the summary table and the score. Takes no
+    arguments -- everything comes from argv: model (str, MLP|GRU), --tbptt
+    (int, GRU only), --report-only (flag)."""
     parser = argparse.ArgumentParser(
         description="Train PPO with hand-picked hyperparameters (config/config_no_hpo.py)."
     )

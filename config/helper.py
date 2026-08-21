@@ -31,22 +31,19 @@ import optuna
 import pygame
 from models.model import Network
 
-# The two metrics a run reports and the study can rank on. Both are one
-# number per seed; mean and std then aggregate ACROSS seeds, never across the
-# eval episodes within one run.
+# The two metrics a run reports and the study can rank on: one number per
+# seed, aggregated ACROSS seeds, never across the eval episodes within a run.
 _HPO_METRICS = ("return_mean", "success_rate")
 
 # Exactly two objectives exist, both scored mean - hpo_lambda*std across seeds.
-# Median/IQR were dropped: with a handful of seeds they estimate nothing the
-# mean/std pair doesn't, and two objectives keep every report comparable.
+# Median/IQR were dropped: at five seeds they estimate nothing mean/std doesn't.
 _HPO_OBJECTIVES = {
     "return_mean_minus_std": "return_mean",
     "success_rate_mean_minus_std": "success_rate",
 }
 
-# the columns of the closing per-seed table (Helper.log_seed_summary), shared
-# by the hand-picked run and the search's final report. "sampled" is the policy
-# sampled from pi, "argmax" the same weights evaluated greedily.
+# Columns of the closing per-seed table (Helper.log_seed_summary): "sampled"
+# is the policy sampled from pi, "argmax" the same weights scored greedily.
 _SEED_SUMMARY_METRICS = (
     "sampled_return",
     "sampled_success_rate",
@@ -56,9 +53,22 @@ _SEED_SUMMARY_METRICS = (
 
 
 def parse_hpo_objective(objective):
-    """The per-seed metric behind hpo_objective. Only the two entries of
-    _HPO_OBJECTIVES are accepted; anything else raises rather than defaulting
-    silently to a scale the rest of the reports would not match."""
+    """The per-seed metric behind an hpo_objective string.
+
+    Only the two entries of _HPO_OBJECTIVES are accepted; anything else raises
+    rather than defaulting silently to a scale the rest of the reports would
+    not match.
+
+    Args:
+        objective (str): "return_mean_minus-std" or
+            "success_rate_mean_minus-std"; case and -/_ are normalized.
+
+    Returns:
+        str: the metric key, "return_mean" or "success_rate".
+
+    Raises:
+        ValueError: on anything else.
+    """
     key = str(objective).strip().lower().replace("-", "_")
     if key not in _HPO_OBJECTIVES:
         raise ValueError(
@@ -76,7 +86,14 @@ _CSV_TIMESTAMP = "%Y-%m-%d %H:%M:%S"
 
 
 def format_clock(seconds):
-    """A duration someone WAITS through: 1h 05m 03s / 5m 03s / 42.1s."""
+    """A duration someone WAITS through: 1h 05m 03s / 5m 03s / 42.1s.
+
+    Args:
+        seconds (float): the duration.
+
+    Returns:
+        str: the formatted clock.
+    """
     if seconds < 60:
         return f"{seconds:.1f}s"
     minutes, seconds = divmod(int(seconds), 60)
@@ -87,7 +104,14 @@ def format_clock(seconds):
 
 
 def format_mean(seconds):
-    """A per-call mean duration, in whatever unit (us/ms/s) keeps it readable."""
+    """A per-call mean duration, in whatever unit keeps it readable.
+
+    Args:
+        seconds (float): the mean duration.
+
+    Returns:
+        str: the value in us, ms or s.
+    """
     if seconds < 1e-3:
         return f"{seconds * 1e6:.1f}us"
     if seconds < 1.0:
@@ -96,9 +120,15 @@ def format_mean(seconds):
 
 
 def log_with(logger, level="info"):
-    """logger.<level>, or print when there is no logger -- so everything here
-    is usable from a scratch script and from a real run without a branch at
-    every call site."""
+    """The write function to use, so no call site needs a logger/print branch.
+
+    Args:
+        logger (logging.Logger | None): the run's logger, or None.
+        level (str): which method to take off it -- "info", "warning", "error".
+
+    Returns:
+        callable: logger.<level>, or the builtin print when logger is None.
+    """
     return print if logger is None else getattr(logger, level)
 
 
@@ -109,9 +139,8 @@ class Timing:
     last report(), `run` for the whole seed; report() folds the first into the
     second so they never double-count. enabled=False makes phase() free."""
 
-    # phase key -> label, in the order the table prints them. A phase that has
-    # no row here is still accumulated, just not shown; a row whose phase was
-    # never timed is skipped.
+    # Phase key -> label, in print order. An unlisted phase is still
+    # accumulated, just not shown; a row never timed is skipped.
     ROWS = (
         ("sample", "sample (collect)"),
         ("env_step", "  env.step() + reset()"),
@@ -133,6 +162,14 @@ class Timing:
     )
 
     def __init__(self, device, enabled=True):
+        """Start the clocks for one run.
+
+        Args:
+            device (torch.device): what to synchronize before a measurement;
+                only a cuda device is ever waited on.
+            enabled (bool): False makes phase() a bare yield and prints no
+                table -- the master switch, config.calculate_time.
+        """
         self.device = device
         self.enabled = bool(enabled)
         self.window = {}  # phase -> [seconds, units], since the last report
@@ -153,14 +190,25 @@ class Timing:
 
     def sync(self, when=True):
         """Wait for queued GPU work, so a timer measures what ran and not what
-        was merely launched. when=False makes it a no-op -- for hot loops where
-        the synchronize would cost more than the thing it is timing."""
+        was merely launched.
+
+        Args:
+            when (bool): False makes it a no-op -- for hot loops where the
+                synchronize would cost more than the thing it is timing.
+        """
         if when and self.device.type == "cuda":
             torch.cuda.synchronize()
 
     def add(self, phase, seconds, units=1):
-        """Add one measurement to `phase`: one call, processing `units` of
-        whatever that call handles (W env steps, one minibatch, one forward)."""
+        """Add one measurement to the current window.
+
+        Args:
+            phase (str): the phase key, e.g. "sample" or "update_bwd".
+            seconds (float): how long this call took.
+            units (int): how much work that call handled -- W env steps, one
+                minibatch, one forward. 0 for a call that is not work of the
+                kind being counted, e.g. an env reset among env steps.
+        """
         entry = self.window.setdefault(phase, [0.0, 0, 0])
         entry[0] += seconds
         entry[1] += units
@@ -168,10 +216,20 @@ class Timing:
 
     @contextmanager
     def phase(self, name, units=1, sync=True):
-        """Time the block and add it to `name`. sync=False for a region that
-        queues no GPU work, or one ending in a copy that forces the sync anyway.
+        """Time the wrapped block and add it to `name`.
+
         No try/finally: a block that raised never ran to completion, so it is
-        not a measurement worth keeping."""
+        not a measurement worth keeping.
+
+        Args:
+            name (str): the phase key to add the measurement to.
+            units (int): work handled inside the block, as in add().
+            sync (bool): False for a region that queues no GPU work, or one
+                ending in a copy that forces the sync anyway.
+
+        Yields:
+            None: the block runs in the caller's scope.
+        """
         if not self.enabled:
             # not even the perf_counter calls: this wraps the innermost loops
             # (per env step, per minibatch), so "off" has to mean free
@@ -185,7 +243,12 @@ class Timing:
         self.add(name, time.perf_counter() - start, units)
 
     def fold(self):
-        """Add the window's totals to the run's and empty it; returns what the window held."""
+        """Add the window's totals to the run's and empty the window, so the
+        two never double-count.
+
+        Returns:
+            dict: what the window held, {phase: [seconds, units, calls]}.
+        """
         window = dict(self.window)
         for key, (seconds, units, calls) in window.items():
             total = self.run.setdefault(key, [0.0, 0, 0])
@@ -196,8 +259,14 @@ class Timing:
         return window
 
     def report(self, log):
-        """Print the table for everything since the last report and open a new
-        window. The numbers are not lost, only moved: fold() keeps them in `run`."""
+        """Print the table for everything since the last report, and open a
+        new window.
+
+        The numbers are not lost, only moved: fold() keeps them in `run`.
+
+        Args:
+            log (callable): where a line goes, logger.info or print.
+        """
         if not self.enabled:
             return
 
@@ -220,8 +289,15 @@ class Timing:
         )
 
     def summary(self, log, seed):
-        """Print the table for the whole seed. Call it after the last report(),
-        which is what folded the final window into `run`."""
+        """Print the table for the whole seed.
+
+        Call it after the last report(), which is what folded the final
+        window into `run`.
+
+        Args:
+            log (callable): where a line goes, logger.info or print.
+            seed (int): the seed being closed out, for the headline.
+        """
         if not self.enabled:
             return
 
@@ -238,19 +314,25 @@ class Timing:
         )
 
     def _table(self, log, timing, headline):
-        """One phase-by-phase table. `timing` is {phase: [seconds, units, calls]}
-        and must hold an "iteration" entry: the share column is a percentage of it."""
+        """Print one phase-by-phase table.
+
+        Args:
+            log (callable): where a line goes, logger.info or print.
+            timing (dict): {phase: [seconds, units, calls]}. Must hold an
+                "iteration" entry -- the share column is a percentage of it.
+            headline (str): the line printed above the table.
+        """
         iteration_total, _, n_iterations = timing["iteration"]
 
         def row(label, seconds, units, calls):
+            """One line of the table: label (str) plus that phase's
+            [seconds, units, calls] (float, int, int)."""
             share = 100.0 * seconds / iteration_total if iteration_total else 0.0
 
             per_call = format_mean(seconds / calls) if calls else "-"
 
-            # "-" when the two agree (one forward per call, one iteration per
-            # call): a per-unit column would just repeat per call. units=0 is
-            # deliberate for phases counted in seconds only -- an env reset is
-            # not an env step -- and has no per-unit either.
+            # "-" when the two agree, since per-unit would just repeat per
+            # call. units=0 marks phases counted in seconds only.
             per_unit = (
                 format_mean(seconds / units) if units and units != calls else "-"
             )
@@ -279,9 +361,8 @@ class Timing:
                 row(label, *timing[key])
 
 
-# what an out-of-memory RuntimeError says, lowercased. The CPU allocator is
-# matched on its class/file name too, since the wording ("can't"/"cannot") has
-# changed between torch versions.
+# What an out-of-memory RuntimeError says, lowercased. The CPU allocator is
+# matched on its class/file name too, since the wording moves between versions.
 _OOM_TEXT = (
     "out of memory",
     "can't allocate memory",
@@ -310,11 +391,19 @@ class Helper:
         return os.path.join(self.dir_pretrained_model, self.name_model)
 
     def build_env(self, render_mode=None):
-        """One MiniGrid game, wrapped as the config asks. Every env in the project comes from here."""
-        # Overriding max_steps with worker_steps is the point, not an option:
-        # MiniGrid computes truncation AND the success reward
-        # (1 - 0.9*step_count/max_steps) from it, so an episode can never
-        # outlive one rollout and the reward scale stays pinned to T.
+        """One MiniGrid game, wrapped as the config asks. Every env in the
+        project comes from here.
+
+        Args:
+            render_mode (str | None): passed to gym.make; "rgb_array" for the
+                pygame viewers, None for training.
+
+        Returns:
+            gym.Env: the env, wrapped in StartInCueView when
+            force_cue_visible is set.
+        """
+        # Overriding max_steps with worker_steps is the point: truncation and
+        # the success reward both come from it, so no episode outlives a rollout.
         env = gym.make(
             self.name_env,
             render_mode=render_mode,
@@ -327,13 +416,22 @@ class Helper:
         return env
 
     def build_vector_env(self, n_envs):
-        """n_envs MiniGrid games behind one step() call, via AsyncVectorEnv
-        (or SyncVectorEnv if async_envs=False). Applies force_cue_visible and
-        drops non-image obs so the batch fits in shared memory."""
-        # a closure, not a bound method, so the subprocess pickles this and
-        # not the whole Config. gymnasium wraps env_fns in cloudpickle, so a
-        # lambda survives the spawn start method macOS defaults to.
+        """n_envs MiniGrid games behind one step() call.
+
+        Drops the non-image observation keys so the batch fits in shared
+        memory; force_cue_visible still applies, via build_env.
+
+        Args:
+            n_envs (int): how many games to run in parallel.
+
+        Returns:
+            gym.vector.VectorEnv: AsyncVectorEnv (separate processes), or
+            SyncVectorEnv when config.async_envs is False.
+        """
+        # A closure, not a bound method, so the subprocess pickles this and not
+        # the whole Config; gymnasium's cloudpickle carries it across a spawn.
         def make():
+            """One env for one worker slot; returns a gym.Env."""
             return ImgObsWrapper(self.build_env())
 
         if self.async_envs:
@@ -347,18 +445,29 @@ class Helper:
 
     @property
     def env_max_steps(self):
-        """The env's own DEFAULT time limit (MemoryEnv: 5 * size^2), read off a
-        throwaway env so it can never disagree with name_env. Bare gym.make, not
-        build_env: build_env overrides max_steps with worker_steps, which would
-        both hand worker_steps back here and make this unreadable from the line
-        in Config.__init__ that derives worker_steps from it."""
+        """The env's own DEFAULT time limit (int; MemoryEnv: 5 * size^2), read
+        off a throwaway env so it can never disagree with name_env.
+
+        Bare gym.make, not build_env: build_env overrides max_steps with
+        worker_steps, which would both hand worker_steps back here and make
+        this unreadable from the line in Config.__init__ that derives
+        worker_steps from it."""
         env = gym.make(self.name_env)
         max_steps = env.unwrapped.max_steps
         env.close()
         return max_steps
 
     def build_extractor(self):
-        """The encoder named by self.feature_extractor. Both map (batch, seq, 7, 7, 3) -> (batch, seq, hidden_size)."""
+        """Build the encoder named by config.feature_extractor, at the widths
+        the config currently holds.
+
+        Returns:
+            nn.Module: an MLP or a GRU; both map
+            (batch, seq, 7, 7, 3) -> (batch, seq, hidden_size).
+
+        Raises:
+            ValueError: on an unknown feature_extractor.
+        """
         name = self.feature_extractor.upper()
 
         if name == "MLP":
@@ -369,14 +478,23 @@ class Helper:
         raise ValueError(f"unknown feature_extractor {self.feature_extractor!r}")
 
     def config_attributes(self, include_private=False):
-        """Every attribute this config carries, as a dict sorted by name: the
-        instance attributes plus the class-level ones and the @property values
-        defined anywhere in the hierarchy (the encoder subclass, Config,
-        Helper). Properties are read defensively -- one that raises is reported
-        in place rather than taking the caller down."""
+        """Every attribute this config carries: the instance attributes plus
+        the class-level ones and the @property values defined anywhere in the
+        hierarchy (the encoder subclass, Config, Helper).
+
+        Properties are read defensively -- one that raises is reported in
+        place rather than taking the caller down.
+
+        Args:
+            include_private (bool): also include names starting with "_".
+
+        Returns:
+            dict: {name: value}, sorted by name.
+        """
         values = {}
 
         def keep(key):
+            """Is this attribute name (str) wanted? Returns bool."""
             return include_private or not key.startswith("_")
 
         # what __init__ set, and what apply_params() has since overwritten
@@ -384,11 +502,8 @@ class Helper:
             if keep(key):
                 values[key] = value
 
-        # @property values and plain class attributes live on the class, not in
-        # vars(self), so they need the MRO walk. It runs most-derived-first and
-        # the `key in values` guard keeps the first hit, so an instance
-        # attribute wins over a class default, and a subclass property wins
-        # over a base-class one of the same name.
+        # Properties and class attributes aren't in vars(self), hence the MRO
+        # walk; most-derived-first, so instance and subclass values win.
         for klass in type(self).__mro__:
             if klass is object:
                 continue
@@ -409,9 +524,15 @@ class Helper:
         return dict(sorted(values.items()))
 
     def log_config_attributes(self, logger=None, title="HYPERPARAMETERS"):
-        """Writes config_attributes() one per line, alphabetically. A list of
-        dicts (search_space) goes one entry per line instead of one long
-        line."""
+        """Write config_attributes() one per line, alphabetically.
+
+        A list of dicts (search_space) goes one entry per line instead of one
+        long line.
+
+        Args:
+            logger (logging.Logger | None): where the lines go; None prints.
+            title (str): the heading above the dump.
+        """
         write = log_with(logger)
         attributes = self.config_attributes()
         width = max([len(key) for key in attributes] + [24]) + 2
@@ -429,28 +550,33 @@ class Helper:
 
     @property
     def run_tag(self):
-        """What this run IS, in one filename-safe token: the encoder plus the
-        backward reach, e.g. MLP, GRU, GRU_tbptt8. Names the log file, so a
+        """What this run IS, in one filename-safe token (str): the encoder plus
+        the backward reach, e.g. MLP, GRU, GRU_tbptt8. Names the log file, so a
         directory of logs can be told apart without opening any of them."""
         return f"{self.feature_extractor.upper()}{self.tbptt_suffix}"
 
     def build_logger(self, log_dir="logs", name="rl_project"):
-        """Builds one logger per invocation: writes to
-        logs/log_<encoder>[_tbptt<L>]_<date>_<time>.log and the terminal, with
-        every hyperparameter dumped at the top. Returns a logging.Logger; pass
-        to train_agent(logger=...)."""
+        """Build one logger per invocation, writing to a timestamped file and
+        to the terminal, with every hyperparameter dumped at the top.
+
+        Args:
+            log_dir (str): directory for the log files; created if missing.
+            name (str): the logging.Logger name. Loggers are singletons per
+                name, so an existing one's handlers are cleared, not added to.
+
+        Returns:
+            logging.Logger: pass it to train_agent(logger=...).
+        """
         os.makedirs(log_dir, exist_ok=True)
 
         started = datetime.now()
-        # the encoder and the backward reach lead the name: several runs a day
-        # differ only in those two, and sorting groups them by run instead of
-        # interleaving every encoder by the minute it happened to start.
+        # The encoder and backward reach lead the name, so sorting groups logs
+        # by run instead of interleaving encoders by start minute.
         stem = f"log_{self.run_tag}_{started:%Y-%m-%d_%H-%M-%S}"
         path = os.path.join(log_dir, f"{stem}.log")
 
-        # _2, _3, ... if the second-precision stamp collides (two commands
-        # started back to back); FileHandler opens in append mode, so without
-        # this the second run's log would silently continue the first's.
+        # _2, _3, ... if the second-precision stamp collides; FileHandler
+        # appends, so otherwise one run's log continues into another's.
         collision = 1
         while os.path.exists(path):
             collision += 1
@@ -464,9 +590,8 @@ class Helper:
         logger.handlers.clear()
         logger.propagate = False  # don't also hand records to the root logger
 
-        # utf-8 explicitly, not the locale default: torchinfo's summary table is
-        # drawn with box characters, and a Windows console/file defaulting to
-        # cp1252 raises UnicodeEncodeError on every one of those lines.
+        # utf-8 explicitly: torchinfo's summary is drawn with box characters,
+        # and a cp1252 default raises UnicodeEncodeError on every such line.
         file_handler = logging.FileHandler(path, encoding="utf-8")
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -503,9 +628,8 @@ class Helper:
         )
         logger.info(bar)
 
-        # attributes and @property values together, alphabetically -- the
-        # derived ones (device, path_model, ...) decide what was built and
-        # where it lands, so they belong in the dump next to what they came from
+        # Attributes and properties together, alphabetically -- the derived
+        # ones decide what was built and where it lands, so they belong here.
         self.log_config_attributes(logger)
 
         logger.info(bar)
@@ -514,9 +638,15 @@ class Helper:
 
     # running at the largest mini_batch_size candidate that fits in memory
     def _iter_error_chain(self, error):
-        """Yields error and everything it was raised from or during (via
-        __cause__/__context__), so a wrapped OOM (e.g. torchinfo re-raising a
-        generic RuntimeError) is still found. Guards against __context__ cycles.
+        """Walk an exception and everything it was raised from or during, so a
+        wrapped OOM (e.g. torchinfo re-raising a generic RuntimeError) is still
+        found. Guards against __context__ cycles.
+
+        Args:
+            error (BaseException): the exception caught.
+
+        Yields:
+            BaseException: error, then each __cause__/__context__ in turn.
         """
         seen = set()
         while error is not None and id(error) not in seen:
@@ -525,7 +655,15 @@ class Helper:
             error = error.__cause__ or error.__context__
 
     def _is_oom(self, error):
-        """True if error, or anything it wraps, is a CUDA or CPU-allocator out-of-memory error."""
+        """Is this an out-of-memory failure, from either allocator?
+
+        Args:
+            error (BaseException): the exception caught.
+
+        Returns:
+            bool: True if it, or anything it wraps, is a CUDA or CPU-allocator
+            out-of-memory error.
+        """
         for err in self._iter_error_chain(error):
             if isinstance(err, torch.cuda.OutOfMemoryError):
                 return True
@@ -536,8 +674,13 @@ class Helper:
         return False
 
     def _clear_traceback_chain(self, error):
-        """Drops the traceback of error and every cause it wraps, so a retry
-        doesn't keep the failed attempt's tensors referenced and OOM again."""
+        """Drop the traceback of an exception and every cause it wraps, so a
+        retry doesn't keep the failed attempt's tensors referenced and OOM
+        again.
+
+        Args:
+            error (BaseException): the exception caught.
+        """
         for err in self._iter_error_chain(error):
             err.__traceback__ = None
 
@@ -545,17 +688,30 @@ class Helper:
         """Give the allocator back whatever the failed attempt left behind."""
         gc.collect()
         if torch.cuda.is_available():
-            # python freeing a tensor returns it to torch's caching allocator,
-            # not to the driver. Without this the memory is free as far as
-            # torch is concerned and still unavailable to anything else.
+            # Freeing a tensor returns it to torch's caching allocator, not to
+            # the driver -- without this it stays unavailable to anything else.
             torch.cuda.empty_cache()
 
     def run_with_batch_size_fallback(
         self, run_fn, batch_size, logger=None, what="batch size"
     ):
-        """Calls run_fn(size) at the largest batch_size candidate that doesn't
-        OOM, falling back on failure. Returns (size_used, result); re-raises
-        the last OOM if every candidate fails. Non-OOM exceptions propagate."""
+        """Call run_fn at the largest candidate size that doesn't OOM.
+
+        Args:
+            run_fn (callable): takes one int, the size to try, and does the
+                work; called again at the next size down after an OOM.
+            batch_size (int | list[int] | tuple[int]): the candidates; sorted
+                largest-first here, so the caller's order doesn't matter.
+            logger (logging.Logger | None): where the fallback notes go.
+            what (str): what is being sized, for those notes.
+
+        Returns:
+            tuple[int, Any]: (size_used, run_fn's result).
+
+        Raises:
+            The last OOM if every candidate fails; any non-OOM exception
+            propagates untouched.
+        """
         sizes = batch_size if isinstance(batch_size, (list, tuple)) else [batch_size]
         candidates = sorted({int(size) for size in sizes}, reverse=True)
 
@@ -587,18 +743,31 @@ class Helper:
         raise last_error
 
     def probe_batch_size(self, model, loss_fn, obs_shape, candidates, logger=None):
-        """Resolve the largest of `candidates` that fits, before training starts.
-        One forward/backward/step per candidate on an all-zero worst-case batch,
-        not on iteration 0's real data: early rollouts pack fewer sequences than
-        later ones, so real data would underestimate. loss_fn gets a throwaway
-        deep copy of `model`, so the real weights never see the probe."""
+        """Resolve the largest minibatch size that fits, before training starts.
+
+        One forward/backward/step per candidate on an all-zero worst-case
+        batch, not on iteration 0's real data: early rollouts pack fewer
+        sequences than later ones, so real data would underestimate.
+
+        Args:
+            model (nn.Module): the network about to be trained; deep-copied,
+                so the real weights never see the probe.
+            loss_fn (callable): (minibatch, model) -> (loss, info), i.e.
+                PPOAgent.minibatch_loss.
+            obs_shape (tuple[int]): one observation's shape, (7, 7, 3).
+            candidates (list[int]): the sizes to try, any order.
+            logger (logging.Logger | None): where the fallback notes go.
+
+        Returns:
+            int: the size that fit -- logged and written into the checkpoint,
+            since it can differ from machine to machine.
+        """
         probe = copy.deepcopy(model)
         optimizer = torch.optim.Adam(
             probe.parameters(), lr=self.lr, weight_decay=self.wd
         )
-        # the longest sequence split_pad_mask can emit: a chunk is capped at
-        # tbptt_length, so probing at worker_steps would overestimate the batch
-        # by T/tbptt_length and resolve a needlessly small minibatch
+        # The longest sequence split_pad_mask can emit: probing at worker_steps
+        # would overestimate the batch and resolve too small a minibatch.
         L = (
             self.worker_steps
             if self.tbptt_length == "max"
@@ -606,9 +775,10 @@ class Helper:
         )
 
         def step(n):
-            # the keys split_pad_mask produces, in the shapes SequenceDataset
-            # would have collated them into. All-ones mask: nothing padded is
-            # the worst case, every slot is real work.
+            """One full update at minibatch size n (int), on a worst-case
+            all-real batch. Raises if it doesn't fit."""
+            # The keys split_pad_mask produces, shaped as SequenceDataset would
+            # collate them. All-ones mask: nothing padded is the worst case.
             mb = {
                 "obs": torch.zeros(n, L, *obs_shape, dtype=torch.uint8),
                 "actions": torch.zeros(n, L, dtype=torch.long),
@@ -642,17 +812,29 @@ class Helper:
         return resolved
 
     def log_model_summary(self, model, logger=None, batch_size=None, seq_len=8):
-        """Runs torchinfo's summary on the model and logs the table (param
-        counts, shapes, size). batch_size/seq_len only shape the probe pass.
-        Returns the ModelStatistics object."""
+        """Run torchinfo's summary on the model and log the table -- parameter
+        counts, shapes, size.
+
+        Args:
+            model (nn.Module): the network to describe.
+            logger (logging.Logger | None): where the table goes; None prints.
+            batch_size (int | list[int] | None): probe batch size, or
+                candidates for the OOM fallback; None uses
+                config.mini_batch_size. Shapes the probe pass only -- it does
+                not decide what training uses.
+            seq_len (int): probe sequence length, same caveat.
+
+        Returns:
+            torchinfo.ModelStatistics: the summary object.
+        """
 
         if batch_size is None:
             batch_size = self.mini_batch_size
 
-        # runs through the same OOM fallback as the real update: this probe
-        # forward pass can itself OOM on a wide encoder. Doesn't decide
-        # what training uses -- train() resolves its own size separately.
+        # Runs through the same OOM fallback as the real update, since the
+        # probe itself can OOM on a wide encoder.
         def probe(bs):
+            """One summary pass at batch size bs (int); returns ModelStatistics."""
             return summary(
                 model,
                 input_size=(bs, seq_len, 7, 7, 3),
@@ -680,24 +862,45 @@ class Helper:
         return self.build_model_name()
 
     def build_model_name(self):
-        """ppo_<seed>_<ENCODER>_<env>.pth -- the checkpoint filename, e.g.
-        ppo_0_GRU_MiniGrid-DoorKey-8x8-v0.pth. self.seed falls back to
-        seed_list[0] if set_seed() hasn't run yet (e.g. watch.py)."""
+        """The checkpoint filename for the current seed.
+
+        Returns:
+            str: ppo_<seed>_<ENCODER>_<env>.pth, e.g.
+            ppo_0_GRU_MiniGrid-DoorKey-8x8-v0.pth. self.seed falls back to
+            seed_list[0] if set_seed() hasn't run yet (e.g. watch.py).
+        """
         env = self.name_env.replace("/", "-")
         seed = getattr(self, "seed", self.seed_list[0])
         return f"ppo_{seed}_{self.feature_extractor.upper()}_{env}.pth"
 
     def build_model_path(self):
-        """path_model, creating dir_pretrained_model first. Call right before
-        torch.save; which directory this is depends on who is running (the
-        encoder's top level, a trial dir under hpo/, or no_hpo/)."""
+        """path_model, creating dir_pretrained_model first.
+
+        Call right before torch.save; which directory this is depends on who
+        is running -- the encoder's top level, a trial dir under hpo/, or
+        no_hpo/.
+
+        Returns:
+            str: the full path to write to.
+        """
         os.makedirs(self.dir_pretrained_model, exist_ok=True)
         return self.path_model
 
     def save_model(self, model, optimizer=None, **extra):
-        """Writes model's (and optimizer's) state, architecture attributes,
-        and searched params to build_model_path(). Returns the path. **extra
-        is written verbatim and must survive torch.load(weights_only=True)."""
+        """Write the weights, the architecture they belong to, and the params
+        they were trained with, so the file can be reloaded on its own terms.
+
+        Args:
+            model (nn.Module): the network to save.
+            optimizer (torch.optim.Optimizer | None): also save its state.
+            **extra: written verbatim into the checkpoint -- eval_history,
+                the headline eval numbers, the resolved mini_batch_size.
+                Every value must survive torch.load(weights_only=True), so
+                plain tensors, strings, ints, floats and bools only.
+
+        Returns:
+            str: the path written.
+        """
         path = self.build_model_path()
 
         checkpoint = {
@@ -707,10 +910,8 @@ class Helper:
             "input_size": self.input_size,
             "name_env": self.name_env,
             "force_cue_visible": self.force_cue_visible,
-            # not architecture, so load_model does not validate it -- recorded
-            # because a hand-picked run has an empty searched_params(), and two
-            # runs that differ only in backward reach would otherwise be
-            # indistinguishable on disk
+            # Not architecture, so load_model doesn't validate it -- recorded
+            # so two runs differing only in backward reach differ on disk.
             "tbptt_length": self.tbptt_length,
             "params": self.searched_params(),
         }
@@ -722,9 +923,24 @@ class Helper:
         return path
 
     def load_model(self, model, path=None):
-        """Loads weights into an already-built model, from path (default
-        path_model). Returns the checkpoint dict. Raises FileNotFoundError if
-        missing, ValueError if trained under a different architecture/env."""
+        """Load weights into an already-built model, refusing a file that was
+        trained under a different architecture, env or cue setting.
+
+        Args:
+            model (nn.Module): the network to load into. It must already have
+                the checkpoint's widths -- apply_params(checkpoint_params())
+                first for a tuned run.
+            path (str | None): the checkpoint; None uses path_model.
+
+        Returns:
+            dict: the whole checkpoint, so the caller can read eval_history
+            and the rest.
+
+        Raises:
+            FileNotFoundError: no file at path.
+            ValueError: the file records a different encoder, width,
+                input_size, env or force_cue_visible.
+        """
         if path is None:
             path = self.path_model
 
@@ -739,17 +955,13 @@ class Helper:
         # save_model writes (tensors, strings, ints, bools) is allowed under it
         checkpoint = torch.load(path, map_location=self.device, weights_only=True)
 
-        # everything this project writes goes through save_model, so this is
-        # its dict. A bare state_dict from torch.save(model.state_dict(), ...)
-        # is a dict too, just without the "model" key -- wrapped here so the
-        # rest of the method has one shape to deal with.
+        # Everything this project writes goes through save_model. A bare
+        # state_dict lacks the "model" key, so wrap it into the same shape.
         if "model" not in checkpoint:
             checkpoint = {"model": checkpoint}
 
-        # force_cue_visible changes no tensor shape but changes what the agent
-        # could see during training; checked here so a mismatch fails loudly
-        # instead of silently scoring the wrong task. A bare state_dict carries
-        # none of these keys and is loaded unchecked.
+        # force_cue_visible changes no tensor shape but changes the task, so a
+        # mismatch must fail loudly. A bare state_dict is loaded unchecked.
         for key in (
             "feature_extractor",
             "hidden_size",
@@ -767,13 +979,19 @@ class Helper:
         model.load_state_dict(checkpoint["model"])
         return checkpoint
 
-    # HPO: what to search over and how it's written/resumed lives here; what a
-    # trial does (train seeds, score them) lives in agents/hpo_ppo.py. optuna
-    # and joblib are imported inside these methods so a checkout without them
-    # still trains, watches and scores.
+    # HPO storage and bookkeeping; what a trial does lives in hpo_ppo.py.
+    # optuna/joblib import inside these methods so a checkout without them runs.
     def suggest_from_search_space(self, trial):
-        """Draws one value per entry of config.search_space via trial.suggest_*
-        (picked by each entry's "type"). Returns {name: value}."""
+        """Draw one value per entry of config.search_space.
+
+        Args:
+            trial (optuna.Trial): the trial to draw from; each entry's "type"
+                picks the suggest_* method, and the rest of the entry is
+                passed through as that method's keyword arguments.
+
+        Returns:
+            dict: {name: value}, ready for apply_params.
+        """
         # anything but "int"/"categorical" -- including a missing type -- is a
         # float, which is what every entry of the shared search_space is
         suggest = {
@@ -807,17 +1025,37 @@ class Helper:
         return f"mean_minus_{self.hpo_lambda:g}std({self.hpo_metric})"
 
     def aggregate_scores(self, values):
-        """Reduces per-seed metric values to the score the study maximizes:
-        mean(values) - hpo_lambda * std(values), both across seeds and not
-        within one run. Returns a float."""
+        """Reduce per-seed metrics to the one number a trial is ranked on:
+        mean - hpo_lambda * std, both ACROSS SEEDS and never within one run.
+
+        Args:
+            values (list[float]): one metric value per seed.
+
+        Returns:
+            float: the score.
+        """
         values = np.asarray(values, dtype=float)
         # ddof=0, population std -- the seeds ARE the population being compared
         return float(values.mean()) - self.hpo_lambda * float(values.std())
 
     def apply_params(self, params):
-        """Writes a trial's drawn params onto this config's attributes. Returns
-        self. Must be called before PPOAgent(config) is built. Raises
-        AttributeError on a name that isn't already an attribute of the config.
+        """Write drawn (or checkpointed) params onto this config's attributes.
+
+        Must be called before PPOAgent(config) is built: the agent reads the
+        sizes into the model at construction and never consults the config
+        again.
+
+        Args:
+            params (dict): {name: value}, from suggest_from_search_space or
+                checkpoint_params.
+
+        Returns:
+            Config: self, for chaining.
+
+        Raises:
+            AttributeError: a name that isn't already an attribute of the
+                config -- which would train the untuned default while
+                reporting the tuned param.
         """
         for name, value in params.items():
             if not hasattr(self, name):
@@ -833,9 +1071,14 @@ class Helper:
         return self
 
     def searched_params(self):
-        """Current value of every name in search_space -- the inverse of
+        """The current value of every name in search_space -- the inverse of
         apply_params, letting save_model record what a checkpoint was trained
-        with. Empty for configs like ConfigNoHPO whose search_space is []."""
+        with.
+
+        Returns:
+            dict: {name: value}; empty for configs like ConfigNoHPO whose
+            search_space is [].
+        """
         return {
             entry["name"]: getattr(self, entry["name"])
             for entry in self.search_space
@@ -844,12 +1087,21 @@ class Helper:
 
     # ----- where a study writes -------------------------------------------
     def build_hpo_dir(self):
-        """Make hpo/ and hand it back."""
+        """Make hpo/ and hand it back (str). Optuna won't create the parent
+        directory for its own sqlite file, so this runs first."""
         os.makedirs(self.dir_hpo, exist_ok=True)
         return self.dir_hpo
 
     def dir_hpo_trial(self, number):
-        """hpo/trial_<number>/ -- one directory per trial, since the filenames are otherwise identical."""
+        """Where one trial's checkpoints go -- the filenames are otherwise
+        identical across trials.
+
+        Args:
+            number (int): the trial number.
+
+        Returns:
+            str: hpo/trial_<number>/, not created.
+        """
         return os.path.join(self.dir_hpo, f"trial_{number}")
 
     @property
@@ -858,20 +1110,42 @@ class Helper:
         return os.path.join(self.dir_hpo, "best_trial")
 
     def build_hpo_trial_dir(self, number):
-        """dir_hpo_trial(n), created."""
+        """dir_hpo_trial(number), created.
+
+        Args:
+            number (int): the trial number.
+
+        Returns:
+            str: the path, which now exists.
+        """
         path = self.dir_hpo_trial(number)
         os.makedirs(path, exist_ok=True)
         return path
 
     def build_hpo_best_trial_dir(self):
-        """dir_hpo_best_trial, created."""
+        """dir_hpo_best_trial, created (str)."""
         os.makedirs(self.dir_hpo_best_trial, exist_ok=True)
         return self.dir_hpo_best_trial
 
     def select_run(self, trial=None, seed_index=0):
-        """Points this config at one saved checkpoint: sets
-        dir_pretrained_model (trial=None/"best"/"final"/int) and self.seed
-        (via seed_index). Returns path_model; nothing is created or read."""
+        """Point this config at exactly one saved checkpoint. The single place
+        a seed index is resolved to a path, so the trainer, the reporters and
+        the viewer cannot drift apart.
+
+        Args:
+            trial (str | int | None): which run under hpo/ -- "best"/"final"
+                for the winner, a trial number for one trial. None leaves
+                dir_pretrained_model where the config already put it (the
+                encoder's top level, or no_hpo/ for ConfigNoHPO).
+            seed_index (int): a POSITION in seed_list, not a seed value.
+
+        Returns:
+            str: path_model. Nothing is created or read.
+
+        Raises:
+            ValueError: trial is neither "best"/"final" nor a number.
+            IndexError: seed_index is out of range for seed_list.
+        """
         # trial=None leaves dir_pretrained_model wherever the config put it:
         # the encoder's top level, or no_hpo/ for ConfigNoHPO
         if trial is not None:
@@ -901,9 +1175,15 @@ class Helper:
         return self.path_model
 
     def checkpoint_params(self, path=None):
-        """The hyperparameters a checkpoint (default path_model) was trained
-        with, read straight off the file. Returns {} if the file is missing or
-        has no recorded params -- apply_params({}) is then a no-op.
+        """The hyperparameters a checkpoint was trained with, read straight off
+        the file rather than from a config that may since have changed.
+
+        Args:
+            path (str | None): the checkpoint; None uses path_model.
+
+        Returns:
+            dict: {name: value}, or {} if the file is missing or records no
+            params -- apply_params({}) is then a no-op.
         """
         if path is None:
             path = self.path_model
@@ -915,9 +1195,18 @@ class Helper:
         return dict(checkpoint.get("params") or {})
 
     def copy_best_trial(self, study, logger=None):
-        """Copies the winning trial's files into best_trial/ (clearing it
-        first) and writes best_params.json beside them. Returns the target
-        path, or None if no trial has completed yet."""
+        """Copy the winning trial's files into best_trial/, so the winner
+        survives deleting trial_*/, and write best_params.json beside them.
+
+        Args:
+            study (optuna.Study): the study to read the winner from.
+            logger (logging.Logger | None): where the notes go; None prints.
+
+        Returns:
+            str | None: the target directory, or None when no trial has
+            completed or the winner's directory is gone and best_trial/ can't
+            be confirmed to already hold its copy.
+        """
         say = log_with(logger)
 
         try:
@@ -931,11 +1220,8 @@ class Helper:
         source = self.dir_hpo_trial(best.number)
         target = self.dir_hpo_best_trial
         if not os.path.isdir(source):
-            # trial_*/ is gitignored, so a fresh clone never has it -- but if
-            # best_trial/ already holds the copy for this exact winner (i.e.
-            # it was copied out before trial_*/ was pruned/deleted), that
-            # copy is still correct and there is nothing to redo. Only bail
-            # when best_trial/ can't be confirmed to match.
+            # trial_*/ is gitignored, so a fresh clone lacks it -- but a
+            # best_trial/ already matching this winner is still correct.
             best_params_path = os.path.join(target, "best_params.json")
             if os.path.isfile(best_params_path):
                 with open(best_params_path) as f:
@@ -979,7 +1265,16 @@ class Helper:
         return target
 
     def save_sampler(self, sampler, path=None):
-        """Pickle the TPE sampler. Called after every trial -- see path_hpo_sampler."""
+        """Pickle the sampler, so a resumed study exploits what the finished
+        trials showed instead of re-exploring.
+
+        Args:
+            sampler (optuna.samplers.BaseSampler): the study's sampler.
+            path (str | None): where to write; None uses path_hpo_sampler.
+
+        Returns:
+            str: the path written.
+        """
         if path is None:
             path = self.path_hpo_sampler
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -987,7 +1282,15 @@ class Helper:
         return path
 
     def load_sampler(self, path=None):
-        """The pickled sampler, or None if there is not one yet."""
+        """Restore a pickled sampler.
+
+        Args:
+            path (str | None): where to read; None uses path_hpo_sampler.
+
+        Returns:
+            optuna.samplers.BaseSampler | None: the sampler, or None when
+            there isn't one yet -- the caller then builds a fresh one.
+        """
         if path is None:
             path = self.path_hpo_sampler
         if not os.path.exists(path):
@@ -1007,6 +1310,10 @@ class Helper:
         Plain optuna MedianPruner: tbptt_length is fixed for a whole study now,
         so every trial in one study is directly comparable and there is nothing
         left to group by.
+
+        Returns:
+            optuna.pruners.MedianPruner: wired from hpo_pruner_startup_trials,
+            hpo_pruner_warmup, hpo_pruner_interval and hpo_pruner_min_trials.
         """
         return optuna.pruners.MedianPruner(
             n_startup_trials=self.hpo_pruner_startup_trials,
@@ -1016,27 +1323,43 @@ class Helper:
         )
 
     def save_json(self, path, data):
-        """Write data as indented json. default=str so numpy scalars survive."""
+        """Write data as indented json, creating the directory if needed.
+
+        Args:
+            path (str): the file to write.
+            data (dict | list): anything json can take; default=str catches
+                the numpy scalars that would otherwise raise.
+
+        Returns:
+            str: the path written.
+        """
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w") as handle:
             json.dump(data, handle, indent=2, default=str)
         return path
 
     def csv_study_export(self, study, path_csv=None):
-        """One row per trial: number, objective value, every drawn param, the
-        four across-seed numbers HPOPPO records, state, and when the trial ran
-        (start, end, duration). Written at the start of each trial. Needs
-        pandas; returns None if missing.
+        """Export the study as a csv: one row per trial, holding the number,
+        the objective value, every drawn param, the four across-seed numbers
+        HPOPPO records, the state, and when the trial ran.
+
+        Written at the START of each trial, so an interrupted study still
+        leaves a csv of how far it got.
+
+        Args:
+            study (optuna.Study): the study to export.
+            path_csv (str | None): where to write; None uses path_hpo_csv.
+
+        Returns:
+            str | None: the path written, or None when pandas is missing.
         """
         if path_csv is None:
             path_csv = self.path_hpo_csv
 
         os.makedirs(os.path.dirname(path_csv) or ".", exist_ok=True)
         try:
-            # named attrs, not the default: the default also dumps the system
-            # attrs and every user attr, which buries the params in the wide
-            # table. The clock columns are asked for by name and ordered last,
-            # so the params still come first.
+            # Named attrs, not the default -- the default's system/user attrs
+            # bury the params. Clock columns are named last, so params lead.
             frame = study.trials_dataframe(
                 attrs=(
                     "number",
@@ -1055,11 +1378,8 @@ class Helper:
         frame.columns = [self._strip_prefix(name) for name in frame.columns]
         frame = frame.rename(columns={"value": "objective_value"})
 
-        # left raw, pandas writes microseconds on the timestamps and a duration
-        # as '0 days 00:12:34.567890'. The trial being exported is still
-        # RUNNING (this is called at the START of each trial), and a pruned or
-        # failed one can lack an end too -- those cells stay empty rather than
-        # reading 'NaT'.
+        # Left raw, pandas writes microseconds and '0 days 00:12:34.567890'.
+        # A trial with no end yet leaves the cell empty rather than 'NaT'.
         for column in ("datetime_start", "datetime_complete"):
             if column in frame:
                 frame[column] = [
@@ -1068,14 +1388,8 @@ class Helper:
                 ]
 
         if "duration" in frame:
-            # pandas' own rendering with the sub-second tail cut off:
-            # '0 days 00:12:34.567890' -> '0 days 00:12:34'. str().split('.'),
-            # not .dt.floor('s'), because on the first export of a study the
-            # only trial is RUNNING, so this column is all-None -> object
-            # dtype -> .dt raises, and that raise is outside the try above.
-            # Whole seconds, so it agrees exactly with duration_seconds --
-            # which is here because sorting/summing a string doesn't work, and
-            # it is how a tbptt_length's cost in wall time gets compared.
+            # pandas' rendering with the sub-second tail cut off. str().split,
+            # not .dt.floor('s'), which raises on an all-None object column.
             frame["duration_seconds"] = [
                 "" if self._is_missing(value) else int(value.total_seconds())
                 for value in frame["duration"]
@@ -1090,26 +1404,45 @@ class Helper:
 
     @staticmethod
     def _is_missing(value):
-        """True for None and for pandas' NaT/NaN, which are != themselves.
-        Written this way so this file still never imports pandas itself."""
+        """Is this cell empty? Written as a self-inequality so this file still
+        never imports pandas itself.
+
+        Args:
+            value: any cell out of the trials dataframe.
+
+        Returns:
+            bool: True for None and for pandas' NaT/NaN.
+        """
         return value is None or value != value
 
     @staticmethod
     def _strip_prefix(name):
-        """'params_lr' -> 'lr', 'user_attrs_return_std' -> 'return_std'."""
+        """Shorten one optuna dataframe column name.
+
+        Args:
+            name (str): e.g. "params_lr" or "user_attrs_return_std".
+
+        Returns:
+            str: e.g. "lr" or "return_std"; anything else unchanged.
+        """
         for prefix in ("params_", "user_attrs_"):
             if name.startswith(prefix):
                 return name[len(prefix) :]
         return name
 
-    # Every checkpoint carries its own eval_history, so a directory of them is
-    # a set of curves. One mean+-std figure per metric in _HPO_METRICS, as html
-    # and svg. plotly is imported inside these methods, so a checkout without
-    # it still trains.
+    # Every checkpoint carries its eval_history, so a directory of them is a
+    # set of curves: one mean+-std figure per _HPO_METRICS entry, html and svg.
     def load_eval_histories(self, directory):
-        """Reads every checkpoint's eval_history in `directory`. Returns
-        {seed: eval_history}, seed parsed from the filename. Skips files that
-        aren't checkpoints or have no eval_history rather than raising.
+        """Read every checkpoint's learning curve out of one directory.
+
+        Args:
+            directory (str): a trial dir, best_trial/ or no_hpo/.
+
+        Returns:
+            dict: {seed: eval_history}, the seed parsed off each filename
+            (the filename itself if unparseable), ints first and in order.
+            Files that aren't checkpoints, or carry no eval_history, are
+            skipped rather than raising; a missing directory gives {}.
         """
         histories = {}
         if not os.path.isdir(directory):
@@ -1154,9 +1487,18 @@ class Helper:
 
     @staticmethod
     def curve_table(histories, metric):
-        """{seed: history} -> (iterations, seeds, values), values shaped
-        (n_iterations, n_seeds) with nan where a seed has no entry at that
-        iteration."""
+        """Line up several seeds' curves on a shared iteration axis.
+
+        Args:
+            histories (dict): {seed: eval_history}, from load_eval_histories.
+            metric (str): which key to pull out of each entry, e.g.
+                "return_mean" or "success_rate".
+
+        Returns:
+            tuple: (iterations, seeds, values) -- a sorted list[int], the
+            seeds in order, and a float array (n_iterations, n_seeds) with
+            nan where a seed has no entry at that iteration.
+        """
         by_iteration = {}
         for seed, history in histories.items():
             for entry in history:
@@ -1181,9 +1523,27 @@ class Helper:
         logger=None,
         include_plotlyjs="cdn",
     ):
-        """Writes one mean+-std learning curve per metric for a directory of
-        checkpoints, as .html and .svg. metrics defaults to both of
-        _HPO_METRICS. Returns the paths written, or [] if there's no curve."""
+        """Draw one mean+-std learning curve per metric for a directory of
+        checkpoints, as .html and .svg. The raw per-seed lines are drawn too,
+        hidden behind a legend click.
+
+        Args:
+            directory (str): the checkpoints to read, and where the figures
+                are written.
+            metrics (str | tuple[str] | None): which metrics to draw; None
+                does both of _HPO_METRICS.
+            name (str | None): label for the title; None uses the directory's
+                own name.
+            title (str | None): override the whole title line.
+            logger (logging.Logger | None): where the notes go; None prints.
+            include_plotlyjs (str | bool): passed to plotly's write_html --
+                "cdn" keeps the files small, True inlines the library so they
+                work offline.
+
+        Returns:
+            list[str]: the paths written; [] when there is no curve to draw.
+            A missing kaleido costs the .svg only, not the .html.
+        """
         say = log_with(logger)
 
         if metrics is None:
@@ -1321,15 +1681,31 @@ class Helper:
 
     @staticmethod
     def _rgba(hex_colour, alpha):
-        """'#2f6fdb', 0.18 -> 'rgba(47,111,219,0.18)'. Plotly wants the string."""
+        """A translucent colour in the string form plotly wants.
+
+        Args:
+            hex_colour (str): "#2f6fdb", with or without the hash.
+            alpha (float): opacity, 0 to 1.
+
+        Returns:
+            str: e.g. "rgba(47,111,219,0.18)".
+        """
         hex_colour = hex_colour.lstrip("#")
         r, g, b = (int(hex_colour[i : i + 2], 16) for i in (0, 2, 4))
         return f"rgba({r},{g},{b},{alpha})"
 
     def plot_hpo(self, metrics=None, logger=None, include_trials=True):
-        """Plots every trial directory and best_trial/ under hpo/ that holds
-        checkpoints. Returns the paths written. include_trials=False skips the
-        individual trials and does only best_trial/.
+        """Draw curves for every trial directory under hpo/, plus best_trial/.
+
+        Args:
+            metrics (str | tuple[str] | None): passed to plot_eval_curves;
+                None does both of _HPO_METRICS.
+            logger (logging.Logger | None): where the notes go; None prints.
+            include_trials (bool): False skips the individual trials and does
+                best_trial/ alone.
+
+        Returns:
+            list[str]: every path written.
         """
         say = log_with(logger)
 
@@ -1359,7 +1735,17 @@ class Helper:
     @staticmethod
     def seed_result_row(seed, sampled, argmax):
         """One seed's row for log_seed_summary, from its two evaluations of the
-        same weights: `sampled` drawn from pi, `argmax` greedy."""
+        same weights.
+
+        Args:
+            seed (int): the seed, which labels the row.
+            sampled (dict): the evaluation with actions drawn from pi; needs
+                return_mean and success_rate.
+            argmax (dict): the same weights evaluated greedily, same keys.
+
+        Returns:
+            dict: seed plus the four _SEED_SUMMARY_METRICS as floats.
+        """
         return {
             "seed": seed,
             "sampled_return": float(sampled["return_mean"]),
@@ -1370,9 +1756,20 @@ class Helper:
 
     def log_seed_summary(self, logger, rows, header=None):
         """The closing table: one row per seed, then each of the four metrics
-        aggregated across seeds. main_no_hpo.py and HPOPPO.final both end with
-        this, so a hand-picked run and a tuned one are read the same way.
-        Returns {metric: {mean, std}}, both across seeds."""
+        aggregated across seeds.
+
+        main_no_hpo.py and HPOPPO.final both end with this, so a hand-picked
+        run and a tuned one are read the same way.
+
+        Args:
+            logger (logging.Logger | None): where the table goes; None prints.
+            rows (list[dict]): one seed_result_row per seed.
+            header (str | None): the line above the table; None builds one
+                from the encoder and the row count.
+
+        Returns:
+            dict: {metric: {"mean": float, "std": float}}, both ACROSS SEEDS.
+        """
         write = log_with(logger)
         width = max(len(metric) for metric in _SEED_SUMMARY_METRICS) + 2
 
@@ -1408,13 +1805,23 @@ class Helper:
         return stats
 
     def print_separate_lines(self, logger, n=10):
+        """Print n (int) rules to the logger, to set a phase of the run apart
+        in a long log."""
         for _ in range(n):
             logger.info("=" * 78)
 
     def callback_optuna_report_function(self, kind_training, logger, study, trial):
-        """Logs one line per finished trial (state, value, params), plus the
-        best trial so far. Passed as an optuna study.optimize callback, so it
-        runs after every trial including pruned and failed ones.
+        """Log one line per finished trial, plus the best so far.
+
+        Passed as an optuna study.optimize callback, so it runs after every
+        trial including pruned and failed ones -- hence the last two
+        arguments' order, which optuna fixes.
+
+        Args:
+            kind_training (str): the encoder being tuned, for the line.
+            logger (logging.Logger): where the lines go.
+            study (optuna.Study): the running study.
+            trial (optuna.trial.FrozenTrial): the trial that just finished.
         """
         logger.info(
             f"HPO {kind_training}: trial {trial.number} finished "
@@ -1431,9 +1838,22 @@ class Helper:
         logger.info("-" * 78)
 
     def hpo_optimize(self, study, n_trials, objective, logger, kind_training):
-        """study.optimize, resume-aware: runs only the trials still needed to
-        reach n_trials (complete + pruned), re-queueing the last trial's
-        params if it crashed or was killed mid-run. Returns trials run."""
+        """study.optimize, resume-aware: run only the trials still needed to
+        reach n_trials, and re-queue the last one's params if it crashed or
+        was killed mid-run.
+
+        Args:
+            study (optuna.Study): the study to run.
+            n_trials (int): a TOTAL, counted as complete + pruned -- not "run
+                N more".
+            objective (callable): takes an optuna.Trial, returns a float.
+            logger (logging.Logger): where the progress lines go.
+            kind_training (str): the encoder being tuned, for those lines.
+
+        Returns:
+            int: how many trials this call ran, 0 when the study was already
+            finished.
+        """
         states = (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED)
         done = study.get_trials(deepcopy=False, states=list(states))
         remaining = n_trials - len(done)
@@ -1474,7 +1894,19 @@ class Helper:
         return remaining
 
     def summary_hpo(self, logger, study, path_csv=None):
-        """The closing table: counts by state, then the winner. Returns it, or None."""
+        """Close the search out: export the csv, count the trials by state,
+        and print the winner and its params.
+
+        Args:
+            logger (logging.Logger): where the summary goes.
+            study (optuna.Study): the finished (or interrupted) study.
+            path_csv (str | None): where the export goes; None uses
+                path_hpo_csv.
+
+        Returns:
+            optuna.trial.FrozenTrial | None: the best trial, or None if
+            nothing completed.
+        """
         self.csv_study_export(study, path_csv)
 
         trials = study.trials
@@ -1504,9 +1936,8 @@ class Helper:
         logger.info(f"BEST  trial {best.number}   {self.score_name} {best.value}")
         for key, value in best.params.items():
             logger.info(f"    {key:<24}{value}")
-        # max of n_trials noisy measurements -- biased upward by the selection
-        # itself (winner's curse). final() reports this value rather than
-        # re-estimating it. See HPOPPO.final.
+        # Max of n_trials noisy measurements, so biased upward by the selection
+        # itself (winner's curse). final() reports it rather than re-estimating.
         logger.info(
             "  (the max over trials, so biased upward by the selection itself; "
             "final() reports these same runs and does not re-estimate it)"
@@ -1516,7 +1947,16 @@ class Helper:
         return best
 
     def zero_hidden(self, batch_size=None):
-        """Zeroed h_0, (1, batch_size, hidden_size); None for MLP."""
+        """A fresh hidden state -- no memory of anything.
+
+        Args:
+            batch_size (int | None): how many parallel streams; None uses
+                n_workers.
+
+        Returns:
+            torch.Tensor | None: zeros (1, batch_size, hidden_size) on the
+            config's device, or None for a memoryless encoder.
+        """
         if not self.is_recurrent:
             return None
 
@@ -1526,8 +1966,17 @@ class Helper:
         return torch.zeros(1, batch_size, self.hidden_size, device=self.device)
 
     def reset_hidden_of(self, hidden, w):
-        """Zeros the hidden state of worker w only, in place, leaving other
-        workers' state untouched. Returns hidden for chaining."""
+        """Zero one worker's hidden state in place, when its episode ends,
+        leaving the other workers' memory untouched.
+
+        Args:
+            hidden (torch.Tensor | None): the batch's hidden state,
+                (1, n_workers, hidden_size).
+            w (int): which worker slot to clear.
+
+        Returns:
+            torch.Tensor | None: the same tensor, for chaining.
+        """
         if not self.is_recurrent:
             return hidden
 
@@ -1537,19 +1986,32 @@ class Helper:
     def watch_agent(
         self, path_model=None, deterministic=None, steps_per_sec=2.5, fullscreen=False
     ):
-        """Opens a pygame window that plays a saved policy over the fixed
+        """Open a pygame window that plays a saved policy over the fixed
         eval-set mazes, showing the full maze, the agent's 7x7 observation,
-        action distribution and value estimate. The window is resizable and
-        fullscreen=True opens it filling the screen (F11 toggles either way);
-        the layout is drawn at a fixed size and scaled to fit, see _ViewWindow.
-        Blocks until closed."""
+        its action distribution and its value estimate.
+
+        Trains nothing and writes nothing. Blocks until the window closes.
+
+        Args:
+            path_model (str | None): the checkpoint to load; None uses
+                path_model. Its tuned architecture is applied first, so a
+                trial with a different width loads cleanly.
+            deterministic (bool | None): True plays the argmax action, False
+                samples; None uses config.eval_deterministic.
+            steps_per_sec (float): how fast the agent acts. The window still
+                redraws at _VIEW_FPS.
+            fullscreen (bool): open filling the screen; F11 toggles either
+                way, and the layout is drawn at a fixed size and scaled to
+                fit (see _ViewWindow).
+
+        Raises:
+            FileNotFoundError: no checkpoint at that path.
+        """
         if deterministic is None:
             deterministic = self.eval_deterministic
 
-        # apply the checkpoint's tuned architecture params before build_env /
-        # build_extractor read config defaults -- otherwise a tuned checkpoint
-        # (different hidden_size, n_layers, ...) fails load_state_dict. No-op
-        # for a no_hpo checkpoint. See checkpoint_params / searched_params.
+        # Apply the checkpoint's architecture before the builders read config
+        # defaults, or a tuned checkpoint fails load_state_dict.
         if path_model is None:
             path_model = self.path_model
         params = self.checkpoint_params(path_model)
@@ -1587,13 +2049,14 @@ class Helper:
             "big": pygame.font.SysFont("monospace", 15, bold=True),
         }
 
-        # everything the buttons reset lives in this dict; start() is the only
-        # place it's written. max_steps read once off the live env, not via
-        # config.env_max_steps (which builds a throwaway env every call).
+        # Everything the buttons reset lives in this dict, written only here.
+        # max_steps is read off the live env, not config.env_max_steps.
         ep = {"max_steps": env.unwrapped.max_steps}
 
         def think():
-            """One forward pass on the current observation; advances the hidden state exactly once."""
+            """One forward pass on the current observation, advancing the
+            hidden state exactly once. Writes probs, value and action into
+            `ep`; returns nothing."""
             # (7, 7, 3) -> (1, 1, 7, 7, 3): batch 1, seq_len 1, as in evaluate()
             obs_t = torch.from_numpy(ep["obs"]).to(self.device)[None, None]
 
@@ -1607,9 +2070,13 @@ class Helper:
             )
 
         def start(move=0, keep_trail=False):
-            """Begins an episode. move = +1/-1/0 selects the next/previous/
-            current eval maze, wrapping both ways. keep_trail is for go_to():
-            it preserves the recorded action trail across the reset.
+            """Begin an episode, resetting everything `ep` holds.
+
+            Args:
+                move (int): +1/-1/0 for the next/previous/current eval maze,
+                    wrapping both ways.
+                keep_trail (bool): preserve the recorded action trail across
+                    the reset -- what lets go_to() replay it.
             """
             index = ep.get("index", -1)
             if move:
@@ -1638,7 +2105,12 @@ class Helper:
             think()
 
         def act(forced=None):
-            """Takes one action -- think()'s choice, or forced, a recorded one -- and updates the episode state."""
+            """Take one action and update the episode state.
+
+            Args:
+                forced (int | None): a recorded action to replay; None takes
+                    the one think() just chose.
+            """
             action = ep["action"] if forced is None else forced
             obs_state, reward, terminated, truncated, _ = env.step(action)
 
@@ -1664,16 +2136,20 @@ class Helper:
                 think()
 
         def advance():
-            """One step forward, replaying the trail first if we have rewound."""
+            """One step forward: replays the recorded action if we have
+            rewound into the trail, otherwise acts fresh."""
             if ep["step"] < len(ep["trail"]):
                 act(forced=ep["trail"][ep["step"]])
             else:
                 act()
 
         def go_to(target):
-            """Puts the episode back at step `target` by resetting to the same
-            seed and replaying its recorded actions, since neither the env nor
-            the hidden state can be stepped backward.
+            """Put the episode back at an earlier step by resetting to the
+            same seed and replaying its recorded actions -- neither the env
+            nor the hidden state can be stepped backward.
+
+            Args:
+                target (int): the step to land on; clamped at 0.
             """
             target = max(0, target)
 
@@ -1697,7 +2173,12 @@ class Helper:
         running = True
 
         def press(name):
-            """One place for a control, whether it came from a click or a key."""
+            """Act on one control, whether it came from a click or a key.
+
+            Args:
+                name (str): the control -- "new", "last", "replay", "pause",
+                    "step", "back" or "auto".
+            """
             nonlocal paused, step_once, auto_new
             if name == "new":
                 start(move=+1)
@@ -1744,9 +2225,8 @@ class Helper:
                         press(keys[event.key])
 
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    # hit-tested against whatever the sidebar drew last frame,
-                    # so the layout lives in exactly one place. The click is in
-                    # window pixels; the rects are in canvas pixels.
+                    # Hit-tested against what the sidebar drew last frame, so
+                    # the layout lives in one place. Window px vs canvas px.
                     click = window.to_canvas(event.pos)
                     for name, rect in buttons.items():
                         if rect.collidepoint(click):
@@ -1813,13 +2293,19 @@ class Helper:
         pygame.quit()
 
     def play_env(self, detail=False, fullscreen=False):
-        """Opens a pygame window that lets YOU play one env from the keyboard:
+        """Open a pygame window that lets YOU play one env from the keyboard:
         the maze on the left, the agent's 7x7 observation and what is in it on
-        the right. detail=True adds a third column with every number of
-        obs["image"], raw and decoded. The window is resizable and
-        fullscreen=True opens it filling the screen (F11 toggles either way).
-        Trains nothing, loads nothing -- this is the env explorer, and it plays
-        exactly the env the config names. Blocks until closed."""
+        the right.
+
+        Trains nothing and loads nothing -- this is the env explorer, and it
+        plays exactly the env the config names. Blocks until the window closes.
+
+        Args:
+            detail (bool): add a third column with every number of
+                obs["image"], raw and decoded.
+            fullscreen (bool): open filling the screen; F11 toggles either
+                way, and the layout is drawn at a fixed size and scaled to fit.
+        """
         env = self.build_env(render_mode="rgb_array")  # same builder as training
 
         pygame.init()
@@ -1846,12 +2332,13 @@ class Helper:
             "big": pygame.font.SysFont("monospace", 15, bold=True),
         }
 
-        # everything an episode owns, so R restarts by calling start() alone.
-        # max_steps is read off the live env, not config.env_max_steps: build_env
-        # overrides it with worker_steps, and that is the limit being played.
+        # Everything an episode owns, so R restarts via start() alone.
+        # max_steps comes off the live env -- build_env set it to worker_steps.
         ep = {"max_steps": env.unwrapped.max_steps}
 
         def start():
+            """Begin an episode, resetting everything `ep` holds. Takes no
+            arguments -- R restarts by calling this alone."""
             obs_state, _ = env.reset()
             ep.update(
                 obs=obs_state["image"],  # (7, 7, 3): object, colour, state ids
@@ -1963,10 +2450,27 @@ class StartInCueView(gym.Wrapper):
     episodes. Rebuilds the observation after moving the agent."""
 
     def __init__(self, env):
+        """Wrap one env.
+
+        Args:
+            env (gym.Env): a MiniGrid MemoryEnv; the wrapper assumes its
+                layout, and checks that assumption on the first reset.
+        """
         super().__init__(env)
         self._checked = False
 
     def reset(self, **kwargs):
+        """Reset, then move the agent to the middle of the start room facing
+        east, where the cue is in view.
+
+        Args:
+            **kwargs: passed straight to the wrapped env's reset, seed
+                included.
+
+        Returns:
+            tuple[dict, dict]: (observation, info), the observation rebuilt
+            after the move so it shows what the agent can now see.
+        """
         self.env.reset(**kwargs)
 
         env = self.env.unwrapped
@@ -1994,20 +2498,35 @@ class SequenceDataset(Dataset):
     """
 
     def __init__(self, batch):
+        """Wrap one rollout.
+
+        Args:
+            batch (dict): split_pad_mask's output. The hidden states come in
+                as (1, n_seq, H) and are unwrapped to (n_seq, H) here, so
+                default_collate can stack them like everything else.
+        """
         self.data = {k: (v[0] if k in ("hxs", "cxs") else v) for k, v in batch.items()}
         self.n_seq = self.data["mask"].shape[0]
 
     def __len__(self):
+        """How many sequences the rollout split into (int)."""
         return self.n_seq
 
     def __getitem__(self, i):
+        """One whole padded sequence.
+
+        Args:
+            i (int): index into the sequences.
+
+        Returns:
+            dict: every key of the batch, sliced at i.
+        """
         # default_collate stacks these dicts into (mb, L, ...) tensors
         return {k: v[i] for k, v in self.data.items()}
 
 
-# pygame viewer drawing helpers. The sizes below are the layout: everything is
-# drawn at these fixed pixel coordinates, into the _ViewWindow canvas that both
-# Helper.watch_agent and Helper.play_env scale to fit the actual window.
+# pygame viewer drawing helpers. The sizes below are the layout: fixed canvas
+# pixels, which _ViewWindow scales to fit the actual window for both viewers.
 
 _VIEW_SIDEBAR_W = 440  # px, the right-hand panel
 _VIEW_MAZE_PX = 560  # px, the square the env frame is scaled into
@@ -2040,6 +2559,14 @@ class _ViewWindow:
     """
 
     def __init__(self, size, caption, fullscreen=False):
+        """Open the window and make the canvas the viewers draw into.
+
+        Args:
+            size (tuple[int, int]): the canvas's fixed (width, height) in
+                pixels -- the coordinates all the drawing code uses.
+            caption (str): the window title.
+            fullscreen (bool): open filling the screen instead of at `size`.
+        """
         self.size = size
         self._fullscreen = bool(fullscreen)
         self._open()  # opens the real window, so convert() below has a display
@@ -2065,9 +2592,15 @@ class _ViewWindow:
         self._origin = ((win_w - self._dest[0]) // 2, (win_h - self._dest[1]) // 2)
 
     def handle(self, event):
-        """Consumes the events that are about the window itself (resize, F11).
-        True means the caller should skip this event -- it was window plumbing,
-        not a control."""
+        """Consume the events that are about the window itself.
+
+        Args:
+            event (pygame.event.Event): one event off the queue.
+
+        Returns:
+            bool: True if it was window plumbing (a resize, or F11) and the
+            caller should skip it; False if it is the caller's to handle.
+        """
         if event.type == pygame.VIDEORESIZE:
             if not self._fullscreen:
                 self.screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
@@ -2083,8 +2616,15 @@ class _ViewWindow:
 
     def to_canvas(self, pos):
         """Window pixel -> canvas pixel, for hit-testing a click against the
-        rects the drawing code laid out. Floats are fine: Rect.collidepoint
-        takes them."""
+        rects the drawing code laid out.
+
+        Args:
+            pos (tuple[int, int]): (x, y) in the real window.
+
+        Returns:
+            tuple[float, float]: (x, y) on the canvas. Floats are fine --
+            Rect.collidepoint takes them.
+        """
         return (
             (pos[0] - self._origin[0]) / self.scale,
             (pos[1] - self._origin[1]) / self.scale,
@@ -2092,9 +2632,13 @@ class _ViewWindow:
 
     @property
     def mouse(self):
+        """The cursor in canvas pixels, tuple[float, float] -- what the hover
+        highlights hit-test against."""
         return self.to_canvas(pygame.mouse.get_pos())
 
     def flip(self):
+        """Show the frame: scale the canvas into the window, aspect preserved
+        and letterboxed, then present it."""
         self.screen.fill((0, 0, 0))  # the letterbox bars
         if self._dest == self.size:
             self.screen.blit(self.canvas, self._origin)  # 1:1, no resample
@@ -2104,9 +2648,8 @@ class _ViewWindow:
             )
         pygame.display.flip()
 
-# MiniGrid's encoding, channel 0. Kept here rather than imported so this file
-# still needs nothing but torch/gym; the numbers are in
-# minigrid.core.constants.OBJECT_TO_IDX and have not moved in years.
+# MiniGrid's encoding, channel 0. Copied from minigrid.core.constants rather
+# than imported, so this file still needs nothing but torch/gym.
 _OBJ_NAME = {
     0: "unseen",
     1: "empty",
@@ -2164,19 +2707,45 @@ _ACTION_USED = (0, 1, 2)  # the ones that do anything in this task
 
 
 def _lum(rgb):
+    """Perceived brightness of a colour, so text on top can be black or white.
+
+    Args:
+        rgb (tuple[int, int, int]): the colour, 0-255 per channel.
+
+    Returns:
+        float: luminance, 0-255.
+    """
     r, g, b = rgb
     return 0.299 * r + 0.587 * g + 0.114 * b
 
 
 def _cell_rgb(obj_idx, color_idx):
+    """What colour to draw one observation cell.
+
+    Args:
+        obj_idx (int): channel 0, the object id.
+        color_idx (int): channel 1, the colour id -- used only for the
+            objects in _COLOR_DRIVEN, which are the ones MiniGrid tints.
+
+    Returns:
+        tuple[int, int, int]: the rgb to fill the cell with.
+    """
     if obj_idx in _COLOR_DRIVEN:
         return _MG_RGB[color_idx] if color_idx < len(_MG_RGB) else (180, 180, 180)
     return _OBJ_RGB.get(obj_idx, (180, 180, 180))
 
 
 def _find_cue(image):
-    """The one key/ball visible in the observation, as 'green ball'. None if
-    absent. Only meaningful at step 0 -- later there are two (one per branch).
+    """The cue object in view, named for the sidebar.
+
+    Only meaningful at step 0: later there are two such objects, one per
+    branch of the T.
+
+    Args:
+        image (np.ndarray): the observation, (7, 7, 3) uint8.
+
+    Returns:
+        str | None: e.g. "green ball", or None when no key/ball is in view.
     """
     for x in range(image.shape[0]):
         for y in range(image.shape[1]):
@@ -2187,7 +2756,16 @@ def _find_cue(image):
 
 
 def _visible_objects(image):
-    """['green ball -- 3 ahead, 2 left', ...] for each non-structural cell in view."""
+    """Everything in view worth naming, with its bearing from the agent.
+
+    Args:
+        image (np.ndarray): the observation, (7, 7, 3) uint8.
+
+    Returns:
+        list[str]: one line per non-structural cell, e.g.
+        "green ball -- 3 ahead, 2 left"; a single "nothing but walls in
+        view" when there is none.
+    """
     n = image.shape[0]
     agent_col, agent_row = n // 2, n - 1  # the agent sits bottom-centre
     lines = []
@@ -2214,7 +2792,17 @@ def _visible_objects(image):
 
 
 def _draw_obs_grid(screen, pygame, image, ox, oy, font):
-    """The agent's 7x7 egocentric window, as coloured cells."""
+    """Draw the agent's 7x7 egocentric window as coloured cells, its own cell
+    outlined and an arrow marking the way it faces.
+
+    Args:
+        screen (pygame.Surface): the canvas to draw on.
+        pygame (module): the pygame module, passed in rather than imported.
+        image (np.ndarray): the observation, (7, 7, 3) uint8.
+        ox (int): left edge of the grid, in canvas pixels.
+        oy (int): top edge of the grid, in canvas pixels.
+        font (pygame.font.Font): for the one-letter cell labels.
+    """
     n = image.shape[0]
     agent_col, agent_row = n // 2, n - 1
 
@@ -2230,9 +2818,8 @@ def _draw_obs_grid(screen, pygame, image, ox, oy, font):
             )
             pygame.draw.rect(screen, rgb, rect)
 
-            # faint outline on every cell: "unseen" is nearly the same colour
-            # as the panel behind it, so without this the grid shape vanishes
-            # exactly when most of it is unseen
+            # Faint outline on every cell: "unseen" nearly matches the panel
+            # behind it, so the grid shape would vanish when most is unseen.
             pygame.draw.rect(screen, (58, 58, 58), rect, 1)
 
             if row == agent_row and col == agent_col:
@@ -2260,7 +2847,22 @@ def _draw_obs_grid(screen, pygame, image, ox, oy, font):
 
 
 def _draw_policy(screen, pygame, probs, chosen, x, y, width, font):
-    """Draws one bar per action for pi(a|s), highlighting the action about to be taken."""
+    """Draw one bar per action for pi(a|s), highlighting the one about to be
+    taken and dimming the four actions this task never needs.
+
+    Args:
+        screen (pygame.Surface): the canvas to draw on.
+        pygame (module): the pygame module.
+        probs (np.ndarray): the action distribution, (7,).
+        chosen (int): the action about to be taken.
+        x (int): left edge, in canvas pixels.
+        y (int): top edge, in canvas pixels.
+        width (int): how wide the block may be.
+        font (pygame.font.Font): for the labels and percentages.
+
+    Returns:
+        int: the y the drawing left off at.
+    """
     for a, p in enumerate(probs):
         used = a in _ACTION_USED
         is_next = a == chosen
@@ -2287,7 +2889,22 @@ def _draw_policy(screen, pygame, probs, chosen, x, y, width, font):
 
 
 def _draw_button(screen, pygame, rect, label, font, mouse, accent, enabled=True):
-    """A filled rounded button that lights up on hover; enabled=False draws it flat and grey."""
+    """Draw one button, lit up while the cursor is over it.
+
+    Args:
+        screen (pygame.Surface): the canvas to draw on.
+        pygame (module): the pygame module.
+        rect (pygame.Rect): where the button goes, in canvas pixels.
+        label (str): the text on it.
+        font (pygame.font.Font): for that text.
+        mouse (tuple[float, float]): the cursor in CANVAS pixels; drives the
+            hover highlight only.
+        accent (tuple[int, int, int]): the button's colour.
+        enabled (bool): False draws it flat and grey, and it stops reacting.
+
+    Returns:
+        pygame.Rect: the same rect, so the caller can hit-test clicks on it.
+    """
     if not enabled:
         pygame.draw.rect(screen, (34, 34, 34), rect, border_radius=6)
         pygame.draw.rect(screen, (58, 58, 58), rect, 2, border_radius=6)
@@ -2330,10 +2947,24 @@ def _draw_viewer_sidebar(
     ui,
     mouse,
 ):
-    """Draws the whole right-hand info/control panel for watch_agent. Returns
-    {name: pygame.Rect} for every button, used for click hit-testing. `mouse`
-    is the cursor in CANVAS pixels (see _ViewWindow), not window pixels -- it
-    only drives the hover highlight.
+    """Draw the whole right-hand info/control panel for watch_agent.
+
+    Args:
+        screen (pygame.Surface): the canvas to draw on.
+        fonts (dict): {name: pygame.font.Font} -- "head", "body", "tiny", "big".
+        maze_px (int): width of the maze on the left, so the panel's x origin.
+        win_h (int): canvas height, which the controls are pinned to.
+        config (Config): read for the encoder name, the env and the eval set.
+        ep (dict): the live episode state watch_agent maintains.
+        checkpoint (dict): the loaded file, for the "what is loaded" line.
+        deterministic (bool): whether actions are argmax or sampled.
+        ui (dict): paused (bool), auto_new (bool) and auto_in (float | None),
+            the countdown to the next maze.
+        mouse (tuple[float, float]): the cursor in CANVAS pixels (see
+            _ViewWindow), not window pixels; drives the hover highlight only.
+
+    Returns:
+        dict: {name: pygame.Rect} for every button, for click hit-testing.
     """
     import pygame
 
@@ -2347,12 +2978,15 @@ def _draw_viewer_sidebar(
     y = 12
 
     def put(text, font="body", color=_VIEW_TEXT, dy=3):
+        """One line down the panel: text (str) in fonts[font] (str) and colour
+        (rgb tuple), leaving dy (int) pixels of gap. Advances y."""
         nonlocal y
         surf = fonts[font].render(text, True, color)
         screen.blit(surf, (pad, y))
         y += surf.get_height() + dy
 
     def rule():
+        """A horizontal divider across the panel. Advances y."""
         nonlocal y
         y += 5
         pygame.draw.line(screen, _VIEW_LINE, (sx + 6, y), (sx + _VIEW_SIDEBAR_W - 6, y))
@@ -2444,17 +3078,15 @@ def _draw_viewer_sidebar(
             dy=1,
         )
 
-    # three rows: transport, episode, and the persistent toggle at the bottom
-    # (shorter than the action buttons, since it changes future behavior
-    # rather than acting immediately)
+    # Three rows: transport, episode, and the persistent toggle at the bottom
+    # (shorter, since it changes future behavior rather than acting now).
     bh, th, gap = 42, 32, 12
     row_toggle = win_h - th - 34
     row_bottom = row_toggle - bh - gap
     row_top = row_bottom - bh - gap
 
-    # both action rows share these columns so they line up vertically:
-    #     STEP -1     PAUSE/PLAY   STEP +1      (within one episode)
-    #     LAST GAME   REPLAY       NEW GAME     (between episodes)
+    # Both action rows share these columns so they line up vertically:
+    #   STEP -1 / PAUSE / STEP +1  over  LAST GAME / REPLAY / NEW GAME
     side = 104
     middle = inner - 2 * side - 2 * gap
     col_left = pad
@@ -2546,11 +3178,8 @@ def _draw_viewer_sidebar(
 
 
 # ---------------------------------------------------------------------------
-# The human-playable viewer, Helper.play_env: the same env and the same drawing
-# primitives as watch_agent above, with a keyboard where the policy was. Its
-# point is to show what the 7x7 observation actually contains, so the state
-# aliasing the GRU exists to solve can be seen by hand. --detail adds a third
-# column listing every number in obs["image"], raw and decoded.
+# The human-playable viewer, Helper.play_env: watch_agent's env and drawing
+# primitives with a keyboard where the policy was, to show the 7x7 observation.
 # ---------------------------------------------------------------------------
 
 _PLAY_SIDEBAR_W = 430  # px, the info panel beside the maze
@@ -2608,14 +3237,31 @@ _PLAY_CHANNELS = (
 
 
 def _scale_frame(pygame, frame, width, height):
-    """An (h, w, 3) rendered env frame as a pygame surface of the given size."""
+    """A rendered env frame as a pygame surface of the size wanted.
+
+    Args:
+        pygame (module): the pygame module.
+        frame (np.ndarray): what env.render() returned, (h, w, 3) uint8.
+        width (int): target width in canvas pixels.
+        height (int): target height in canvas pixels.
+
+    Returns:
+        pygame.Surface: the scaled frame, ready to blit.
+    """
     surface = pygame.surfarray.make_surface(frame.transpose(1, 0, 2))
     return pygame.transform.scale(surface, (width, height))
 
 
 def _front_cell_hint(image):
     """The one line a human at the keyboard needs: what is directly ahead and
-    which key acts on it. None when there is nothing worth saying."""
+    which key acts on it.
+
+    Args:
+        image (np.ndarray): the observation, (7, 7, 3) uint8.
+
+    Returns:
+        str | None: the hint, or None when there is nothing worth saying.
+    """
     n = image.shape[0]
     if n < 2:
         return None
@@ -2642,7 +3288,18 @@ def _front_cell_hint(image):
 
 
 def _draw_play_legend(screen, pygame, ox, y, font):
-    """The swatch row under the observation grid. Wraps, and returns the y it left off at."""
+    """The swatch row under the observation grid, saying what each colour is.
+
+    Args:
+        screen (pygame.Surface): the canvas to draw on.
+        pygame (module): the pygame module.
+        ox (int): the panel's left edge, in canvas pixels.
+        y (int): where to start, in canvas pixels.
+        font (pygame.font.Font): for the swatch labels.
+
+    Returns:
+        int: the y it left off at, having wrapped as needed.
+    """
     x = ox + 6
     for label, color, name in _PLAY_LEGEND:
         if x + 100 > ox + _PLAY_SIDEBAR_W - 6:
@@ -2667,8 +3324,26 @@ def _draw_play_legend(screen, pygame, ox, y, font):
 
 def _draw_channel_block(screen, pygame, ox, y, image, channel, name, table, fonts):
     """One channel of obs["image"] as a 7x7 table: the raw id above the name it
-    decodes to, in every cell. Indexed image[x, y, channel], drawn with rows = y
-    (0 = farthest ahead) and cols = x (3 = straight ahead)."""
+    decodes to, in every cell. Cells whose number is filler rather than
+    information are dimmed.
+
+    Indexed image[x, y, channel], drawn with rows = y (0 = farthest ahead) and
+    cols = x (3 = straight ahead).
+
+    Args:
+        screen (pygame.Surface): the canvas to draw on.
+        pygame (module): the pygame module.
+        ox (int): the panel's left edge, in canvas pixels.
+        y (int): where to start, in canvas pixels.
+        image (np.ndarray): the observation, (7, 7, 3) uint8.
+        channel (int): which of the three to draw, 0-2.
+        name (str): that channel's name, for the header.
+        table (dict): {id: name}, the decoding for this channel.
+        fonts (dict): {name: pygame.font.Font}; uses "tiny" and "micro".
+
+    Returns:
+        int: the y it left off at.
+    """
     n = image.shape[0]
     agent_col, agent_row = n // 2, n - 1
 
@@ -2696,9 +3371,8 @@ def _draw_channel_block(screen, pygame, ox, y, image, channel, name, table, font
             value = int(image[col, row, channel])
             obj = int(image[col, row, 0])
 
-            # Dim the cells whose number is filler, not information:
-            #   colour: 0 on unseen/empty cells, decodes to "red", means nothing
-            #   state : only a door has one; everywhere else it is always 0
+            # Dim the cells whose number is filler: colour is 0 on unseen/empty
+            # (decodes "red", means nothing), state is 0 except on a door.
             if channel == 1:
                 filler = obj in (0, 1)
             elif channel == 2:
@@ -2732,7 +3406,17 @@ def _draw_channel_block(screen, pygame, ox, y, image, channel, name, table, font
 
 
 def _draw_channel_panel(screen, pygame, ox, win_h, image, fonts):
-    """--detail's third column: every value of obs["image"], raw and decoded."""
+    """--detail's third column: all three channel tables, one under the other,
+    with a note on how to read the axes and the dimming.
+
+    Args:
+        screen (pygame.Surface): the canvas to draw on.
+        pygame (module): the pygame module.
+        ox (int): the column's left edge, in canvas pixels.
+        win_h (int): canvas height, so the panel fills it.
+        image (np.ndarray): the observation, (7, 7, 3) uint8.
+        fonts (dict): {name: pygame.font.Font}; uses "head", "tiny", "micro".
+    """
     pygame.draw.rect(screen, (20, 20, 20), (ox, 0, _PLAY_CHANNEL_W, win_h))
     pad = ox + 10
     y = 10
@@ -2772,20 +3456,33 @@ def _draw_channel_panel(screen, pygame, ox, win_h, image, fonts):
 
 
 def _draw_play_sidebar(screen, pygame, fonts, ox, win_h, config, ep):
-    """The info panel: where we are, the 7x7 observation, what is in it, and
-    the last few actions. Controls are pinned to the bottom."""
+    """play_env's info panel: where we are, the 7x7 observation, what is in it,
+    and the last few actions. The key list is pinned to the bottom.
+
+    Args:
+        screen (pygame.Surface): the canvas to draw on.
+        pygame (module): the pygame module.
+        fonts (dict): {name: pygame.font.Font} -- "head", "body", "tiny".
+        ox (int): width of the maze on the left, so the panel's x origin.
+        win_h (int): canvas height, which the key list is pinned to.
+        config (Config): read for the env's name.
+        ep (dict): the live episode state play_env maintains.
+    """
     pygame.draw.rect(screen, _VIEW_PANEL, (ox, 0, _PLAY_SIDEBAR_W, win_h))
 
     pad = ox + 10
     y = 10
 
     def put(text, font="body", color=_VIEW_TEXT):
+        """One line down the panel: text (str) in fonts[font] (str) and colour
+        (rgb tuple). Advances y."""
         nonlocal y
         surf = fonts[font].render(text, True, color)
         screen.blit(surf, (pad, y))
         y += surf.get_height() + 3
 
     def rule():
+        """A horizontal divider across the panel. Advances y."""
         nonlocal y
         y += 5
         pygame.draw.line(screen, _VIEW_LINE, (ox + 5, y), (ox + _PLAY_SIDEBAR_W - 5, y))
