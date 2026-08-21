@@ -1534,10 +1534,15 @@ class Helper:
         hidden[:, w] = 0.0
         return hidden
 
-    def watch_agent(self, path_model=None, deterministic=None, steps_per_sec=2.5):
+    def watch_agent(
+        self, path_model=None, deterministic=None, steps_per_sec=2.5, fullscreen=False
+    ):
         """Opens a pygame window that plays a saved policy over the fixed
         eval-set mazes, showing the full maze, the agent's 7x7 observation,
-        action distribution and value estimate. Blocks until closed."""
+        action distribution and value estimate. The window is resizable and
+        fullscreen=True opens it filling the screen (F11 toggles either way);
+        the layout is drawn at a fixed size and scaled to fit, see _ViewWindow.
+        Blocks until closed."""
         if deterministic is None:
             deterministic = self.eval_deterministic
 
@@ -1565,10 +1570,14 @@ class Helper:
         win_w = maze_px + _VIEW_SIDEBAR_W
         win_h = max(maze_px, _VIEW_MIN_H)
 
-        screen = pygame.display.set_mode((win_w, win_h))
-        pygame.display.set_caption(
-            f"{self.feature_extractor.upper()} on {self.name_env}"
+        # everything below draws into window.canvas at these fixed
+        # coordinates; the window itself can be any size
+        window = _ViewWindow(
+            (win_w, win_h),
+            f"{self.feature_extractor.upper()} on {self.name_env}",
+            fullscreen=fullscreen,
         )
+        screen = window.canvas
         clock = pygame.time.Clock()
 
         fonts = {
@@ -1722,6 +1731,9 @@ class Helper:
             dt = clock.tick(_VIEW_FPS) / 1000.0
 
             for event in pygame.event.get():
+                if window.handle(event):  # resize / F11: not a control
+                    continue
+
                 if event.type == pygame.QUIT:
                     running = False
 
@@ -1733,9 +1745,11 @@ class Helper:
 
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     # hit-tested against whatever the sidebar drew last frame,
-                    # so the layout lives in exactly one place
+                    # so the layout lives in exactly one place. The click is in
+                    # window pixels; the rects are in canvas pixels.
+                    click = window.to_canvas(event.pos)
                     for name, rect in buttons.items():
-                        if rect.collidepoint(event.pos):
+                        if rect.collidepoint(click):
                             press(name)
                             break
 
@@ -1790,20 +1804,22 @@ class Helper:
                         else None
                     ),
                 },
+                window.mouse,
             )
 
-            pygame.display.flip()
+            window.flip()
 
         env.close()
         pygame.quit()
 
-    def play_env(self, detail=False):
+    def play_env(self, detail=False, fullscreen=False):
         """Opens a pygame window that lets YOU play one env from the keyboard:
         the maze on the left, the agent's 7x7 observation and what is in it on
         the right. detail=True adds a third column with every number of
-        obs["image"], raw and decoded. Trains nothing, loads nothing -- this is
-        the env explorer, and it plays exactly the env the config names.
-        Blocks until closed."""
+        obs["image"], raw and decoded. The window is resizable and
+        fullscreen=True opens it filling the screen (F11 toggles either way).
+        Trains nothing, loads nothing -- this is the env explorer, and it plays
+        exactly the env the config names. Blocks until closed."""
         env = self.build_env(render_mode="rgb_array")  # same builder as training
 
         pygame.init()
@@ -1812,8 +1828,14 @@ class Helper:
         win_w = maze_px + _PLAY_SIDEBAR_W + (_PLAY_CHANNEL_W if detail else 0)
         win_h = max(maze_px, _PLAY_MIN_H)
 
-        screen = pygame.display.set_mode((win_w, win_h))
-        pygame.display.set_caption(f"MiniGrid interactive -- {self.name_env}")
+        # fixed-size canvas, scaled into whatever the window is -- as in
+        # watch_agent, the drawing below never sees the real window size
+        window = _ViewWindow(
+            (win_w, win_h),
+            f"MiniGrid interactive -- {self.name_env}",
+            fullscreen=fullscreen,
+        )
+        screen = window.canvas
         clock = pygame.time.Clock()
 
         fonts = {
@@ -1853,6 +1875,9 @@ class Helper:
             action = None
 
             for event in pygame.event.get():
+                if window.handle(event):  # resize / F11: not a control
+                    continue
+
                 if event.type == pygame.QUIT:
                     running = False
 
@@ -1925,7 +1950,7 @@ class Helper:
                 )
                 screen.blit(banner, (10, (win_h + maze_px) // 2 - 30))
 
-            pygame.display.flip()
+            window.flip()
             clock.tick(_PLAY_FPS)
 
         env.close()
@@ -1980,8 +2005,9 @@ class SequenceDataset(Dataset):
         return {k: v[i] for k, v in self.data.items()}
 
 
-# pygame viewer drawing helpers, used only by Helper.watch_agent. pygame is
-# not imported at module level, so a machine without it can still train.
+# pygame viewer drawing helpers. The sizes below are the layout: everything is
+# drawn at these fixed pixel coordinates, into the _ViewWindow canvas that both
+# Helper.watch_agent and Helper.play_env scale to fit the actual window.
 
 _VIEW_SIDEBAR_W = 440  # px, the right-hand panel
 _VIEW_MAZE_PX = 560  # px, the square the env frame is scaled into
@@ -1998,6 +2024,85 @@ _VIEW_DIM = (130, 130, 130)
 _VIEW_HEAD = (255, 210, 80)
 _VIEW_GOOD = (110, 220, 130)
 _VIEW_BAD = (245, 100, 100)
+
+
+class _ViewWindow:
+    """A fixed-size drawing canvas, shown scaled to fit the real window.
+
+    Both viewers lay themselves out in absolute pixels (the sidebar offsets,
+    the 7x7 cell size, the font sizes are all constants above), so they cannot
+    simply be handed a bigger window. Instead they keep drawing into `canvas`
+    at exactly the coordinates they always used, and `flip()` blits that canvas
+    -- scaled, aspect preserved, letterboxed -- into whatever size the window
+    currently is. Fullscreen and resizing therefore cost the drawing code
+    nothing; the one thing that has to know about the scale is the mouse, and
+    `to_canvas`/`mouse` map it back.
+    """
+
+    def __init__(self, size, caption, fullscreen=False):
+        self.size = size
+        self._fullscreen = bool(fullscreen)
+        self._open()  # opens the real window, so convert() below has a display
+        pygame.display.set_caption(caption)
+        self.canvas = pygame.Surface(size).convert()
+
+    def _open(self):
+        """(Re)creates the OS window for the current fullscreen state."""
+        if self._fullscreen:
+            # (0, 0) means "the desktop resolution" -- the point of the flag
+            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self.screen = pygame.display.set_mode(self.size, pygame.RESIZABLE)
+        self._fit()
+
+    def _fit(self):
+        """Recomputes scale and letterbox offset from the window's real size."""
+        win_w, win_h = self.screen.get_size()
+        width, height = self.size
+        # the smaller ratio is the one that fits: the other axis gets the bars
+        self.scale = max(min(win_w / width, win_h / height), 0.05)
+        self._dest = (max(1, int(width * self.scale)), max(1, int(height * self.scale)))
+        self._origin = ((win_w - self._dest[0]) // 2, (win_h - self._dest[1]) // 2)
+
+    def handle(self, event):
+        """Consumes the events that are about the window itself (resize, F11).
+        True means the caller should skip this event -- it was window plumbing,
+        not a control."""
+        if event.type == pygame.VIDEORESIZE:
+            if not self._fullscreen:
+                self.screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
+            self._fit()
+            return True
+
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+            self._fullscreen = not self._fullscreen
+            self._open()
+            return True
+
+        return False
+
+    def to_canvas(self, pos):
+        """Window pixel -> canvas pixel, for hit-testing a click against the
+        rects the drawing code laid out. Floats are fine: Rect.collidepoint
+        takes them."""
+        return (
+            (pos[0] - self._origin[0]) / self.scale,
+            (pos[1] - self._origin[1]) / self.scale,
+        )
+
+    @property
+    def mouse(self):
+        return self.to_canvas(pygame.mouse.get_pos())
+
+    def flip(self):
+        self.screen.fill((0, 0, 0))  # the letterbox bars
+        if self._dest == self.size:
+            self.screen.blit(self.canvas, self._origin)  # 1:1, no resample
+        else:
+            self.screen.blit(
+                pygame.transform.smoothscale(self.canvas, self._dest), self._origin
+            )
+        pygame.display.flip()
 
 # MiniGrid's encoding, channel 0. Kept here rather than imported so this file
 # still needs nothing but torch/gym; the numbers are in
@@ -2223,9 +2328,12 @@ def _draw_viewer_sidebar(
     checkpoint,
     deterministic,
     ui,
+    mouse,
 ):
     """Draws the whole right-hand info/control panel for watch_agent. Returns
-    {name: pygame.Rect} for every button, used for click hit-testing.
+    {name: pygame.Rect} for every button, used for click hit-testing. `mouse`
+    is the cursor in CANVAS pixels (see _ViewWindow), not window pixels -- it
+    only drives the hover highlight.
     """
     import pygame
 
@@ -2237,7 +2345,6 @@ def _draw_viewer_sidebar(
     pad = sx + 12
     inner = _VIEW_SIDEBAR_W - 24
     y = 12
-    mouse = pygame.mouse.get_pos()
 
     def put(text, font="body", color=_VIEW_TEXT, dy=3):
         nonlocal y
@@ -2425,12 +2532,15 @@ def _draw_viewer_sidebar(
         ),
     }
 
-    hint = fonts["tiny"].render(
-        "SPACE pause   <- -> step   P/N maze   R replay   A auto   Q quit",
-        True,
-        (105, 105, 105),
-    )
-    screen.blit(hint, (pad, row_toggle + th + 8))
+    # two lines, not one: the full list no longer fits the sidebar width
+    hint_y = row_toggle + th + 6
+    for line in (
+        "SPACE pause   <- -> step   P/N maze   R replay   A auto",
+        "F11 fullscreen   Q quit",
+    ):
+        surf = fonts["tiny"].render(line, True, (105, 105, 105))
+        screen.blit(surf, (pad, hint_y))
+        hint_y += surf.get_height() + 1
 
     return buttons
 
@@ -2462,6 +2572,7 @@ _PLAY_KEYS = (
     ("Space", "toggle / open door"),
     ("Enter", "done"),
     ("R", "reset episode"),
+    ("F11", "fullscreen on / off"),
     ("Q / Esc", "quit"),
 )
 

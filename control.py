@@ -2,8 +2,9 @@
 agent's 7x7 observation actually contains -- and, with --detail, every number
 in it. Loads no model and writes nothing.
 
-    python control.py            # maze + observation + what is in it
-    python control.py --detail   # ... plus every channel value, raw and decoded
+    python control.py               # maze + observation + what is in it
+    python control.py --detail      # ... plus every channel value, raw and decoded
+    python control.py --fullscreen  # ... filling the screen (F11 toggles too)
 
 The env is whatever config/config.py names: name_env, force_cue_visible and the
 worker_steps time limit all come from the shared Config, so this always plays
@@ -26,6 +27,13 @@ def main():
         help="add a third column showing every value of obs['image'], raw and "
         "decoded (default: off)",
     )
+    parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help="open filling the screen instead of in a fixed-size window. The "
+        "window is resizable either way and F11 toggles it while running -- "
+        "the layout is drawn at a fixed size and scaled to fit.",
+    )
     args = parser.parse_args()
 
     # Config is abstract, so this needs an encoder to build -- but nothing the
@@ -36,8 +44,9 @@ def main():
     print(f"{config.name_env}   (max_steps {config.worker_steps})")
     print(f"  force_cue_visible {config.force_cue_visible}")
     print(f"  detail panel      {'on' if args.detail else 'off (--detail adds it)'}")
+    print(f"  window            {'fullscreen' if args.fullscreen else 'windowed'}")
 
-    config.play_env(detail=args.detail)
+    config.play_env(detail=args.detail, fullscreen=args.fullscreen)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,13 @@ def main():
         "with and without --hpo -- the length names the directory either way.",
     )
     parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help="open filling the screen instead of in a 1000x880 window. The "
+        "window is resizable either way and F11 toggles it while running -- "
+        "the layout is drawn at a fixed size and scaled to fit.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=0,
@@ -94,7 +101,8 @@ def main():
         "buttons: STEP -1   | PAUSE/PLAY | STEP +1     within one episode\n"
         "         LAST GAME | REPLAY     | NEW GAME    between eval mazes\n"
         "         AUTO NEW GAME (walks the whole eval set unattended)\n"
-        "keys:    SPACE pause   <- -> step   P/N maze   R replay   A auto   Q quit"
+        "keys:    SPACE pause   <- -> step   P/N maze   R replay   A auto\n"
+        "         F11 fullscreen   Q quit"
     )
 
     # Blocks until the window closes. A missing file is not a bug -- naming a
@@ -102,9 +110,13 @@ def main():
     # so it gets the path, not a traceback.
     try:
         if args.steps_per_sec is not None:
-            config.watch_agent(path_model=path, steps_per_sec=args.steps_per_sec)
+            config.watch_agent(
+                path_model=path,
+                steps_per_sec=args.steps_per_sec,
+                fullscreen=args.fullscreen,
+            )
         else:
-            config.watch_agent(path_model=path)
+            config.watch_agent(path_model=path, fullscreen=args.fullscreen)
     except FileNotFoundError as error:
         raise SystemExit(f"\n{error}") from None
 

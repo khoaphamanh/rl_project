@@ -141,7 +141,7 @@ Four entry points; nothing else in the repo is meant to be run directly.
 | `main.py` | the Optuna search: 50 trials × 5 seeds, then a report on the winner | `hpo/` |
 | `main_no_hpo.py` | trains at the hand-picked values in `config/config_no_hpo.py` — one run per seed in *its* `seed_list`, currently just seed 0, for 2000 iterations | `no_hpo/` |
 | `watch.py` | loads one checkpoint and plays it in a pygame window — trains nothing, writes nothing | — |
-| `control.py` | play the configured env yourself from the keyboard, to see what the 7×7 observation holds; `--detail` adds every raw/decoded channel value | — |
+| `control.py` | play the configured env yourself from the keyboard, to see what the 7×7 observation holds; `--detail` adds every raw/decoded channel value, `--fullscreen` fills the screen | — |
 
 `MLP` and `GRU` are the only encoders. Run every command **from the repo root**:
 checkpoint paths and the Optuna sqlite URL are relative to it.
@@ -213,7 +213,7 @@ python main_no_hpo.py [MLP|GRU] [--tbptt L] [--report-only]
 
 # ---- replay a saved checkpoint in a pygame window ------------------------
 python watch.py [MODEL] [steps_per_sec] [--hpo] [--tbptt L] [--seed INDEX] \
-                [--trial best|N|final]
+                [--trial best|N|final] [--fullscreen]
 
 #   MODEL          optional, defaults to MLP; steps_per_sec defaults to 2.5
 #                  (both positional, so the number comes before the flags)
@@ -224,6 +224,8 @@ python watch.py [MODEL] [steps_per_sec] [--hpo] [--tbptt L] [--seed INDEX] \
 #   --trial WHICH  with --hpo only: 'best' (default), 'final' (an alias for it),
 #                  or a trial number. Without --hpo it is a usage error, because
 #                  a hand-picked run has no trials.
+#   --fullscreen   open filling the screen. The window is resizable either way,
+#                  and F11 toggles fullscreen while it runs.
 
 # ---- self-contained shape / forward-pass / memory / causality checks ------
 python models/feature_extractor.py
@@ -315,8 +317,15 @@ the cue rather than inferring it from numbers.
 
 ```
 SPACE pause    ← → step within an episode    P/N previous/next maze
-R replay       A auto-advance the whole eval set    Q quit
+R replay       A auto-advance the whole eval set    F11 fullscreen    Q quit
 ```
+
+Both viewers (`watch.py` and `control.py`) lay themselves out at a fixed pixel
+size — 1000×880 and 990×820 (1370 wide with `--detail`) — and then draw that
+canvas scaled into whatever the window actually is, so the window is resizable,
+`--fullscreen` starts it filling the screen, and F11 toggles. The aspect ratio
+is preserved and the spare space becomes black bars; nothing reflows, it just
+gets bigger.
 
 Naming a run that was never trained is the ordinary way to mistype these
 commands, so a missing checkpoint prints the path it looked for rather than a
