@@ -45,7 +45,7 @@ no_need/
 note.txt
 
 # Claude Code
-claude.md
+CLAUDE.md
 
 # HPO artefacts: keep hpo/best_trial/ (a copy of the winning trial, all watch.py
 # needs) and the small study files; drop the ~5 GB of per-trial checkpoints.

@@ -134,13 +134,14 @@ prefix commands with `conda run -n rl_project`.
 
 ## Running the code
 
-Three entry points; nothing else in the repo is meant to be run directly.
+Four entry points; nothing else in the repo is meant to be run directly.
 
 | | what it does | writes to |
 |---|---|---|
 | `main.py` | the Optuna search: 50 trials × 5 seeds, then a report on the winner | `hpo/` |
 | `main_no_hpo.py` | trains at the hand-picked values in `config/config_no_hpo.py` — one run per seed in *its* `seed_list`, currently just seed 0, for 2000 iterations | `no_hpo/` |
 | `watch.py` | loads one checkpoint and plays it in a pygame window — trains nothing, writes nothing | — |
+| `control.py` | play the configured env yourself from the keyboard, to see what the 7×7 observation holds; `--detail` adds every raw/decoded channel value | — |
 
 `MLP` and `GRU` are the only encoders. Run every command **from the repo root**:
 checkpoint paths and the Optuna sqlite URL are relative to it.
@@ -249,8 +250,11 @@ to check an encoder change (a few seconds each).
 ### Where the output goes
 
 ```
-logs/log_<timestamp>.log        one file per invocation, mirroring the terminal,
-                                with every hyperparameter dumped at the top
+logs/log_<ENC>[_tbptt<L>]_<timestamp>.log
+                                one file per invocation, mirroring the terminal,
+                                with every hyperparameter dumped at the top. The
+                                encoder and backward reach lead the name, so a
+                                directory of logs sorts by run, not by minute
 agents/pretrained_model_<ENC>[_tbptt<L>]/
   hpo/hpo_db_<name>.db          the Optuna study — this is what makes a run resumable
   hpo/hpo_sampler_<name>.pkl    the pickled TPE sampler, saved after every trial
@@ -330,8 +334,9 @@ config/       hyperparameters + the project's toolbox
                     knobs and appends them to the shared search space
   config_no_hpo.py  ConfigNoHPO: everything hand-picked, search_space = []
   helper.py         Helper: env builders, checkpoint I/O, batch-size probing,
-                    Optuna persistence, plotting, the pygame viewer, Timing,
-                    StartInCueView, SequenceDataset
+                    Optuna persistence, plotting, both pygame viewers
+                    (watch_agent, play_env), Timing, StartInCueView,
+                    SequenceDataset
 models/
   feature_extractor.py   MLP / GRU — both map
                          (batch, seq_len, 7, 7, 3) -> (batch, seq_len, hidden_size)
@@ -343,6 +348,10 @@ agents/
 main.py             tuned entry point
 main_no_hpo.py      hand-picked entry point
 watch.py            viewer (loads a checkpoint, trains nothing)
+control.py          play the env yourself (--detail for every channel value)
+test_enviroment/
+  explane_enviroment.py
+                    prints the observation/action spaces and the step protocol
 ```
 
 ### Checkpoints

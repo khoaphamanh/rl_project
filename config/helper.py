@@ -427,14 +427,26 @@ class Helper:
             else:
                 write(f"  {key:<{width}}{value}")
 
+    @property
+    def run_tag(self):
+        """What this run IS, in one filename-safe token: the encoder plus the
+        backward reach, e.g. MLP, GRU, GRU_tbptt8. Names the log file, so a
+        directory of logs can be told apart without opening any of them."""
+        return f"{self.feature_extractor.upper()}{self.tbptt_suffix}"
+
     def build_logger(self, log_dir="logs", name="rl_project"):
         """Builds one logger per invocation: writes to
-        logs/log_<date>_<time>.log and the terminal, with every hyperparameter
-        dumped at the top. Returns a logging.Logger; pass to train_agent(logger=...)."""
+        logs/log_<encoder>[_tbptt<L>]_<date>_<time>.log and the terminal, with
+        every hyperparameter dumped at the top. Returns a logging.Logger; pass
+        to train_agent(logger=...)."""
         os.makedirs(log_dir, exist_ok=True)
 
         started = datetime.now()
-        path = os.path.join(log_dir, f"log_{started:%Y-%m-%d_%H-%M-%S}.log")
+        # the encoder and the backward reach lead the name: several runs a day
+        # differ only in those two, and sorting groups them by run instead of
+        # interleaving every encoder by the minute it happened to start.
+        stem = f"log_{self.run_tag}_{started:%Y-%m-%d_%H-%M-%S}"
+        path = os.path.join(log_dir, f"{stem}.log")
 
         # _2, _3, ... if the second-precision stamp collides (two commands
         # started back to back); FileHandler opens in append mode, so without
@@ -442,9 +454,7 @@ class Helper:
         collision = 1
         while os.path.exists(path):
             collision += 1
-            path = os.path.join(
-                log_dir, f"log_{started:%Y-%m-%d_%H-%M-%S}_{collision}.log"
-            )
+            path = os.path.join(log_dir, f"{stem}_{collision}.log")
 
         logger = logging.getLogger(name)
         logger.setLevel(logging.INFO)
@@ -484,6 +494,13 @@ class Helper:
         logger.info(bar)
         logger.info(f"RUN STARTED  {started:%Y-%m-%d %H:%M:%S}")
         logger.info(f"LOG FILE     {path}")
+        # the two things that decide which ablation cell this run belongs to,
+        # at the top rather than buried alphabetically in the dump below
+        logger.info(
+            f"MODEL        {self.feature_extractor.upper()}"
+            f"   tbptt {self.tbptt_length}"
+            f"   env {self.name_env}"
+        )
         logger.info(bar)
 
         # attributes and @property values together, alphabetically -- the
@@ -1780,6 +1797,140 @@ class Helper:
         env.close()
         pygame.quit()
 
+    def play_env(self, detail=False):
+        """Opens a pygame window that lets YOU play one env from the keyboard:
+        the maze on the left, the agent's 7x7 observation and what is in it on
+        the right. detail=True adds a third column with every number of
+        obs["image"], raw and decoded. Trains nothing, loads nothing -- this is
+        the env explorer, and it plays exactly the env the config names.
+        Blocks until closed."""
+        env = self.build_env(render_mode="rgb_array")  # same builder as training
+
+        pygame.init()
+
+        maze_px = _VIEW_MAZE_PX
+        win_w = maze_px + _PLAY_SIDEBAR_W + (_PLAY_CHANNEL_W if detail else 0)
+        win_h = max(maze_px, _PLAY_MIN_H)
+
+        screen = pygame.display.set_mode((win_w, win_h))
+        pygame.display.set_caption(f"MiniGrid interactive -- {self.name_env}")
+        clock = pygame.time.Clock()
+
+        fonts = {
+            "head": pygame.font.SysFont("monospace", 13, bold=True),
+            "body": pygame.font.SysFont("monospace", 11),
+            "tiny": pygame.font.SysFont("monospace", 10),
+            "micro": pygame.font.SysFont("monospace", 9),
+            "big": pygame.font.SysFont("monospace", 15, bold=True),
+        }
+
+        # everything an episode owns, so R restarts by calling start() alone.
+        # max_steps is read off the live env, not config.env_max_steps: build_env
+        # overrides it with worker_steps, and that is the limit being played.
+        ep = {"max_steps": env.unwrapped.max_steps}
+
+        def start():
+            obs_state, _ = env.reset()
+            ep.update(
+                obs=obs_state["image"],  # (7, 7, 3): object, colour, state ids
+                step=0,
+                total_reward=0.0,
+                done=False,
+                history=[],
+                message="",
+            )
+
+        start()
+
+        print("\nCONTROLS")
+        print("--------")
+        for key, description in _PLAY_KEYS:
+            print(f"  {key:<14} {description}")
+        print()
+
+        running = True
+        while running:
+            action = None
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+
+                elif event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_q, pygame.K_ESCAPE):
+                        running = False
+                    elif event.key == pygame.K_r:
+                        start()
+                    elif event.key in _PLAY_ACTION_KEYS and not ep["done"]:
+                        action = _PLAY_ACTION_KEYS[event.key]
+
+            if action is not None:
+                obs_state, reward, terminated, truncated, _ = env.step(action)
+
+                ep["obs"] = obs_state["image"]
+                ep["step"] += 1
+                ep["total_reward"] += reward
+                ep["done"] = terminated or truncated
+                ep["history"].append((ep["step"], action, reward, ep["done"]))
+
+                status = (
+                    "TERMINATED"
+                    if terminated
+                    else "TRUNCATED" if truncated else "ongoing"
+                )
+                print(
+                    f"step {ep['step']:03d} | {_ACTION_NAME[action]:<11} | "
+                    f"reward={reward:+.3f} | total={ep['total_reward']:+.3f} | {status}"
+                )
+
+                if ep["done"]:
+                    # MemoryEnv pays >0 for the correct object, 0 for the wrong
+                    # one; running out of time also pays 0
+                    outcome = (
+                        "SOLVED"
+                        if reward > 0
+                        else "WRONG OBJECT" if terminated else "OUT OF TIME"
+                    )
+                    ep["message"] = (
+                        f"{outcome} -- total reward {ep['total_reward']:+.3f}"
+                        f"   press R to play again"
+                    )
+
+            screen.fill(_VIEW_BG)
+
+            # left: the whole maze, centred vertically against the taller sidebar
+            frame = env.render()
+            screen.blit(
+                _scale_frame(pygame, frame, maze_px, maze_px),
+                (0, (win_h - maze_px) // 2),
+            )
+
+            _draw_play_sidebar(screen, pygame, fonts, maze_px, win_h, self, ep)
+
+            if detail:
+                _draw_channel_panel(
+                    screen,
+                    pygame,
+                    maze_px + _PLAY_SIDEBAR_W,
+                    win_h,
+                    ep["obs"],
+                    fonts,
+                )
+
+            if ep["message"]:
+                banner = fonts["big"].render(
+                    ep["message"],
+                    True,
+                    _VIEW_GOOD if ep["message"].startswith("SOLVED") else _VIEW_BAD,
+                )
+                screen.blit(banner, (10, (win_h + maze_px) // 2 - 30))
+
+            pygame.display.flip()
+            clock.tick(_PLAY_FPS)
+
+        env.close()
+        pygame.quit()
+
 
 class StartInCueView(gym.Wrapper):
     """Spawns the agent in MiniGrid MemoryEnv where the cue is actually
@@ -1866,6 +2017,10 @@ _OBJ_NAME = {
 }
 _COLOR_NAME = {0: "red", 1: "green", 2: "blue", 3: "purple", 4: "yellow", 5: "grey"}
 
+# channel 2, minigrid.core.constants.STATE_TO_IDX. Only a door ever has one:
+# everywhere else the number is 0 and means nothing.
+_STATE_NAME = {0: "open", 1: "closed", 2: "locked"}
+
 # channel 1 -> rgb, for the objects that are drawn in their own colour
 _MG_RGB = [
     (220, 50, 50),
@@ -1947,9 +2102,7 @@ def _visible_objects(image):
 
             name = f"{_COLOR_NAME.get(color, '')} {_OBJ_NAME.get(obj, '?')}".strip()
             if obj == 4:
-                name += (
-                    f" ({['open', 'closed', 'locked'][state] if state < 3 else '?'})"
-                )
+                name += f" ({_STATE_NAME.get(state, '?')})"
             lines.append(f"{name} -- {where}")
 
     return lines or ["nothing but walls in view"]
@@ -2280,3 +2433,318 @@ def _draw_viewer_sidebar(
     screen.blit(hint, (pad, row_toggle + th + 8))
 
     return buttons
+
+
+# ---------------------------------------------------------------------------
+# The human-playable viewer, Helper.play_env: the same env and the same drawing
+# primitives as watch_agent above, with a keyboard where the policy was. Its
+# point is to show what the 7x7 observation actually contains, so the state
+# aliasing the GRU exists to solve can be seen by hand. --detail adds a third
+# column listing every number in obs["image"], raw and decoded.
+# ---------------------------------------------------------------------------
+
+_PLAY_SIDEBAR_W = 430  # px, the info panel beside the maze
+_PLAY_CHANNEL_W = 380  # px, the extra column --detail adds
+_PLAY_MIN_H = 820  # px, tall enough for the three channel tables
+_PLAY_FPS = 30  # nothing moves between keystrokes, so 30 is plenty
+_PLAY_CELL_W = 44  # px per cell of a channel table
+_PLAY_CELL_H = 26
+_PLAY_ROW_LABEL_W = 28  # px reserved for the "y=3" row labels
+
+# key label -> what it does. One list, printed to the terminal on start and
+# drawn at the bottom of the sidebar, so the two can never disagree.
+_PLAY_KEYS = (
+    ("Arrow Left", "turn left"),
+    ("Arrow Right", "turn right"),
+    ("Arrow Up", "move forward"),
+    ("P", "pick up"),
+    ("D", "drop"),
+    ("Space", "toggle / open door"),
+    ("Enter", "done"),
+    ("R", "reset episode"),
+    ("Q / Esc", "quit"),
+)
+
+# the same seven, as pygame keycode -> index into MiniGrid's Discrete(7)
+# (_ACTION_NAME lists them in order). Only 0-2 do anything on MemoryEnv.
+_PLAY_ACTION_KEYS = {
+    pygame.K_LEFT: 0,
+    pygame.K_RIGHT: 1,
+    pygame.K_UP: 2,
+    pygame.K_p: 3,
+    pygame.K_d: 4,
+    pygame.K_SPACE: 5,
+    pygame.K_RETURN: 6,
+}
+
+# swatch label, colour, meaning -- the cells MemoryEnv actually produces.
+# Labels match _CELL_LABEL, which is what _draw_obs_grid stamps on them.
+_PLAY_LEGEND = (
+    ("^", _VIEW_HEAD, "you (agent)"),
+    ("W", _OBJ_RGB[2], "wall"),
+    ("D", (140, 80, 20), "door"),
+    ("K", (0, 200, 80), "key"),
+    ("O", (0, 200, 80), "ball"),
+    ("", _OBJ_RGB[0], "unseen"),
+)
+
+# axis 2 of obs["image"]: channel index, name, and the table decoding it
+_PLAY_CHANNELS = (
+    (0, "object id", _OBJ_NAME),
+    (1, "color id", _COLOR_NAME),
+    (2, "state id", _STATE_NAME),
+)
+
+
+def _scale_frame(pygame, frame, width, height):
+    """An (h, w, 3) rendered env frame as a pygame surface of the given size."""
+    surface = pygame.surfarray.make_surface(frame.transpose(1, 0, 2))
+    return pygame.transform.scale(surface, (width, height))
+
+
+def _front_cell_hint(image):
+    """The one line a human at the keyboard needs: what is directly ahead and
+    which key acts on it. None when there is nothing worth saying."""
+    n = image.shape[0]
+    if n < 2:
+        return None
+
+    # one cell forward of the agent, which sits bottom-centre facing "up"
+    obj, color, state = image[n // 2, n - 2]
+    name = f"{_COLOR_NAME.get(color, '')} {_OBJ_NAME.get(obj, '?')}".strip()
+
+    if obj == 2:
+        return ">> wall directly ahead -- cannot move forward"
+    if obj == 4:
+        opened = _STATE_NAME.get(state, "?")
+        return (
+            f">> {name} ahead ({opened}) -- Space to "
+            f"{'close' if opened == 'open' else 'open'}"
+        )
+    if obj in (5, 6, 7):
+        return f">> {name} directly ahead -- P to pick it up"
+    if obj == 8:
+        return ">> goal tile directly ahead -- forward to reach it"
+    if obj == 9:
+        return ">> lava directly ahead -- forward ends the episode"
+    return None
+
+
+def _draw_play_legend(screen, pygame, ox, y, font):
+    """The swatch row under the observation grid. Wraps, and returns the y it left off at."""
+    x = ox + 6
+    for label, color, name in _PLAY_LEGEND:
+        if x + 100 > ox + _PLAY_SIDEBAR_W - 6:
+            x = ox + 6
+            y += 18
+
+        pygame.draw.rect(screen, color, (x, y, 13, 13))
+        if label:
+            ink = (20, 20, 20) if _lum(color) > 128 else (240, 240, 240)
+            surf = font.render(label, True, ink)
+            screen.blit(
+                surf,
+                (x + (13 - surf.get_width()) // 2, y + (13 - surf.get_height()) // 2),
+            )
+
+        text = font.render(f" {name}", True, (160, 160, 160))
+        screen.blit(text, (x + 14, y))
+        x += 14 + text.get_width() + 10
+
+    return y + 18
+
+
+def _draw_channel_block(screen, pygame, ox, y, image, channel, name, table, fonts):
+    """One channel of obs["image"] as a 7x7 table: the raw id above the name it
+    decodes to, in every cell. Indexed image[x, y, channel], drawn with rows = y
+    (0 = farthest ahead) and cols = x (3 = straight ahead)."""
+    n = image.shape[0]
+    agent_col, agent_row = n // 2, n - 1
+
+    present = ",".join(
+        str(value) for value in sorted({int(v) for v in image[:, :, channel].ravel()})
+    )
+    header = fonts["tiny"].render(
+        f"c={channel}  {name}   present: {present}", True, _VIEW_HEAD
+    )
+    screen.blit(header, (ox, y))
+    y += header.get_height() + 3
+
+    gx = ox + _PLAY_ROW_LABEL_W
+    for col in range(n):
+        label = fonts["micro"].render(f"x={col}", True, (120, 120, 120))
+        x = gx + col * _PLAY_CELL_W + (_PLAY_CELL_W - label.get_width()) // 2
+        screen.blit(label, (x, y))
+    y += 12
+
+    for row in range(n):
+        label = fonts["micro"].render(f"y={row}", True, (120, 120, 120))
+        screen.blit(label, (ox, y + (_PLAY_CELL_H - label.get_height()) // 2))
+
+        for col in range(n):
+            value = int(image[col, row, channel])
+            obj = int(image[col, row, 0])
+
+            # Dim the cells whose number is filler, not information:
+            #   colour: 0 on unseen/empty cells, decodes to "red", means nothing
+            #   state : only a door has one; everywhere else it is always 0
+            if channel == 1:
+                filler = obj in (0, 1)
+            elif channel == 2:
+                filler = obj != 4
+            else:
+                filler = False
+
+            rect = pygame.Rect(
+                gx + col * _PLAY_CELL_W, y, _PLAY_CELL_W - 2, _PLAY_CELL_H - 2
+            )
+            pygame.draw.rect(screen, (30, 30, 34) if filler else (46, 48, 56), rect)
+            if row == agent_row and col == agent_col:
+                pygame.draw.rect(screen, _VIEW_HEAD, rect, 1)
+
+            number = fonts["micro"].render(
+                str(value), True, (85, 85, 85) if filler else (240, 240, 240)
+            )
+            decoded = fonts["micro"].render(
+                table.get(value, "?"), True, (75, 75, 75) if filler else (150, 205, 150)
+            )
+            screen.blit(
+                number, (rect.x + (rect.w - number.get_width()) // 2, rect.y + 1)
+            )
+            screen.blit(
+                decoded, (rect.x + (rect.w - decoded.get_width()) // 2, rect.y + 12)
+            )
+
+        y += _PLAY_CELL_H
+
+    return y
+
+
+def _draw_channel_panel(screen, pygame, ox, win_h, image, fonts):
+    """--detail's third column: every value of obs["image"], raw and decoded."""
+    pygame.draw.rect(screen, (20, 20, 20), (ox, 0, _PLAY_CHANNEL_W, win_h))
+    pad = ox + 10
+    y = 10
+
+    title = fonts["head"].render(
+        "CHANNEL VALUES  obs['image'][x, y, c]", True, _VIEW_HEAD
+    )
+    screen.blit(title, (pad, y))
+    y += title.get_height() + 4
+
+    for line in (
+        f"shape {image.shape} = {image.size} uint8 numbers, axis 2 is NOT RGB",
+        "rows = y: 0 = farthest ahead, 6 = the agent's own row",
+        "cols = x: 0 = far left, 3 = straight ahead, 6 = far right",
+    ):
+        surf = fonts["micro"].render(line, True, (140, 140, 140))
+        screen.blit(surf, (pad, y))
+        y += surf.get_height() + 1
+    y += 6
+
+    for channel, name, table in _PLAY_CHANNELS:
+        y = _draw_channel_block(
+            screen, pygame, pad, y, image, channel, name, table, fonts
+        )
+        y += 10
+
+    pygame.draw.line(screen, _VIEW_LINE, (ox + 5, y), (ox + _PLAY_CHANNEL_W - 5, y))
+    y += 6
+    for line in (
+        "dimmed = filler, not information. colour is 0 (-> 'red') on",
+        "unseen/empty cells; state is only real on a door, so in this",
+        "env c=2 is all filler. Yellow border = the agent's own cell.",
+    ):
+        surf = fonts["micro"].render(line, True, (120, 120, 120))
+        screen.blit(surf, (pad, y))
+        y += surf.get_height() + 1
+
+
+def _draw_play_sidebar(screen, pygame, fonts, ox, win_h, config, ep):
+    """The info panel: where we are, the 7x7 observation, what is in it, and
+    the last few actions. Controls are pinned to the bottom."""
+    pygame.draw.rect(screen, _VIEW_PANEL, (ox, 0, _PLAY_SIDEBAR_W, win_h))
+
+    pad = ox + 10
+    y = 10
+
+    def put(text, font="body", color=_VIEW_TEXT):
+        nonlocal y
+        surf = fonts[font].render(text, True, color)
+        screen.blit(surf, (pad, y))
+        y += surf.get_height() + 3
+
+    def rule():
+        nonlocal y
+        y += 5
+        pygame.draw.line(screen, _VIEW_LINE, (ox + 5, y), (ox + _PLAY_SIDEBAR_W - 5, y))
+        y += 7
+
+    # ---- what is loaded -------------------------------------------------
+    put(f"ENV: {config.name_env}", "head", _VIEW_HEAD)
+    put(
+        f"step {ep['step']} / {ep['max_steps']}"
+        f"    total reward {ep['total_reward']:+.3f}",
+        "body",
+        _VIEW_GOOD,
+    )
+    rule()
+
+    # ---- the agent's actual input ---------------------------------------
+    put("PARTIAL OBSERVATION  (7x7 egocentric view)", "head", _VIEW_HEAD)
+    y += 3
+    grid_px = 7 * _VIEW_CELL
+    _draw_obs_grid(
+        screen,
+        pygame,
+        ep["obs"],
+        ox + (_PLAY_SIDEBAR_W - grid_px) // 2,
+        y,
+        fonts["tiny"],
+    )
+    y += grid_px + 8
+
+    y = _draw_play_legend(screen, pygame, ox, y, fonts["tiny"])
+    y += 2
+    rule()
+
+    # ---- what that means ------------------------------------------------
+    put("WHAT YOU SEE", "head", _VIEW_HEAD)
+    y += 2
+
+    hint = _front_cell_hint(ep["obs"])
+    for line in ([hint] if hint else []) + _visible_objects(ep["obs"]):
+        # soft word-wrap: these lines name a colour, an object and a bearing,
+        # and run past the panel on the wider observations
+        row = ""
+        for word in line.split():
+            candidate = f"{row} {word}".strip()
+            if fonts["body"].size(candidate)[0] > _PLAY_SIDEBAR_W - 20:
+                put(row, "body", (200, 200, 200))
+                row = word
+            else:
+                row = candidate
+        if row:
+            put(row, "body", (200, 200, 200))
+    y += 4
+    rule()
+
+    # ---- what you just did ----------------------------------------------
+    put("LAST ACTIONS", "head", _VIEW_HEAD)
+    y += 2
+    for step_i, action, reward, done in reversed(ep["history"][-6:]):
+        put(
+            f"s{step_i:03d}  {_ACTION_NAME[action]:<11} r={reward:+.3f}"
+            f"{'  END' if done else ''}",
+            "body",
+            _VIEW_BAD if done else (190, 190, 190),
+        )
+
+    # ---- controls, pinned to the bottom ---------------------------------
+    y = win_h - len(_PLAY_KEYS) * 14 - 20
+    pygame.draw.line(screen, _VIEW_LINE, (ox + 5, y), (ox + _PLAY_SIDEBAR_W - 5, y))
+    y += 6
+    for key, description in _PLAY_KEYS:
+        surf = fonts["tiny"].render(f"{key:<14} {description}", True, (120, 120, 120))
+        screen.blit(surf, (pad, y))
+        y += surf.get_height() + 2
