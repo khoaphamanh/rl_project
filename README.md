@@ -1,494 +1,357 @@
-# PPO with memory: an encoder ablation on MiniGrid
+# Memory Reach: GRU vs MLP under PPO on MiniGrid Memory
 
-Does a **GRU** recover a task a memoryless policy cannot solve — and how far
-back does its gradient actually need to reach?
+> **Research question.** How far back does a policy's gradient actually have to
+> reach before it can solve a task that a memoryless policy cannot — and what
+> does that reach cost in training time and memory?
 
-This project trains PPO on a partially-observable MiniGrid maze where the agent
-must carry one bit of information across the episode, and swaps out only the
-feature extractor — **MLP** or **GRU** — leaving every other part of the pipeline
-byte-identical. Hyperparameters are tuned per encoder with Optuna so no encoder
-is judged on another's settings. A second axis tunes the GRU once per
-truncated-BPTT length (`--tbptt L`), each length its own independent study.
+One PPO pipeline, two feature extractors, and nothing else changed between them:
 
-The MLP is the control: it has no memory at all, so whatever it scores is the
-ceiling for a policy that only reacts to the current frame.
+- **MLP, the baseline.** Fully connected layers only. It sees the current 7x7
+  observation and nothing else: no state is carried from one step to the next,
+  and its gradient covers a single timestep. Whatever it scores is the ceiling
+  for a policy that can only react to the frame in front of it.
+- **GRU.** The same input, plus a hidden state `h` passed from step to step, so
+  an observation from 100 steps ago can still be present at the moment of the
+  decision. The gradient flows backwards along that chain, and `--tbptt L` caps
+  how many steps back it is allowed to reach.
 
-(LSTM and Transformer encoders were part of an earlier version and have been
-removed; `git log` still has them.)
-
----
-
-## The task
-
-The current default env is **`MiniGrid-MemoryS17Random-v0`** (17×17, random cue
-placement). The walkthrough below was written for **`MiniGrid-MemoryS11-v0`**
-(11×11); the layout and the reason it is a memory problem are identical, only
-the size and the numbers differ.
-
-The agent starts in a corridor. In a small room at the west end sits a **cue**
-object — a key or a ball. At the east end the corridor forks into a T, with a
-key at one prong and a ball at the other. The episode succeeds only if the
-agent walks to the prong holding **the same object as the cue**.
-
-```
-    cue room             corridor                    fork
-   ┌───────┐                                       ┌── ⬤  key
-   │   ⬤   │══════════════  ▶  ═══════════════════─┤
-   └───────┘              agent spawns             └── ⬥  ball
-    key or ball           anywhere here,
-                          facing east →
-```
-
-Two properties make this a genuine memory problem rather than a maze:
-
-- **The cue is out of sight when the decision is made.** The agent sees a 7×7
-  egocentric patch. By the time it reaches the junction the cue is long gone
-  from view, so the junction observation is *identical* whether the answer is
-  "up" or "down" — classic state aliasing. A memoryless policy therefore cannot
-  do better than chance, no matter how well it is trained.
-- **The information must be sought out.** The agent spawns at a random spot in
-  the corridor, facing east — away from the cue. In ~90% of episodes the cue is
-  behind it at t=0, so the agent has to *choose* to turn around, walk back, look,
-  and turn again before running to the junction. That detour costs a little
-  reward and pays nothing until the memory also works.
-
-Reward is MiniGrid's standard `1 - 0.9 * step_count / max_steps` on success, 0
-otherwise. Chance is ~0.5.
-
-`config.force_cue_visible = True` swaps in a wrapper (`StartInCueView`) that
-pins the spawn to the one tile where the cue is in view at t=0. That removes
-the *exploration* half of the problem while leaving the *memory* half intact —
-useful for isolating which of the two an encoder is failing at.
-
----
-
-## Results
-
-> **Stale section.** Everything below — this table, the settings under it, and
-> *Reproducing the solved GRU run* — was measured on `MiniGrid-MemoryS11-v0`
-> with a single seed, before the encoder set was cut to MLP/GRU. The current
-> default env is `MiniGrid-MemoryS17Random-v0` and the current five-seed results
-> are the table in *Running the code* above. `worker_steps` rescales the reward,
-> so the two sets of numbers are not comparable.
-
-GRU, seed 0, on the unmodified task (`force_cue_visible = False`):
-
-| | success | return | episode length | `value_loss` |
-|---|---|---|---|---|
-| memoryless policy (iteration 100) | 0.58 | 0.566 | 7.1 | 0.162 |
-| **final, iteration 1999** | **1.00** | **0.957** | 14.5 | **0.0000** |
-
-Solved in 35 minutes on CPU, evaluated on 50 fixed mazes. The three numbers
-tell one story:
-
-- `success 1.00` — the agent is using the cue, not guessing.
-- **`length` doubled**, 7.1 → 14.5. The agent *chose* to spend ~7 extra steps
-  walking back to look at the cue. The detour costs ~0.02 of reward and buys
-  ~+0.4 success, and nothing in the reward function told it to do this.
-- `value_loss` fell from 0.162 to 0.0000. 0.162 is the irreducible variance of
-  an outcome the critic cannot predict; reaching ~0 means the network's hidden
-  state actually encodes which prong is correct. **This is the leading indicator
-  — it moves several hundred iterations before the success rate does.**
-
-Settings for that run (see *Reproducing* below — the committed config has since
-drifted off two of them):
-
-```
-n_workers 32   worker_steps 302   n_iterations 2000   hidden_size 64
-lr 1e-3 (annealed to 0)   n_epochs 3   target_kl 0.02   entropy_coef 0.005
-gamma 0.99   gae_lambda 0.95   clip_eps 0.2   value_coef 0.1   max_grad_norm 0.5
-```
-
-**Caveats, stated plainly:** this is one seed, and the curve has two abrupt
-behavioural transitions (~iteration 300 and ~900) of exactly the kind that vary
-a lot between seeds. The MLP/LSTM/Transformer arms have **not** been run at
-these settings, so the ablation this project exists to answer is not yet
-answered. `worker_steps` doubles as the env's `max_steps` and therefore rescales
-the reward, so these numbers are not comparable to runs at a different `T`.
+Hyperparameters are tuned per encoder with Optuna, so no encoder is judged on
+another's settings, and every truncation length `L` gets its own independent
+study.
 
 ---
 
 ## Install
 
-Python 3.11.
+Python **3.11** (developed on 3.11.15).
 
 ```bash
-conda create -n rl_project python=3.11 && conda activate rl_project
-pip install -r requirements.txt          # requirements_windows.txt on Windows
+conda create -n rl_project python=3.11.15 -y
+conda activate rl_project
+pip install -r requirements.txt         
 ```
 
-`requirements.txt` is the authoritative list, and is Linux/macOS — there PyPI's
-default `torch` wheel is already the CUDA build. On Windows use
-`requirements_windows.txt`, which is **not** a subset: PyPI's Windows wheel is
-CPU-only, so it pins `torch==2.11.0+cu128` against the PyTorch index (the
-`+cu128` is load-bearing — without it pip may satisfy the version from PyPI and
-silently install the CPU build), uses `pygame-ce`, and adds `kaleido`, without
-which every `.svg` figure silently goes missing. `environment.yml` is stale and
-gitignored — ignore it. Core deps: `torch`, `gymnasium`, `minigrid`, `optuna`,
-`pygame`.
-
-A fresh shell starts in conda `base`, which has no torch. Activate the env, or
-prefix commands with `conda run -n rl_project`.
+Core dependencies: `torch`, `gymnasium`, `minigrid`, `optuna`, `pygame-ce`.
 
 ---
 
-## Running the code
+## The task
 
-Four entry points; nothing else in the repo is meant to be run directly.
+![The MemoryS17Random task](figures/task_memory_s17.png)
 
-| | what it does | writes to |
-|---|---|---|
-| `main.py` | the Optuna search: 50 trials × 5 seeds, then a report on the winner | `hpo/` |
-| `main_no_hpo.py` | trains at the hand-picked values in `config/config_no_hpo.py` — one run per seed in *its* `seed_list`, currently just seed 0, for 2000 iterations | `no_hpo/` |
-| `watch.py` | loads one checkpoint and plays it in a pygame window — trains nothing, writes nothing | — |
-| `control.py` | play the configured env yourself from the keyboard, to see what the 7×7 observation holds; `--detail` adds every raw/decoded channel value, `--fullscreen` fills the screen | — |
+`MiniGrid-MemoryS17Random-v0`: a cue object (a key or a ball) sits in a room at
+the west end, the corridor forks into a T at the east end with a key at one
+prong and a ball at the other, and the episode succeeds only if the agent walks
+to the prong holding the same object as the cue.
 
-`MLP` and `GRU` are the only encoders. Run every command **from the repo root**:
-checkpoint paths and the Optuna sqlite URL are relative to it.
+Two properties make this a memory problem rather than a maze:
 
-### What already ships in the repo
+- **The cue is out of sight when the decision is made.** The agent sees a 7x7
+  egocentric patch. By the junction the cue is long gone from view, so the
+  observation there is identical whichever answer is correct. A memoryless
+  policy cannot beat chance (~0.5), however well it is trained.
+- **The information has to be sought out.** The agent spawns at a random spot in
+  the corridor facing east, away from the cue. In most episodes it has to choose
+  to turn around, walk back, look, and turn again. That detour costs a little
+  reward and pays nothing until the memory also works.
 
-Four finished studies are committed, so the reporting and viewing commands work
-on a fresh clone without training anything:
+Reward is MiniGrid's standard `1 - 0.9 * step_count / max_steps` on success and
+0 otherwise.
 
-| directory | encoder | score¹ | success | winning trial |
-|---|---|---|---|---|
-| `agents/pretrained_model_GRU/` | GRU, full BPTT | **0.956** | **1.00** | 36 (`hidden_size` 280) |
-| `agents/pretrained_model_GRU_tbptt8/` | GRU, `--tbptt 8` | **0.955** | **1.00** | 25 (`hidden_size` 480) |
-| `agents/pretrained_model_GRU_tbptt1/` | GRU, `--tbptt 1` | 0.509 | 0.59 | 47 (`hidden_size` 216) |
-| `agents/pretrained_model_MLP/` | MLP (the memoryless control) | 0.527 | 0.59 | 3 (`hidden_size` 360) |
+---
 
-¹ `mean_minus_1std(return_mean)` across the five seeds — the single number a
-trial is ranked on. Success is `success_rate`, meaning "walked to the prong
-matching the cue", over 50 fixed eval mazes per seed, averaged over the seeds.
-Both encoders that can remember solve the task outright; the MLP and the GRU
-whose gradient reaches back exactly one step sit at chance, which is the result
-the ablation exists to produce.
+## Training
 
-Two things are deliberately *not* committed, and both are ordinary, not bugs:
+**The network.** One shared encoder, two linear heads reading the same features:
+the actor, which scores the 7 actions, and the critic, which predicts the value
+of the state. The encoder is the only part that differs between arms.
 
-- `hpo/trial_*/` is gitignored (~5 GB of per-trial checkpoints). Only
-  `hpo/best_trial/` — a copy of the winner — ships, so `watch.py --trial 12`
-  works only on the machine that ran the study.
-- There is no `no_hpo/` anywhere. `main_no_hpo.py --report-only` has nothing to
-  read until you train one.
+```mermaid
+flowchart LR
+    IN["observation<br/>7 x 7 x 3"] --> ENC["encoder<br/>MLP or GRU"]
+    ENC --> ACT["actor head<br/>Linear"] --> A["action<br/>7 logits"]
+    ENC --> CRI["critic head<br/>Linear"] --> V["value<br/>1"]
+```
 
-### Quickstart
+One call to `PPOAgent.train()` is one PPO iteration: collect a rollout, turn it
+into advantages, cut it into truncated sequences, then spend up to `n_epochs`
+passes over it computing and backpropagating one loss.
+
+**Rollout.** `n_workers` environments step in parallel for `worker_steps` steps
+each, recording observations, actions, log probs, values, rewards and dones.
+
+**Advantages.** Generalized Advantage Estimation walks the rollout backwards:
+
+```
+delta[t]      = reward[t] + gamma * V[t+1] * (1 - done[t]) - V[t]
+advantage[t]  = delta[t] + gamma * gae_lambda * (1 - done[t]) * advantage[t+1]
+return[t]     = advantage[t] + V[t]
+```
+
+`gamma` and `gae_lambda` are both tuned per encoder (see the search space
+below). Advantages are standardized (zero mean, unit std) once over the whole
+rollout, before any minibatch split; `return` is left on its own scale, since
+that is what the critic has to predict.
+
+**Sequence chunking.** Before the update, the rollout is cut at every episode
+boundary and, additionally, every `tbptt_length` steps; that is what
+`--tbptt L` sets. A chunk that starts mid-episode is seeded from the hidden
+state the rollout already recorded there, so only the *backward* pass is
+shortened; the encoder still sees the whole episode going forward. This is
+also why truncating harder is not automatically cheaper (see
+[Results](#results)): a `--tbptt 1` update has to run far more, far shorter
+sequences than a full-BPTT one.
+
+**The loss.** Three terms, combined and backpropagated once per minibatch:
+
+```
+loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
+```
+
+- `policy_loss` is PPO's clipped surrogate objective. With
+  `ratio = exp(new_log_prob - old_log_prob)`:
+  `policy_loss = -mean(min(ratio * advantage, clip(ratio, 1 - clip_eps, 1 + clip_eps) * advantage))`.
+- `value_loss` is the mean squared error between the critic's prediction and
+  the GAE `return`.
+- `entropy` is the policy distribution's entropy, subtracted, so it acts as a
+  bonus for staying stochastic, not a penalty.
+
+Every mean above is taken only over real (non-padding) timesteps; chunks are
+padded to a common length inside a minibatch, and the padding never enters the
+loss. Up to `n_epochs` passes are made over the whole rollout in shuffled
+minibatches, and the gradient norm is clipped to `max_grad_norm` before the
+optimizer step, so one lucky sparse-reward episode can't overwrite the policy
+in a single update.
+
+---
+
+## Hyperparameter optimization process
+
+One study per arm: 50 Optuna trials, TPE sampler seeded at 42. Each trial trains
+the **same five seeds** `[0, 15, 12, 97, 98]` for 1000 iterations of 32 parallel
+workers x 361 steps (about 11.6M environment steps per seed), then evaluates on
+50 fixed mazes drawn from `eval_seed = 10000`.
+
+**What is searched, and what is fixed** (identical ranges for both encoders, so
+the widths a study settles on stay comparable):
+
+| parameter | meaning | tunable | values |
+|---|---|---|---|
+| `lr` | learning rate for the optimizer | yes | 1e-5 to 1e-2, log scale |
+| `gamma` | discount factor on future reward | yes | 0.99 to 0.9999, step 1e-4 |
+| `gae_lambda` | bias/variance trade-off in GAE | yes | 0.9 to 0.99, step 0.01 |
+| `clip_eps` | PPO's clipping range on the probability ratio | yes | 0.1 to 0.3, step 0.01 |
+| `entropy_coef` | weight of the entropy bonus in the loss | yes | 1e-4 to 1e-1, log scale |
+| `value_coef` | weight of the value loss in the loss | yes | 0.01 to 1.0, log scale |
+| `wd` | weight decay on the optimizer | yes | 1e-8 to 1e-2, log scale |
+| `max_grad_norm` | gradient-norm clip before the optimizer step | yes | 0.1 to 2.0, log scale |
+| `hidden_size` | width of the encoder: the GRU's `h`, or an MLP layer | yes | 32 to 512, step 8 |
+| `n_layers_mlp` | number of hidden Linear+ReLU blocks | yes, MLP only | 1 to 4 |
+| `n_epochs` | passes over one rollout per update | no | 3 |
+| `n_iterations` | PPO updates per training run | no | 1000 |
+| `n_workers` | parallel environments in the rollout | no | 32 |
+| `worker_steps` | steps each worker takes per rollout | no | 361 |
+| `tbptt_length` | how far back the gradient may flow | no | set per study by `--tbptt L`, or full BPTT |
+
+None of the fixed rows is searchable, so no trial can win by buying compute,
+and no sampler ever ranks one truncation length against another.
+
+**The score.** A trial is ranked on `mean_minus_1std(return_mean)`: the mean
+return across the five seeds, minus one standard deviation across those same
+five seeds. The spread is always taken across seeds, never across the eval
+episodes of a single run, because the return here is bimodal (success or
+failure) and within-run spread is then just a restatement of the success rate.
+Subtracting the spread means a trial that is excellent on two seeds and broken
+on three loses to one that is merely good on all five.
+
+**Minibatch size is resolved by probing, largest first.** `mini_batch_size` is a
+list of candidates from 4096 down to 4. Before iteration 0 a worst case
+forward/backward runs on each candidate in turn and the largest one that fits in
+VRAM wins, so every run is measured at the same memory budget instead of at an
+arbitrary batch size, and an OOM retry wrapper guards each real update. The size
+that won is logged and written into the checkpoint, since it depends on the
+machine. It is reported per study in the results table below: full BPTT settles
+an order of magnitude lower than `--tbptt 8` at the same GPU, because full length
+sequences take far more memory per sequence.
+
+### Hardware
+
+| component | specification |
+|---|---|
+| GPU | NVIDIA GeForce RTX 3060 Laptop GPU, 12 GB VRAM, 12.9 TFLOPS (FP32), 299.3 GB/s bandwidth |
+| CUDA | up to 13.2 |
+| CPU | AMD Ryzen 9 7950X, 16 cores allocated of 32 |
+| RAM | 16 GB total, 8 GB allocated to the run |
+
+---
+
+## Results
+
+Four finished studies ship with the repo, so the reporting and viewing commands
+work on a fresh clone without training anything. Every number is the winning
+trial of that study, averaged over its five seeds; training time is that
+winning trial's own wall-clock time, all five seeds trained sequentially, on
+the hardware above.
+
+| study | encoder | return mean | success rate | hidden size | minibatch | training time |
+|---|---|---|---|---|---|---|
+| `pretrained_model_MLP/` | MLP, the baseline | 0.556 ± 0.029 | 0.59 | 360 (2 layers) | 1024 | 1.3 h |
+| `pretrained_model_GRU_tbptt1/` | GRU, `--tbptt 1` | 0.573 ± 0.064 | 0.59 | 216 | 4096 | 2.6 h |
+| `pretrained_model_GRU_tbptt8/` | GRU, `--tbptt 8` | **0.958 ± 0.004** | **1.00** | 480 | 4096 | 2.0 h |
+| `pretrained_model_GRU/` | GRU, full BPTT | **0.958 ± 0.002** | **1.00** | 280 | 512 | **1.3 h** |
+
+![Return mean across studies](agents/comparison/compare_curve_return_mean.svg)
+
+**Performance: reach is what solves the task.**
+
+- `--tbptt 8` and full BPTT both solve it outright: 1.00 success rate, 0.958
+  return. They are tied; full BPTT is only marginally steadier across seeds
+  (±0.002 vs ±0.004).
+- The MLP sits at chance (0.59), exactly what a memoryless policy should do
+  here.
+- `--tbptt 1` sits at chance too (0.59), despite carrying `h` forward. Passing
+  the hidden state is not enough on its own — the gradient has to reach back
+  far enough to credit the observation that produced it.
+
+**Price: full BPTT is also the cheapest in time.**
+
+- Full BPTT trains fastest of the three GRU arms: **1.3 h**, as fast as the MLP
+  baseline, vs 2.0 h for `--tbptt 8` and 2.6 h for `--tbptt 1`.
+- Why: one sequence per episode means few, long updates. Chopping to length 1
+  multiplies how many minibatches an epoch must run, which is why `--tbptt 1`
+  is the slowest study despite the shortest reach.
+- What it pays instead is **VRAM per sequence**: its minibatch probes down to
+  512, an order of magnitude below `--tbptt 8`'s 4096, because a full-length
+  sequence costs far more memory.
+
+**Verdict: full BPTT (`pretrained_model_GRU/`) is the best option here.** It
+matches the best performance in the table at the lowest wall-clock cost, so
+nothing is gained by truncating. `--tbptt 8` is the fallback for the one case
+full BPTT loses: on a GPU smaller than the 12 GB above, its longer sequences
+are the first to run out of room.
+
+---
+
+## Visualize
+
+Everything here reads checkpoints already on disk; nothing here trains.
 
 ```bash
-# 1. report the tuned GRU: reloads best_trial/ and prints both eval modes.
-#    Trains nothing, takes seconds.
-python main.py GRU --final-only
-
-# 2. watch what it learned, at 1.5 agent-steps per second
-python watch.py GRU 1.5 --hpo
-
-# 3. compare it against the memoryless control
-python main.py MLP --final-only
-
-# 4. train something yourself: one seed, hand-picked hyperparameters, no search
-python main_no_hpo.py GRU
+python compare.py                                  # redraw every finished study's comparison figures
+python watch.py MLP                                # replay the hand-picked MLP run (the default)
+python watch.py GRU                                # replay the hand-picked GRU run
+python control.py                                  # play the env yourself from the keyboard
 ```
 
-### The commands in full
+`compare.py` draws the winning trial of every finished study on shared axes,
+one figure per metric, into `agents/comparison/`.
+
+`watch.py` replays a trained checkpoint in a pygame window, stepping through
+its evaluation episodes so a run can be watched and compared rather than just
+scored. The commands above are the hand-picked (`no_hpo/`) runs shown by
+default; `--hpo` watches a tuned run instead, and `--seed`, `--tbptt` and a
+steps-per-sec argument select among them. See `python watch.py --help` for
+every flag and in-window control.
+
+`control.py` loads no model: it opens the exact env the agents train on and
+hands you the controls, so you can walk the corridor yourself, move the
+agent with the arrow keys, pick up and drop the cue, and see what the 7x7
+egocentric observation actually contains at every step. See
+`python control.py --help` for every flag, and the in-window controls list
+for every key.
+
+---
+
+## Running the experiments
+
+Run everything **from the repo root**: checkpoint paths and the Optuna
+sqlite URL are relative to it. `MLP` and `GRU` are the only encoders. Every
+flag of every entry point is documented in its own `--help`, e.g.
+`python main.py --help`.
+
+`main.py` runs the Optuna search for one arm (50 trials x 5 seeds), then
+prints a report on the winner, and is resumable: it counts the trials already
+in a study's `.db` and runs only the difference, so an interrupted study just
+continues where it left off. These are the exact commands that produced the
+four finished studies shipped in this repo:
 
 ```bash
-# ---- hyperparameter search (resumable; see "Retraining" below) -------------
-python main.py MLP|GRU [--tbptt L] [--trials N] [--search-only] [--final-only]
-
-#   --tbptt L      GRU only. Fixes the gradient's backward reach at L steps for
-#                  the WHOLE study and writes to pretrained_model_GRU_tbptt<L>/.
-#                  Omit for full BPTT. Each length is its own study on purpose —
-#                  see "The tbptt ablation" in the design notes.
-#   --trials N     override config.n_trials (50). It is a TOTAL, not "N more".
-#   --search-only  search, skip the closing report
-#   --final-only   skip the search, just report the winning trial's saved runs
-#                  (it reloads best_trial/; it does not retrain)
-
-# ---- hand-picked run, values from config/config_no_hpo.py -----------------
-python main_no_hpo.py [MLP|GRU] [--tbptt L] [--report-only]
-
-#   MODEL          optional, defaults to MLP
-#   --report-only  load and report what is in no_hpo/ instead of training
-
-# ---- replay a saved checkpoint in a pygame window ------------------------
-python watch.py [MODEL] [steps_per_sec] [--hpo] [--tbptt L] [--seed INDEX] \
-                [--trial best|N|final] [--fullscreen]
-
-#   MODEL          optional, defaults to MLP; steps_per_sec defaults to 2.5
-#                  (both positional, so the number comes before the flags)
-#   --hpo          read the tuned run (hpo/) instead of the hand-picked one
-#   --seed INDEX   an INDEX into seed_list, not a seed value. With --hpo the list
-#                  is [0, 15, 12, 97, 98], so index 3 means seed 97; without it,
-#                  ConfigNoHPO's list is just [0] and 0 is the only valid index.
-#   --trial WHICH  with --hpo only: 'best' (default), 'final' (an alias for it),
-#                  or a trial number. Without --hpo it is a usage error, because
-#                  a hand-picked run has no trials.
-#   --fullscreen   open filling the screen. The window is resizable either way,
-#                  and F11 toggles fullscreen while it runs.
-
-# ---- self-contained shape / forward-pass / memory / causality checks ------
-python models/feature_extractor.py
-python models/model.py
+python main.py MLP                 # -> agents/pretrained_model_MLP/
+python main.py GRU --tbptt 1       # -> agents/pretrained_model_GRU_tbptt1/
+python main.py GRU --tbptt 8       # -> agents/pretrained_model_GRU_tbptt8/
+python main.py GRU                 # -> agents/pretrained_model_GRU/  (full BPTT, no --tbptt)
 ```
 
-Worked examples:
+Once a study is finished it can be re-reported without retraining:
 
 ```bash
-python watch.py GRU --hpo                        # the winner, seed 0
-python watch.py MLP 1 --hpo --seed 3             # MLP winner, seed 97, one step/sec
-python watch.py GRU --hpo --tbptt 8 --seed 1     # the tbptt8 tree, seed 15
-python main.py GRU --tbptt 4                     # start a NEW study at L=4
-python main.py GRU --trials 70                   # 20 more trials on the finished GRU study
-python main_no_hpo.py GRU --tbptt 20             # hand-picked run, writes .../GRU_tbptt20/no_hpo/
+python main.py GRU --final-only    # reload best_trial/ and print the report, seconds
 ```
 
-`--tbptt` on an MLP is rejected rather than silently making a directory that
-means nothing: an MLP has no recurrence to truncate.
+### Hand-picked runs (`no_hpo`), testing only, not part of the project
 
-There is no pytest suite. The `__main__` blocks in `models/` are the fastest way
-to check an encoder change (a few seconds each).
-
-### Where the output goes
-
-```
-logs/log_<ENC>[_tbptt<L>]_<timestamp>.log
-                                one file per invocation, mirroring the terminal,
-                                with every hyperparameter dumped at the top. The
-                                encoder and backward reach lead the name, so a
-                                directory of logs sorts by run, not by minute
-agents/pretrained_model_<ENC>[_tbptt<L>]/
-  hpo/hpo_db_<name>.db          the Optuna study — this is what makes a run resumable
-  hpo/hpo_sampler_<name>.pkl    the pickled TPE sampler, saved after every trial
-  hpo/hpo_csv_<name>.csv        every trial's params, value and clocks, as a table
-  hpo/trial_<n>/                one checkpoint per seed, plus that trial's curves
-  hpo/best_trial/               the winner copied out, plus best_params.json and
-                                final_<name>.json (the closing report)
-  no_hpo/                       the same shape for a hand-picked run
-```
-
-Curves are written as `.html` (interactive) and `.svg` next to the checkpoints
-they were redrawn from, one mean±std pair per metric. They are regenerated from
-the `eval_history` stored inside each `.pth`, so plots are never the only copy of
-a result.
-
-### Retraining: what to delete, and when
-
-**Adding trials to an existing study — delete nothing.** The search is
-resume-aware: it counts the trials already in the `.db` and runs only
-`n_trials - done`. Re-running `python main.py GRU` on a finished 50-trial study
-prints *"50 of 50 trials already done, nothing to run"* and falls straight
-through to the report. `--trials 70` runs 20 more, numbered 50–69, keeping what
-the sampler already learned. An interrupted study is resumed the same way, and a
-trial that was killed mid-run has its parameters re-queued.
-
-**Starting a genuinely fresh search — delete the whole `hpo/` directory**, not
-just the database:
+`main_no_hpo.py` is **not part of this project's results**: nothing in the
+[Results](#results) table above comes from it. It skips Optuna entirely and
+trains one seed at the fixed values in `config/config_no_hpo.py`, which
+exists purely so a change (a new encoder, a different env, a refactor) can be
+smoke-tested in minutes instead of paying for a 50-trial search.
 
 ```bash
-rm -rf agents/pretrained_model_GRU/hpo          # full BPTT
-rm -rf agents/pretrained_model_GRU_tbptt8/hpo   # or one truncated length
+python main_no_hpo.py GRU                  # one seed, full BPTT -> .../GRU/no_hpo/
+python main_no_hpo.py GRU --tbptt 20       # -> .../GRU_tbptt20/no_hpo/
+python main_no_hpo.py MLP --report-only    # re-print an existing run, no retraining
 ```
 
-Deleting only the `.db` is the tempting half-measure, and it leaves three traps:
-trial numbering restarts at 0, so the new `trial_0/` overwrites the old one and
-the tree silently mixes two studies; `hpo_sampler_*.pkl` survives, so the "fresh"
-search resumes the old sampler's state instead of rebuilding it from `seed_hpo`
-and is no longer reproducible; and `best_trial/` survives, so every report and
-`watch.py --hpo` keeps serving the previous winner until some new trial completes
-and replaces it.
+### Retraining from scratch
 
-**You must also start fresh after changing `seed_list`, `n_iterations`,
-`worker_steps` or the env.** The study records the first two and only *warns*
-that its older trials were pruned against different units — it will not stop you.
-`worker_steps` doubles as the env's `max_steps` and therefore rescales the
-reward, so every score already in the database means something else.
+To rerun the whole project, delete the relevant `agents/pretrained_model_*`
+directory (or just its `hpo/` subdirectory) before starting; otherwise
+`main.py` finds the old `.db` and resumes the finished study instead of
+starting a new one.
 
-**Hand-picked runs have nothing to delete.** `main_no_hpo.py` overwrites
-`no_hpo/` in place; the directory does not separate runs by setting, so move
-aside a checkpoint you want to keep before re-running.
-
-### The viewer
-
-`watch.py` opens a pygame window showing the full maze, the agent's 7×7
-observation, its action distribution and its value estimate, replayed over the
-fixed eval mazes. It is the quickest way to see *whether* a policy detours to
-the cue rather than inferring it from numbers.
-
-```
-SPACE pause    ← → step within an episode    P/N previous/next maze
-R replay       A auto-advance the whole eval set    F11 fullscreen    Q quit
-```
-
-Both viewers (`watch.py` and `control.py`) lay themselves out at a fixed pixel
-size — 1000×880 and 990×820 (1370 wide with `--detail`) — and then draw that
-canvas scaled into whatever the window actually is, so the window is resizable,
-`--fullscreen` starts it filling the screen, and F11 toggles. The aspect ratio
-is preserved and the spare space becomes black bars; nothing reflows, it just
-gets bigger.
-
-Naming a run that was never trained is the ordinary way to mistype these
-commands, so a missing checkpoint prints the path it looked for rather than a
-traceback.
+Estimated running time for the whole project, all four studies above, back
+to back, on the hardware listed earlier, taken from the logged duration of
+every trial in each study's `hpo_csv_*.csv`: **about 195 hours (~8 days)**,
+roughly 49 h (MLP), 61 h (`--tbptt 1`), 44 h (`--tbptt 8`), 41 h (full
+BPTT).
 
 ---
 
 ## Layout
 
 ```
-config/       hyperparameters + the project's toolbox
+config/
   config.py         Config: every shared PPO/env/eval/HPO knob. Abstract.
-  config_{mlp,gru}.py
-                    one per encoder; sets feature_extractor + its architecture
-                    knobs and appends them to the shared search space
+  config_{mlp,gru}.py   one per encoder; sets the extractor plus its architecture
+                        knobs and appends them to the shared search space
   config_no_hpo.py  ConfigNoHPO: everything hand-picked, search_space = []
   helper.py         Helper: env builders, checkpoint I/O, batch-size probing,
-                    Optuna persistence, plotting, both pygame viewers
-                    (watch_agent, play_env), Timing, StartInCueView,
+                    Optuna persistence, plotting, both pygame viewers, Timing,
                     SequenceDataset
 models/
-  feature_extractor.py   MLP / GRU — both map
-                         (batch, seq_len, 7, 7, 3) -> (batch, seq_len, hidden_size)
-  model.py               Network: one encoder + linear actor head + linear critic head
+  feature_extractor.py  MLP / GRU, both mapping
+                        (batch, seq_len, 7, 7, 3) -> (batch, seq_len, hidden_size)
+  model.py              Network: encoder plus linear actor head and critic head
 agents/
-  ppo.py            PPOAgent: rollout collection, GAE, sequence batching, the
-                    clipped loss, evaluation, the training loop
+  ppo.py            PPOAgent: rollouts, GAE, sequence batching, clipped loss,
+                    evaluation, the training loop
   hpo_ppo.py        HPOPPO: wraps PPOAgent in an Optuna study
-main.py             tuned entry point
-main_no_hpo.py      hand-picked entry point
-watch.py            viewer (loads a checkpoint, trains nothing)
-control.py          play the env yourself (--detail for every channel value)
-test_enviroment/
-  explane_enviroment.py
-                    prints the observation/action spaces and the step protocol
+figures/
+  make_task_figure.py   regenerates the task figure at the top of this README
+main.py  main_no_hpo.py  compare.py  watch.py  control.py      entry points
 ```
-
-### Checkpoints
-
-```
-agents/pretrained_model_<ENCODER>[_tbptt<L>]/
-    hpo/trial_<n>/     one Optuna trial (gitignored)
-    hpo/best_trial/    the winner, copied out so trial_*/ can be deleted
-    no_hpo/            hand-picked runs
-```
-
-The `_tbptt<L>` suffix covers **both** `hpo/` and `no_hpo/`, so full BPTT keeps
-the plain `pretrained_model_GRU/` it always had and each truncated length gets a
-complete sibling tree that cannot overwrite the baseline it exists to be
-compared against.
-
-`config.select_run()` is the single place that resolves *(mode, trial, seed
-index)* to a path — `HPOPPO`, `main_no_hpo.py` and `watch.py` all go through it,
-so they cannot drift apart. Each `.pth` carries its own architecture, its
-`eval_history` (which is what the learning-curve plots are redrawn from) and the
-`force_cue_visible` it was trained under; `load_model` refuses a checkpoint whose
-env, encoder, widths or cue setting disagree with the live config.
 
 ---
 
-## How it fits together
+## Questions
 
-**Config layer.** `Config` holds every shared hyperparameter and inherits the
-whole toolbox from `Helper`. Each encoder subclass implements only
-`_configure_model()`. The PPO half of the Optuna search space lives in `Config`
-so both encoders search identical ranges — the widths a study settles on are
-then comparable across the ablation. `make_config("GRU", tbptt_length=L)` returns
-the *tuned* config; `ConfigNoHPO("GRU")` is the hand-picked one, which is why
-`watch.py` branches between them.
+Found a bug, have a question about the results, or want to suggest an
+extension? Open an issue or a pull request on this repo, or reach me
+directly:
 
-**Encoders.** Both take the same input and return the same shape, so `Network`
-and `PPOAgent` never branch on which one is in use. `flatten_obs` one-hots the
-observation's 3 channels into 980 features first. Both act one step at a time
-during rollout collection and see whole sequences during the PPO update.
+- Email: pham.anhkhoa1215@gmail.com
+- GitHub: [@khoaphamanh](https://github.com/khoaphamanh)
 
-**Agent.** `PPOAgent.sample()` collects a rollout across `n_workers` parallel
-envs; `gae()` computes advantages; `split_pad_mask()` cuts each worker's stream
-at episode boundaries — and at `tbptt_length`, when one is set — then pads to
-rectangles; `learn()`
-runs the clipped-surrogate + value + entropy loss over minibatches of whole
-sequences, stopping early on `target_kl`.
-
----
-
-## Design notes worth knowing before editing
-
-- **Rollout length is the env's time limit, in both directions.** `worker_steps`
-  (T) defaults to the env's own `max_steps`, and `build_env` passes it back into
-  `gym.make`. An episode can therefore never outlive one rollout — but MiniGrid's
-  success reward moves with `max_steps`, so **changing T silently rescales the
-  reward and every number the study compares.**
-- **`eval_deterministic` is one setting for a whole run.** It decides whether the
-  learning curve, the checkpoint's stored eval and the HPO score are *all*
-  sampled or *all* argmax, so switching it can never make two numbers
-  incomparable. The reporting paths read the mode off the checkpoint, measure
-  the other one fresh, and print them in separate blocks.
-- **Minibatch size is resolved once, then defended.** `mini_batch_size` is a list
-  of candidates, largest first. A probe runs a worst-case forward/backward before
-  iteration 0 (early rollouts pack fewer sequences than later ones, so probing on
-  real data would underestimate), and an OOM-retry wrapper guards each real
-  update. The resolved size is logged and written into the checkpoint.
-- **A tuned checkpoint carries its own architecture.** `save_model` stores the
-  searched params, so every reload path must call
-  `config.apply_params(config.checkpoint_params(path))` *before* building the
-  agent. A new `search_space` entry requires the attribute to already exist on
-  the config — `apply_params` raises rather than inventing one.
-- **`hpo_objective` is one string**, `<metric>_<center>_<spread>` (e.g.
-  `return_mean_minus-std`). `center` and `spread` are always aggregated **across
-  seeds**, never across the eval episodes of one run — within-run spread on a
-  bimodal return is a function of the success rate itself and would penalise
-  partial success.
-- **No dropout, anywhere.** PPO compares rollout log-probs against log-probs
-  recomputed during the update; dropout makes those differ on identical inputs
-  for reasons unrelated to learning, and corrupts the ratio. Neither encoder has
-  any, and none should be added.
-- **`async_envs`** picks `AsyncVectorEnv` (separate processes, default) vs
-  `SyncVectorEnv`. It must be `False` in notebooks and any script without an
-  `__main__` guard, because macOS spawns subprocesses.
-- **Timing is first-class.** `PPOAgent` only names phases
-  (`with self.timing.phase("sample"):`); all arithmetic lives in `Timing`.
-  Adding a phase means adding a key to `Timing.ROWS` — an untimed-but-unlisted
-  phase accumulates silently and just isn't printed.
-- **The tbptt ablation truncates only the *backward* pass.**
-  `config.tbptt_length` (`"max"`, or an int from `--tbptt L`) is read by
-  `split_pad_mask`, which cuts each worker's stream at episode boundaries *and*
-  every `L` steps. A chunk starting mid-episode is seeded from the hidden state
-  the rollout recorded at that timestep, so the encoder still sees the whole
-  history going forward — only the gradient's reach shrinks. It is never
-  searched: each length is a separate study in its own directory, so no sampler
-  or pruner ever ranks one length against another, and the lengths are compared
-  afterwards by reading the studies' `final_*.json`. Shorter is not automatically
-  cheaper — `L=1` measured *slower* than full BPTT, because the update then runs
-  many more minibatches of length-1 sequences.
-
----
-
-## Reproducing the solved GRU run
-
-The committed config has drifted off two of the settings that produced the
-result above. To repeat it, in `config/config.py`:
-
-```python
-self.force_cue_visible = False       # the real task, no spawn wrapper
-self.n_workers = 32
-self.worker_steps = 302              # currently None -> 605; must be set explicitly
-self.n_iterations = 2000
-```
-
-then `python main_no_hpo.py GRU`. Note this **overwrites**
-`agents/pretrained_model_GRU/no_hpo/` — the directory does not separate runs by
-setting, so move a checkpoint you want to keep before rerunning.
-
-Why these values matter: at `n_workers = 8` and `T = 605` the same
-hyperparameters plateau at chance for 800 iterations and never learn the memory.
-Widening the rollout buffer collects more of the rare episodes in which the agent
-happens to see the cue, and halving `T` raises the number of gradient updates per
-environment step; together they get the memory to form before the policy commits
-to the free ~0.5 available from ignoring the cue.
-
-## Roadmap
-
-- [x] Run every arm over the five seeds in `seed_list` — no more single-seed claims
-- [x] Run MLP and GRU at the same settings (the encoder ablation)
-- [x] Optuna study per encoder, one per truncated-BPTT length
-- [ ] Fill in the middle of the tbptt sweep (`L = 4`, and something between 8 and full)
-- [ ] Rewrite *The task* / *Results* above against `MiniGrid-MemoryS17Random-v0`
+I am happy to discuss the project, the task, or the code in more depth; just
+say what you were trying to do and what you saw instead, and include the
+study/encoder/`--tbptt` combination if it is result-related.
