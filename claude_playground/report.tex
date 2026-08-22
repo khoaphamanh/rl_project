@@ -1,0 +1,132 @@
+% This is a variation of the NeurIPS'24 format
+\documentclass{article}
+\usepackage[final]{adrl}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}     
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% Add your own as neccessary
+
+\title{iML Project Report Template}
+\author{Theo Retisch \\ \url{github.com/theo/adrl_project}}
+
+\begin{document}
+
+\maketitle
+\begin{abstract}
+    An abstract is a short summary of your project. It should really only be a single paragraph, not much more than 10 lines.
+\end{abstract}
+\section{Introduction}
+This is your motivational section: describe the setting, your research questions and why they're important! This should be pretty similar to a paper's introduction section, but a bit shorter.
+
+\section{Related Work}
+Here you cite related papers, either by referring to \cite{wever-aaai26a} or as a reference at the end of the sentence~\citep{wever-aaai26a}. 
+Add your references to the "references.bib" file. 
+Pay attention: if you get the citation from arxiv, it will only give you that version -- but you should cite the conference or journal version if it exists! 
+Therefore, you should look for the paper on dblp.org and use that citation. 
+You can delete things like the bibsource and timestamp, but keep the important information like authors, title, journal, year or DOI.
+
+You do not need to cite papers just to have a certain number of citations, but you should show us that you researched existing approaches. As a rule of thumb, it is likely that there are at least 2-3 related works you want to look at. This can be another short section, just tell us how your idea relates to the prior work.
+
+\section{Approach}
+This is where you describe what you did. Good things to include are {\color{orange} colorcoding}, pseudocode as in Algorithm~\ref{alg:code} and equations like in Equation~\ref{eq:pi}.
+Write enough so that we understand your method without looking at any code.
+
+\begin{algorithm}[H]
+    \caption{A great iML method adaptation.}
+    \label{alg:code}
+    \begin{algorithmic}
+        \Require Dataset $D$, algorithm $A$
+        \Return explanation $\alpha$
+        \While TRUE
+            \State Train $A$ on $D$
+        \EndWhile
+    \end{algorithmic}
+\end{algorithm}
+
+\begin{equation}
+    \label{eq:pi}
+    (D,A) \mapsto \alpha
+\end{equation}
+
+\section{Experiments}
+Here are your results and their description. Some things to look out for:
+\begin{itemize}
+    \item Use a high dpi when plotting
+    \item Even better: plot SVGs and use the corresponding LaTeX package to include them
+    \item Don't make us zoom in to read your axis descriptions!
+\end{itemize}
+You should also describe what you see in the plots and how you interpret your results.
+
+\section{Discussion}
+Here you recap what you did, say what worked and what didn't, and point toward future work.
+Refer back to your research question: did you answer it? How could it be extended in the future?
+
+% Everything from this point on does not count towards your page count
+\newpage
+\bibliography{references}
+\bibliographystyle{plainnat}
+
+\newpage
+\section*{Checklist}
+This checklist is not mandatory, but can help you set up your project in a reproducible manner.
+Options for filling it out are:
+\answerYes{}
+\answerNo{}
+\answerNA{}
+\begin{enumerate}
+
+\item General points:
+\begin{enumerate}
+  \item Do the main claims made in the abstract and introduction accurately reflect your contributions and scope?
+    \answerTODO{}
+  \item Did you cite all relevant related work?
+    \answerTODO{}
+  \item Did you describe the limitations of your work?
+    \answerTODO{}
+  \item Did you include a discussion of future work?
+    \answerTODO{}
+\end{enumerate}
+
+\item If you are including theoretical results...
+\begin{enumerate}
+  \item Did you state the full set of assumptions of all theoretical results?
+    \answerTODO{}
+	\item Did you include complete proofs of all theoretical results?
+    \answerTODO{}
+\end{enumerate}
+
+\item If you ran experiments (e.g. for benchmarks)...
+\begin{enumerate}
+  \item Did you include the code, data, and instructions needed to reproduce the main experimental results (either in the supplemental material or as a URL)?
+    \answerTODO{}
+  \item Did you specify all the training details (e.g., data splits, hyperparameters, how they were chosen)?
+    \answerTODO{}
+  \item Did you run at least 10 repetitions of your method?
+    \answerTODO{}
+  \item Did you report error bars (e.g., with respect to the random seed after running experiments multiple times)?
+    \answerTODO{}
+  \item Did you include the total amount of compute and the type of resources used (e.g., type of GPUs, internal cluster, or cloud provider)?
+    \answerTODO{}
+\end{enumerate}
+
+\item If you are using existing assets (e.g., code, data, models) or curating/releasing new assets...
+\begin{enumerate}
+  \item If your work uses existing assets, did you cite the creators?
+    \answerTODO{}
+  \item Did you make sure the license of the assets permits usage?
+    \answerTODO{}
+  \item Did you reference the assets directly within your code and repository?
+    \answerTODO{}
+\end{enumerate}
+\end{enumerate}
+\end{document}
