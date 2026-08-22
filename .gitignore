@@ -51,3 +51,6 @@ CLAUDE.md
 # needs) and the small study files; drop the ~5 GB of per-trial checkpoints.
 agents/pretrained_model_*/hpo/trial_*/
 
+# no-HPO run checkpoints/curves: local artefacts only, not tracked.
+agents/pretrained_model_*/no_hpo*/
+
