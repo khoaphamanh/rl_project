@@ -1,7 +1,7 @@
 # Memory Reach: GRU vs MLP under PPO on MiniGrid Memory
 
 > **Research question.** How far back does a policy's gradient actually have to
-> reach before it can solve a task that a memoryless policy cannot — and what
+> reach before it can solve a task that a memoryless policy cannot? And what
 > does that reach cost in training time and memory?
 
 One PPO pipeline, two feature extractors, and nothing else changed between them:
@@ -205,7 +205,7 @@ the hardware above.
 - Everything shorter fails at chance: `--tbptt 4` at 0.500, `--tbptt 1` at
   0.588, the MLP at 0.592. None of them beats a coin flip.
 - Reaching back further than 8 adds nothing. So carrying `h` forward is not the
-  thing that matters — every GRU arm does that. The *gradient* has to reach back
+  thing that matters: every GRU arm does that. The *gradient* has to reach back
   to the observation that filled it, and four steps is not far enough.
 
 **`steps` shows what the failures are doing.**
@@ -213,16 +213,41 @@ the hardware above.
 - **~16.8 steps = remembering.** Both solvers walk the detour: turn back, look
   at the cue, return to the fork.
 - **~7 steps = guessing.** `--tbptt 4` runs straight to the fork and always
-  picks the same side — the upper prong on four seeds, the lower one on the
+  picks the same side: the upper prong on four seeds, the lower one on the
   fifth, on every maze. In this eval set the upper prong is correct in exactly
   25 of 50 mazes, so any fixed side scores exactly 25/50. That is why its spread
   across seeds is 0.000: arithmetic, not convergence.
 - `--tbptt 1` (9.8 steps) does the same thing less tidily. The MLP (24.3 steps)
   wanders first, then guesses.
 
+**Why is 8 enough, when a solved episode takes ~16.8 steps?**
+
+`--tbptt 8` spans about half the trajectory it has to solve, and still loses
+nothing to full BPTT. Four reasons it does not need to span the whole thing:
+
+- **The gradient is not what carries the reward back.** GAE and the critic do
+  that, over the whole episode, whatever `L` is. The window only has to teach the
+  encoder to write the cue into `h`, hold it, and read it at the fork.
+- **Only the return leg has to be held.** Everything before the agent turns
+  around and sights the cue needs no memory at all, so the interval that must be
+  spanned is a part of the 16.8, not all of it.
+- **The chunks compose.** They tile the episode and each is seeded with the `h`
+  the rollout recorded there, so every step still gets a gradient every epoch,
+  and neighbouring chunks hand credit across their shared boundary over
+  successive updates. One window only has to teach a local habit: leave `h` alone
+  while nothing relevant is in view. The forward pass carries it the rest of the
+  way.
+- **8 is already past the point where more reach helps.** Full BPTT has the whole
+  episode available and scores the same 0.958, the same 1.000, the same 16.8
+  steps. The bar to clear is the gradient's effective horizon, not the episode
+  length.
+
+That is a reading of the numbers, not a measurement. What would settle it: sweep
+`--tbptt 5..7`, and log the distance from the cue sighting to the fork.
+
 **Price: full BPTT is also the cheapest.**
 
-- It trains fastest of the GRU arms — **1.3 h**, matching the MLP — against
+- It trains fastest of the GRU arms at **1.3 h**, matching the MLP, against
   1.6 h (`--tbptt 4`), 2.0 h (`--tbptt 8`) and 2.6 h (`--tbptt 1`). Shorter
   chunks mean more minibatches per epoch, so truncating hard costs time instead
   of saving it. (The middle two also differ in width, so only the extremes are

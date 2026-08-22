@@ -1,53 +1,172 @@
-% Ideally, you'll get your references from dblp.org
+% References for "How Far Back Must the Gradient Reach?"
+% Conference/journal versions preferred over arXiv where they exist.
 
-
-@inproceedings{iml,
-  author    = {Marius Lindauer},
-  title     = {Interpretabel Machine Learning Lecture},}
-  %booktitle = {Proceedings of the Fortieth AAAI Conference on Artificial Intelligence (AAAI 2026)},
-  year      = {2026},
-  note      = {Accepted as oral presentation},
-  publisher = {AAAI Press},
-  address   = {Singapore}
-}
-@inproceedings{gc,
-  title={Grad-cam: Visual explanations from deep networks via gradient-based localization},
-  author={Selvaraju, Ramprasaath R and Cogswell, Michael and Das, Abhishek and Vedantam, Ramakrishna and Parikh, Devi and Batra, Dhruv},
-  booktitle={Proceedings of the IEEE international conference on computer vision},
-  pages={618--626},
-  year={2017}
+@article{ppo,
+  author  = {John Schulman and Filip Wolski and Prafulla Dhariwal and Alec Radford and Oleg Klimov},
+  title   = {Proximal Policy Optimization Algorithms},
+  journal = {CoRR},
+  volume  = {abs/1707.06347},
+  year    = {2017},
+  url     = {https://arxiv.org/abs/1707.06347}
 }
 
-@inproceedings{efficientnet,
-  title={Efficientnet: Rethinking model scaling for convolutional neural networks},
-  author={Tan, Mingxing and Le, Quoc},
-  booktitle={International conference on machine learning},
-  pages={6105--6114},
-  year={2019},
-  organization={PMLR}
+@inproceedings{gae,
+  author    = {John Schulman and Philipp Moritz and Sergey Levine and Michael I. Jordan and Pieter Abbeel},
+  title     = {High-Dimensional Continuous Control Using Generalized Advantage Estimation},
+  booktitle = {4th International Conference on Learning Representations (ICLR 2016)},
+  year      = {2016}
 }
 
-@inproceedings{cgc,
-  title={Consistent explanations by contrastive learning},
-  author={Pillai, Vipin and Koohpayegani, Soroush Abbasi and Ouligian, Ashley and Fong, Dennis and Pirsiavash, Hamed},
-  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
-  pages={10213--10222},
-  year={2022}
+@inproceedings{gru,
+  author    = {Kyunghyun Cho and Bart van Merrienboer and Caglar Gulcehre and Dzmitry Bahdanau and Fethi Bougares and Holger Schwenk and Yoshua Bengio},
+  title     = {Learning Phrase Representations using {RNN} Encoder-Decoder for Statistical Machine Translation},
+  booktitle = {Proceedings of the 2014 Conference on Empirical Methods in Natural Language Processing (EMNLP 2014)},
+  pages     = {1724--1734},
+  year      = {2014}
 }
 
-@inproceedings{simclr,
-  title={A simple framework for contrastive learning of visual representations},
-  author={Chen, Ting and Kornblith, Simon and Norouzi, Mohammad and Hinton, Geoffrey},
-  booktitle={International conference on machine learning},
-  pages={1597--1607},
-  year={2020},
-  organization={PmLR}
+@article{lstm,
+  author  = {Sepp Hochreiter and J{\"u}rgen Schmidhuber},
+  title   = {Long Short-Term Memory},
+  journal = {Neural Computation},
+  volume  = {9},
+  number  = {8},
+  pages   = {1735--1780},
+  year    = {1997}
 }
 
-@article{vae,
-  title   = {Auto-Encoding Variational Bayes},
-  author  = {Kingma, Diederik P. and Welling, Max},
-  journal = {arXiv preprint arXiv:1312.6114},
-  year    = {2013},
-  url     = {https://arxiv.org/abs/1312.6114}
+@article{bptt,
+  author  = {Paul J. Werbos},
+  title   = {Backpropagation Through Time: What It Does and How to Do It},
+  journal = {Proceedings of the IEEE},
+  volume  = {78},
+  number  = {10},
+  pages   = {1550--1560},
+  year    = {1990}
+}
+
+@article{tbptt,
+  author  = {Ronald J. Williams and Jing Peng},
+  title   = {An Efficient Gradient-Based Algorithm for On-Line Training of Recurrent Network Trajectories},
+  journal = {Neural Computation},
+  volume  = {2},
+  number  = {4},
+  pages   = {490--501},
+  year    = {1990}
+}
+
+@article{pomdp,
+  author  = {Leslie Pack Kaelbling and Michael L. Littman and Anthony R. Cassandra},
+  title   = {Planning and Acting in Partially Observable Stochastic Domains},
+  journal = {Artificial Intelligence},
+  volume  = {101},
+  number  = {1-2},
+  pages   = {99--134},
+  year    = {1998}
+}
+
+@inproceedings{drqn,
+  author    = {Matthew J. Hausknecht and Peter Stone},
+  title     = {Deep Recurrent Q-Learning for Partially Observable {MDP}s},
+  booktitle = {2015 {AAAI} Fall Symposium on Sequential Decision Making for Intelligent Agents},
+  year      = {2015}
+}
+
+@inproceedings{r2d2,
+  author    = {Steven Kapturowski and Georg Ostrovski and John Quan and R{\'e}mi Munos and Will Dabney},
+  title     = {Recurrent Experience Replay in Distributed Reinforcement Learning},
+  booktitle = {7th International Conference on Learning Representations (ICLR 2019)},
+  year      = {2019}
+}
+
+@inproceedings{recurrentbaseline,
+  author    = {Tianwei Ni and Benjamin Eysenbach and Ruslan Salakhutdinov},
+  title     = {Recurrent Model-Free {RL} Can Be a Strong Baseline for Many {POMDP}s},
+  booktitle = {Proceedings of the 39th International Conference on Machine Learning (ICML 2022)},
+  pages     = {16691--16723},
+  year      = {2022}
+}
+
+@inproceedings{gtrxl,
+  author    = {Emilio Parisotto and H. Francis Song and Jack W. Rae and Razvan Pascanu and Caglar Gulcehre and Siddhant M. Jayakumar and Max Jaderberg and Rapha{\"e}l Lopez Kaufman and Aidan Clark and Seb Noury and Matthew M. Botvinick and Nicolas Heess and Raia Hadsell},
+  title     = {Stabilizing Transformers for Reinforcement Learning},
+  booktitle = {Proceedings of the 37th International Conference on Machine Learning (ICML 2020)},
+  pages     = {7487--7498},
+  year      = {2020}
+}
+
+@inproceedings{popgym,
+  author    = {Steven Morad and Ryan Kortvelesy and Matteo Bettini and Stephan Liwicki and Amanda Prorok},
+  title     = {{POPG}ym: Benchmarking Partially Observable Reinforcement Learning},
+  booktitle = {11th International Conference on Learning Representations (ICLR 2023)},
+  year      = {2023}
+}
+
+@inproceedings{minigrid,
+  author    = {Maxime Chevalier-Boisvert and Bolun Dai and Mark Towers and Rodrigo Perez-Vicente and Lucas Willems and Salem Lahlou and Suman Pal and Pablo Samuel Castro and Jordan Terry},
+  title     = {Minigrid \& Miniworld: Modular \& Customizable Reinforcement Learning Environments for Goal-Oriented Tasks},
+  booktitle = {Advances in Neural Information Processing Systems 36 (NeurIPS 2023), Datasets and Benchmarks Track},
+  year      = {2023}
+}
+
+@article{gymnasium,
+  author  = {Mark Towers and Ariel Kwiatkowski and Jordan Terry and John U. Balis and Gianluca De Cola and Tristan Deleu and Manuel Goul{\~a}o and Andreas Kallinteris and Markus Krimmel and Arjun KG and Rodrigo Perez-Vicente and Andrea Pierr{\'e} and Sander Schulhoff and Jun Jet Tai and Hannah Tan and Omar G. Younis},
+  title   = {Gymnasium: A Standard Interface for Reinforcement Learning Environments},
+  journal = {CoRR},
+  volume  = {abs/2407.17032},
+  year    = {2024},
+  url     = {https://arxiv.org/abs/2407.17032}
+}
+
+@inproceedings{optuna,
+  author    = {Takuya Akiba and Shotaro Sano and Toshihiko Yanase and Takeru Ohta and Masanori Koyama},
+  title     = {Optuna: A Next-Generation Hyperparameter Optimization Framework},
+  booktitle = {Proceedings of the 25th {ACM} {SIGKDD} International Conference on Knowledge Discovery and Data Mining (KDD 2019)},
+  pages     = {2623--2631},
+  year      = {2019}
+}
+
+@inproceedings{tpe,
+  author    = {James Bergstra and R{\'e}mi Bardenet and Yoshua Bengio and Bal{\'a}zs K{\'e}gl},
+  title     = {Algorithms for Hyper-Parameter Optimization},
+  booktitle = {Advances in Neural Information Processing Systems 24 (NIPS 2011)},
+  pages     = {2546--2554},
+  year      = {2011}
+}
+
+@inproceedings{hyperparamsrl,
+  author    = {Theresa Eimer and Marius Lindauer and Roberta Raileanu},
+  title     = {Hyperparameters in Reinforcement Learning and How to Tune Them},
+  booktitle = {Proceedings of the 40th International Conference on Machine Learning (ICML 2023)},
+  pages     = {9104--9149},
+  year      = {2023}
+}
+
+@inproceedings{whatmatters,
+  author    = {Marcin Andrychowicz and Anton Raichuk and Piotr Sta{\'n}czyk and Manu Orsini and Sertan Girgin and Rapha{\"e}l Marinier and L{\'e}onard Hussenot and Matthieu Geist and Olivier Pietquin and Marcin Michalski and Sylvain Gelly and Olivier Bachem},
+  title     = {What Matters for On-Policy Deep Actor-Critic Methods? A Large-Scale Study},
+  booktitle = {9th International Conference on Learning Representations (ICLR 2021)},
+  year      = {2021}
+}
+
+@inproceedings{implementationmatters,
+  author    = {Logan Engstrom and Andrew Ilyas and Shibani Santurkar and Dimitris Tsipras and Firdaus Janoos and Larry Rudolph and Aleksander Madry},
+  title     = {Implementation Matters in Deep Policy Gradients: A Case Study on {PPO} and {TRPO}},
+  booktitle = {8th International Conference on Learning Representations (ICLR 2020)},
+  year      = {2020}
+}
+
+@inproceedings{adam,
+  author    = {Diederik P. Kingma and Jimmy Ba},
+  title     = {Adam: A Method for Stochastic Optimization},
+  booktitle = {3rd International Conference on Learning Representations (ICLR 2015)},
+  year      = {2015}
+}
+
+@inproceedings{pytorch,
+  author    = {Adam Paszke and Sam Gross and Francisco Massa and Adam Lerer and James Bradbury and Gregory Chanan and Trevor Killeen and Zeming Lin and Natalia Gimelshein and Luca Antiga and Alban Desmaison and Andreas K{\"o}pf and Edward Yang and Zachary DeVito and Martin Raison and Alykhan Tejani and Sasank Chilamkurthy and Benoit Steiner and Lu Fang and Junjie Bai and Soumith Chintala},
+  title     = {PyTorch: An Imperative Style, High-Performance Deep Learning Library},
+  booktitle = {Advances in Neural Information Processing Systems 32 (NeurIPS 2019)},
+  pages     = {8024--8035},
+  year      = {2019}
 }

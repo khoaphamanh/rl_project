@@ -8,73 +8,367 @@
 \usepackage{url}            % simple URL typesetting
 \usepackage{booktabs}       % professional-quality tables
 \usepackage{amsfonts}       % blackboard math symbols
+\usepackage{amsmath}        % align, cases, ...
 \usepackage{nicefrac}       % compact symbols for 1/2, etc.
 \usepackage{microtype}      % microtypography
-\usepackage{xcolor}     
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{float}          % [H] float placement
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 
-% Add your own as neccessary
+\graphicspath{{figures/}{../figures/}{../agents/comparison/}}
 
-\title{iML Project Report Template}
-\author{Theo Retisch \\ \url{github.com/theo/adrl_project}}
+\title{How Far Back Must the Gradient Reach?\\
+Truncated BPTT Length and Memory in PPO on MiniGrid}
+\author{Anh Khoa Pham \\ \url{github.com/khoaphamanh/rl_project}}
 
 \begin{document}
 
 \maketitle
 \begin{abstract}
-    An abstract is a short summary of your project. It should really only be a single paragraph, not much more than 10 lines.
+    A recurrent policy can only use a memory that its gradient has taught it to
+    write. We measure how far back that gradient has to reach on
+    \texttt{MiniGrid-MemoryS17Random-v0}, a partially observable task in which a
+    cue visible only at one end of a corridor decides which prong of a
+    T-junction at the far end is correct. One PPO pipeline is run with a
+    memoryless MLP and with a GRU whose truncated backpropagation-through-time
+    (TBPTT) window $L$ is varied over $\{1, 4, 8, \infty\}$, and each arm is
+    tuned by its own 50-trial Optuna study over identical ranges at an identical
+    fixed budget. The outcome is a sharp threshold between $L=4$ and $L=8$:
+    $L \in \{8, \infty\}$ reach $1.000 \pm 0.000$ success, while $L \in \{1,4\}$
+    and the MLP stay at chance. Carrying the hidden state forward is therefore
+    not the deciding factor, since every GRU arm does that; the gradient itself
+    has to span the interval between cue and decision. Truncating is also not
+    cheaper in time: full BPTT was the best-scoring arm and the fastest GRU arm
+    ($1.3$\,h vs.\ $2.6$\,h at $L=1$), and paid only in VRAM.
 \end{abstract}
+
 \section{Introduction}
-This is your motivational section: describe the setting, your research questions and why they're important! This should be pretty similar to a paper's introduction section, but a bit shorter.
+
+In a partially observable task the optimal action depends on information that
+has left the observation \citep{pomdp}. The usual remedy is a recurrent policy
+carrying a hidden state $h_t$ forward \citep{drqn, recurrentbaseline}, and the
+usual practical concession is to truncate the backward pass to $L$ steps
+\citep{tbptt, r2d2}, because full backpropagation through time \citep{bptt}
+costs activation memory linear in sequence length. That concession is usually
+made silently, with $L$ inherited from whatever codebase a project starts from.
+We ask what it buys and what it costs:
+
+\begin{enumerate}
+    \item \textbf{How far back must the gradient reach} before a policy solves a
+    task that a memoryless policy provably cannot? Carrying $h_t$ forward is free
+    regardless of $L$, so is a short window enough to \emph{learn} what to store,
+    or must the gradient span cue and decision?
+    \item \textbf{What does that reach cost} in wall-clock time and memory? A
+    shorter window is intuitively cheaper; we check whether it is.
+\end{enumerate}
+
+The setting is \texttt{MiniGrid-MemoryS17Random-v0} \citep{minigrid}
+(Figure~\ref{fig:setup}, top). The agent sees a $7 \times 7$ egocentric patch,
+so at the junction the observation is identical whichever answer is correct: a
+memoryless policy is capped at chance, and the gap between $0.5$ and $1.0$
+success is exactly the memory a run has acquired. We hold one PPO
+\citep{ppo} pipeline fixed and change only the encoder (MLP or GRU
+\citep{gru}) and, for the GRU, $L \in \{1,4,8,\infty\}$. Since hyperparameters
+and outcomes are tightly coupled in RL \citep{hyperparamsrl, whatmatters}, every
+arm gets an independent Optuna \citep{optuna} study over identical ranges and an
+identical non-searchable budget.
 
 \section{Related Work}
-Here you cite related papers, either by referring to \cite{wever-aaai26a} or as a reference at the end of the sentence~\citep{wever-aaai26a}. 
-Add your references to the "references.bib" file. 
-Pay attention: if you get the citation from arxiv, it will only give you that version -- but you should cite the conference or journal version if it exists! 
-Therefore, you should look for the paper on dblp.org and use that citation. 
-You can delete things like the bibsource and timestamp, but keep the important information like authors, title, journal, year or DOI.
 
-You do not need to cite papers just to have a certain number of citations, but you should show us that you researched existing approaches. As a rule of thumb, it is likely that there are at least 2-3 related works you want to look at. This can be another short section, just tell us how your idea relates to the prior work.
+\citet{drqn} showed that a recurrent value function recovers performance under
+flickering observations, and \citet{recurrentbaseline} found that a carefully
+implemented recurrent model-free agent is a strong baseline across many POMDPs,
+with details such as how sequences are cut and how hidden states are seeded
+mattering more than the algorithm. Attention-based memories \citep{gtrxl} and dedicated
+benchmarks \citep{popgym} pursue the same question with larger machinery.
+Truncated BPTT \citep{tbptt} bounds the cost of training such policies, and R2D2
+\citep{r2d2} studies the artefacts it introduces, proposing the stored-state and
+burn-in recipe now in common use; our chunking follows the same stored-state
+principle, but where R2D2 fixes $L$ and corrects for it, we vary $L$ and ask
+where the task stops being solvable. Finally,
+\citet{implementationmatters, whatmatters} document how much of the reported
+difference between deep RL methods comes from tuning rather than from the
+method, and \citet{hyperparamsrl} recommend the kind of per-method tuning
+protocol at a stated budget that we follow below.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.68\linewidth]{task_memory_s17.png}\\[6pt]
+    \includegraphics[width=0.96\linewidth]{model_architecture.png}
+    \caption{\textbf{Top:} \texttt{MiniGrid-MemoryS17Random-v0}. A cue (key or
+    ball) sits in the west room; the corridor forks into a T with a key at one
+    prong and a ball at the other, and success requires reaching the prong
+    matching the cue. The agent spawns at a random corridor position facing away
+    from the cue, so the information must be actively sought.
+    \textbf{Bottom:} one shared encoder feeding a linear actor head over the $7$
+    actions and a linear critic head. The encoder is the only part that differs
+    between arms.}
+    \label{fig:setup}
+\end{figure}
 
 \section{Approach}
-This is where you describe what you did. Good things to include are {\color{orange} colorcoding}, pseudocode as in Algorithm~\ref{alg:code} and equations like in Equation~\ref{eq:pi}.
-Write enough so that we understand your method without looking at any code.
+
+\paragraph{Task and network.} The environment is a POMDP: a
+$7 \times 7 \times 3$ egocentric view (object, colour and state index per cell),
+one-hot encoded per channel into $980$ features, and $7$ discrete actions.
+Reward is MiniGrid's $1 - 0.9 \cdot \text{step\_count}/\text{max\_steps}$ on
+success and $0$ otherwise, with \texttt{max\_steps} set to the rollout length
+$T=361$. Both arms share the actor-critic skeleton of Figure~\ref{fig:setup}
+(bottom) and differ only in the encoder $f_\theta$, which maps $(B,T,7,7,3)$ to
+$(B,T,H)$: the MLP applies $n \in \{1,\dots,4\}$
+\texttt{Linear}+\texttt{ReLU} blocks to each timestep independently, so no state
+crosses the sequence and its gradient spans one step, while the GRU \citep{gru}
+is a single layer of width $H$ carrying $h_t$ forward, so an observation from a
+hundred steps ago can still be present at the decision.
+
+\paragraph{PPO.} One iteration collects $W=32$ workers $\times\ T=361$ steps,
+computes advantages by GAE \citep{gae},
+\begin{equation}
+    \delta_t = r_t + \gamma V(s_{t+1})(1 - d_t) - V(s_t), \qquad
+    \hat{A}_t = \delta_t + \gamma \lambda (1 - d_t) \hat{A}_{t+1}, \qquad
+    \hat{R}_t = \hat{A}_t + V(s_t),
+    \label{eq:gae}
+\end{equation}
+standardises $\hat{A}$ once over the whole rollout (returns $\hat{R}$ keep their
+own scale, being what the critic must predict), and takes up to
+$n_{\text{epochs}}=3$ shuffled passes minimising
+\begin{equation}
+    \label{eq:loss}
+    \mathcal{L} = -\,\mathbb{E}_t\!\left[\min\!\left(\rho_t \hat{A}_t,\;
+    \mathrm{clip}(\rho_t, 1-\epsilon, 1+\epsilon) \hat{A}_t\right)\right]
+    + c_v \mathbb{E}_t\!\left[(V_\theta(s_t) - \hat{R}_t)^2\right]
+    - c_e \mathbb{E}_t\!\left[\mathcal{H}(\pi_\theta(\cdot \mid s_t))\right],
+\end{equation}
+with $\rho_t = \exp(\log \pi_\theta(a_t|s_t) - \log \pi_{\theta_{\text{old}}}(a_t|s_t))$
+\citep{ppo}. Every expectation covers real timesteps only, since chunks are
+padded inside a minibatch and padding never enters the loss, and gradients are
+clipped to \texttt{max\_grad\_norm} before each Adam \citep{adam} step.
+
+\paragraph{The knob under study.} Before the update the rollout is cut at every
+episode boundary \emph{and} every $L$ steps (Algorithm~\ref{alg:chunk}). A chunk
+beginning mid-episode is seeded with the hidden state the rollout already
+recorded there, so the forward pass still sees the whole episode and
+\textbf{only the backward pass is shortened}. This isolates the quantity of
+interest: all GRU arms carry identical information forward and differ only in how
+far credit assignment reaches. Setting $L=\infty$ (full BPTT) cuts at episode
+boundaries only. Note that a smaller $L$ yields \emph{more, shorter} sequences,
+which is why truncating does not automatically save time.
 
 \begin{algorithm}[H]
-    \caption{A great iML method adaptation.}
-    \label{alg:code}
-    \begin{algorithmic}
-        \Require Dataset $D$, algorithm $A$
-        \Return explanation $\alpha$
-        \While TRUE
-            \State Train $A$ on $D$
-        \EndWhile
+    \caption{One PPO iteration with truncation length $L$. {\color{orange}The
+    highlighted line is the only difference between arms.}}
+    \label{alg:chunk}
+    \begin{algorithmic}[1]
+        \Require policy $\pi_\theta$, critic $V_\theta$, workers $W$, steps $T$, truncation length $L$
+        \State $\mathcal{B} \gets$ rollout of $W \times T$ transitions, recording $(o_t, a_t, \log \pi_t, V_t, r_t, d_t, h_t)$
+        \State compute $\hat{A}, \hat{R}$ by GAE (Eq.~\ref{eq:gae}); standardise $\hat{A}$ over $\mathcal{B}$
+        \State {\color{orange}$\mathcal{S} \gets \textsc{Chunk}(\mathcal{B})$: split at episode boundaries \textbf{and} every $L$ steps, seeding each chunk with its recorded $h$}
+        \For{epoch $=1 \dots n_{\text{epochs}}$, minibatch $\mathcal{M} \subset \mathcal{S}$ (shuffled, padded)}
+            \State forward $f_\theta$ over $\mathcal{M}$ from the stored $h_0$, evaluate Eq.~\ref{eq:loss} on non-padding steps
+            \State backpropagate ($\le L$ steps through the recurrence), clip gradient norm, Adam step
+        \EndFor
     \end{algorithmic}
 \end{algorithm}
 
-\begin{equation}
-    \label{eq:pi}
-    (D,A) \mapsto \alpha
-\end{equation}
+\paragraph{Tuning protocol.}
+\label{sec:hpo}
+Each arm gets one Optuna study \citep{optuna} of $50$ trials with a TPE sampler
+\citep{tpe} seeded at $42$. A trial trains the \emph{same five seeds}
+$[0,15,12,97,98]$ for $1000$ iterations ($\approx 11.6$M environment steps per
+seed) and evaluates each on $50$ fixed mazes from a held-out evaluation seed.
+Trials are ranked by $\mathrm{mean}_s[\text{return}_s] -
+\mathrm{std}_s[\text{return}_s]$, the spread taken across seeds and never across
+the episodes of one run, since the per-episode return is bimodal and within-run
+spread would merely restate the success rate. Nine parameters are searched over
+ranges identical for both encoders, plus the MLP's depth
+(Appendix~\ref{app:params}). Nothing that buys compute is searchable: epochs,
+iterations, workers, rollout length and $L$ are fixed, and each $L$ is its own
+study, so no sampler ever ranks one truncation length against another. The
+minibatch size is instead resolved per run by probing candidates from $4096$
+downwards and keeping the largest that fits in VRAM, so every run is measured at
+the same memory budget and the winning size is itself a result.
 
 \section{Experiments}
-Here are your results and their description. Some things to look out for:
-\begin{itemize}
-    \item Use a high dpi when plotting
-    \item Even better: plot SVGs and use the corresponding LaTeX package to include them
-    \item Don't make us zoom in to read your axis descriptions!
-\end{itemize}
-You should also describe what you see in the plots and how you interpret your results.
+
+\paragraph{Setup.} Five studies were run (MLP; GRU at $L \in \{1,4,8\}$ and full
+BPTT), that is $250$ training runs and roughly $236$ GPU-hours, on one NVIDIA
+RTX 3060 Laptop GPU (12\,GB VRAM) with an AMD Ryzen 9 7950X, using PyTorch
+\citep{pytorch}, Gymnasium \citep{gymnasium} and MiniGrid \citep{minigrid}.
+Every number below is the winning trial of that study, averaged over its five
+seeds, with $\pm$ denoting the standard deviation across seeds.
+
+\begin{table}[t]
+    \centering
+    \caption{Winning trial per study. \emph{steps} is the mean evaluation
+    episode length, \emph{minibatch} the size the VRAM probe settled on, and
+    \emph{time} the wall-clock training time of that trial for all five seeds.}
+    \label{tab:results}
+    \small
+    \begin{tabular}{llccccc}
+        \toprule
+        arm & encoder & return & success rate & steps & minibatch & time \\
+        \midrule
+        \texttt{MLP} & MLP (memoryless) & $0.556 \pm 0.029$ & $0.592 \pm 0.027$ & $24.3$ & $1024$ & $1.3$\,h \\
+        \texttt{GRU} $L{=}1$ & GRU & $0.573 \pm 0.064$ & $0.588 \pm 0.068$ & $9.8$ & $4096$ & $2.6$\,h \\
+        \texttt{GRU} $L{=}4$ & GRU & $0.492 \pm 0.001$ & $0.500 \pm 0.000$ & $7.0$ & $4096$ & $1.6$\,h \\
+        \texttt{GRU} $L{=}8$ & GRU & $\mathbf{0.958 \pm 0.004}$ & $\mathbf{1.000 \pm 0.000}$ & $16.8$ & $4096$ & $2.0$\,h \\
+        \texttt{GRU} full BPTT & GRU & $\mathbf{0.958 \pm 0.002}$ & $\mathbf{1.000 \pm 0.000}$ & $16.8$ & $512$ & $\mathbf{1.3}$\,\textbf{h} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{compare_curves.pdf}
+    \caption{Training curves of the winning trial of each study: means over the
+    five seeds, bands at $\pm 1$ standard deviation across seeds, dashed line at
+    chance ($0.5$). The two solving arms separate well before iteration $400$;
+    the three failing arms sit on the chance line for the whole budget.}
+    \label{fig:curves}
+\end{figure}
+
+\paragraph{The cut-off is sharp and sits between $L=4$ and $L=8$.}
+Table~\ref{tab:results} and Figure~\ref{fig:curves} answer the first question
+categorically rather than gradually. The arms with $L \in \{8, \infty\}$ solve
+the task, at $1.000$ success on all five seeds and return $0.958$, while $L=4$
+($0.500$), $L=1$ ($0.588$) and the MLP ($0.592$) never beat a coin flip, and no
+setting produced an intermediate score such as $0.75$. Carrying $h$ forward is
+therefore not what matters, because every GRU arm does that identically,
+including the ones that fail; what separates them is whether
+the gradient reaches back to the observation that filled $h$, and four steps is
+not far enough while eight is. Reaching further than $8$ adds nothing, since
+full BPTT matches $L=8$ within noise.
+
+\paragraph{Why eight steps suffice for a seventeen-step solution.} A solving
+episode lasts $16.8$ steps, so $L=8$ spans only about half of it and still loses
+nothing to full BPTT. Three things reconcile this. First, BPTT is not the path
+that carries reward credit: GAE bootstraps through the value function over the
+whole episode irrespective of $L$ (Eq.~\ref{eq:gae}), so the backward window has
+only to shape the encoder's representation, namely writing the cue into $h$,
+holding it, and reading it at the fork. Second, only part of the trajectory has
+to be held: the steps before the agent turns around and sights the cue need no
+memory at all, so the interval to be spanned is the return leg rather than the
+episode. Third, chunks tile the episode and each is seeded with the recorded $h$,
+so every step still receives gradient in every epoch and neighbouring windows
+hand credit across their shared boundary over successive updates; a single window
+therefore has only to teach the local behaviour of leaving $h$ intact while
+nothing relevant is in view, which the forward pass carries arbitrarily far. The
+equality of $L=8$ and full BPTT is the evidence for this reading: the longer
+reach is available to the full-BPTT arm and changes neither its score nor its
+$16.8$ steps, so the bar to clear is the effective gradient horizon and not the
+episode length.
+
+\paragraph{The failing arms have solved a different problem.} Mean episode
+length separates two policies more cleanly than return does. At $\approx 16.8$
+steps the solving arms take the detour (turn back, look, return to the fork) and
+pay the small step cost that keeps their return at $0.958$ rather than $1.0$. At
+$7.0$ steps the $L=4$ arm walks straight to the fork and always picks the same
+side, the upper prong on four seeds and the lower on the fifth, on
+\emph{every} maze. The upper prong is correct in exactly $25$ of the $50$
+evaluation mazes, so any fixed side scores exactly $25/50$; its across-seed
+spread of $0.000$ is arithmetic, not convergence. Sub-threshold arms are thus not partially remembering but have settled in a
+stable memory-free optimum, which is easy to reach because the detour costs
+reward immediately and pays nothing until the memory works. The $L=1$ arm
+($9.8$ steps) does the same less tidily and the MLP ($24.3$ steps) wanders
+before guessing; the small excess of these two above $0.5$ is sampling noise
+over $50$ mazes, since their across-seed spreads ($\pm 0.07$ and $\pm 0.03$)
+cover chance comfortably. All three are flat from about iteration $50$ onwards
+in Figure~\ref{fig:curves}, so a larger budget would not rescue them.
+
+\paragraph{The reach costs memory, not time.} Full BPTT is the fastest GRU arm
+at $1.3$\,h, matching the memoryless MLP, against $1.6$\,h ($L=4$), $2.0$\,h
+($L=8$) and $2.6$\,h ($L=1$). The intuition that truncation saves time is wrong
+at fixed rollout size: sequences per epoch scale as $\lceil T/L \rceil$, so
+halving $L$ roughly doubles the number of padded, kernel-launch-bound minibatch
+sequences, and the per-sequence saving in the backward pass does not compensate
+(the extremes are the clean comparison, as the middle two arms also differ in
+width). Full BPTT is earlier as well, reaching $0.95$ success at a median of
+$370$ iterations against $640$ for $L=8$. What it pays is VRAM: the probe settles
+at a minibatch of $512$ against $4096$ for $L=8$, an $8\times$ difference on the
+same 12\,GB GPU. The recommendation on this task is therefore full BPTT, with
+$L=8$ as the fallback on a smaller GPU; below $L=8$ one does not get a cheaper
+solution but the MLP's guessing policy at GRU prices.
 
 \section{Discussion}
-Here you recap what you did, say what worked and what didn't, and point toward future work.
-Refer back to your research question: did you answer it? How could it be extended in the future?
+
+On MemoryS17Random the gradient must reach back between $4$ and $8$ steps, with
+no partial credit on either side of that boundary and no benefit beyond it, and
+the reach costs activation memory ($8\times$ smaller minibatches) but not
+wall-clock time, since hard truncation was the slowest configuration we ran. The
+control that makes this interpretable is the stored-state chunking: every GRU
+arm carries the identical hidden state forward, so the collapse at $L \le 4$ is
+attributable to credit assignment and not to information availability. The
+per-arm tuning protocol was essential rather than cosmetic, since with $50$
+trials each and a variance-penalised objective the failure of $L \in \{1,4\}$
+cannot be dismissed as an unlucky learning rate. Our cost intuition did not
+survive: we expected a score/compute trade-off along $L$ and found the
+best-scoring setting to be the cheapest in time as well, so truncation is best
+understood here as a memory concession rather than a speed optimisation.
+
+\paragraph{Limitations and future work.} This is one task, one recurrent
+architecture and one algorithm. The threshold is a property of
+MemoryS17Random, and we did not resolve $L \in \{5,6,7\}$, so it is bracketed
+rather than located. Five seeds separate $0.5$ from $1.0$ safely but do not support
+fine claims such as the $0.556$ versus $0.573$ ordering of two chance-level
+arms, and evaluation uses $50$ fixed mazes from a single seed. Three extensions
+follow directly: sweep $L \in \{5,6,7\}$, log the distance from the cue sighting
+to the fork, and vary the corridor length, which together would turn the reading
+of Section~4 into a measurement; add R2D2-style burn-in \citep{r2d2}, which
+would tell us whether a short window can be made to behave like a long one, in which case the threshold is about optimisation rather
+than the gradient path itself; and repeat the protocol with an LSTM
+\citep{lstm} and a small transformer \citep{gtrxl}, where the analogous knob is
+the attention window.
 
 % Everything from this point on does not count towards your page count
 \newpage
 \bibliography{references}
 \bibliographystyle{plainnat}
+
+\newpage
+\appendix
+\section{Search space and winning hyperparameters}
+\label{app:params}
+
+Table~\ref{tab:params} gives the search space, identical for both encoders, and
+the configuration of the winning trial of each study, that is the settings
+behind every number in Table~\ref{tab:results}. The tuned values are similar
+across the solving and the failing GRU arms (learning rates within a factor of
+$1.4$, comparable discounting), so the outcome is not explained by one study
+finding a special corner of the space. The one visible pattern is the MLP's much
+larger entropy coefficient and value weight, consistent with a run that never
+finds a deterministic solution to commit to.
+
+\begin{table}[h]
+    \centering
+    \caption{Search space (identical ranges per encoder) and the winning
+    configuration per study. \texttt{score} is $\mathrm{mean}_s -
+    \mathrm{std}_s$ of the evaluation return over the five seeds, the quantity
+    Optuna maximised. Fixed, never-searched settings: $n_{\text{epochs}}=3$,
+    $1000$ iterations, $32 \times 361$ rollout, and $L$ itself.}
+    \label{tab:params}
+    \small
+    \begin{tabular}{llccccc}
+        \toprule
+        parameter & range & MLP & $L{=}1$ & $L{=}4$ & $L{=}8$ & full BPTT \\
+        \midrule
+        winning trial & & 3 & 47 & 40 & 25 & 36 \\
+        \texttt{lr} & $10^{-5}$--$10^{-2}$, log & $6.65\!\cdot\!10^{-4}$ & $1.53\!\cdot\!10^{-3}$ & $1.48\!\cdot\!10^{-3}$ & $1.35\!\cdot\!10^{-3}$ & $1.82\!\cdot\!10^{-3}$ \\
+        \texttt{gamma} & $0.99$--$0.9999$ & $0.9917$ & $0.9968$ & $0.9962$ & $0.9940$ & $0.9968$ \\
+        \texttt{gae\_lambda} & $0.9$--$0.99$ & $0.90$ & $0.95$ & $0.90$ & $0.98$ & $0.96$ \\
+        \texttt{clip\_eps} & $0.1$--$0.3$ & $0.26$ & $0.19$ & $0.10$ & $0.13$ & $0.25$ \\
+        \texttt{entropy\_coef} & $10^{-4}$--$10^{-1}$, log & $7.03\!\cdot\!10^{-2}$ & $9.27\!\cdot\!10^{-4}$ & $3.30\!\cdot\!10^{-4}$ & $5.11\!\cdot\!10^{-3}$ & $9.56\!\cdot\!10^{-3}$ \\
+        \texttt{value\_coef} & $0.01$--$1.0$, log & $0.854$ & $0.120$ & $0.028$ & $0.128$ & $0.089$ \\
+        \texttt{wd} & $10^{-8}$--$10^{-2}$, log & $6.72\!\cdot\!10^{-7}$ & $1.60\!\cdot\!10^{-7}$ & $2.74\!\cdot\!10^{-7}$ & $1.21\!\cdot\!10^{-8}$ & $2.87\!\cdot\!10^{-8}$ \\
+        \texttt{max\_grad\_norm} & $0.1$--$2.0$, log & $0.134$ & $1.152$ & $1.226$ & $0.304$ & $0.500$ \\
+        \texttt{hidden\_size} & $32$--$512$, step $8$ & $360$ & $216$ & $360$ & $480$ & $280$ \\
+        \texttt{n\_layers\_mlp} & $1$--$4$ (MLP only) & $2$ & & & & \\
+        \midrule
+        \texttt{score} & & $0.527$ & $0.509$ & $0.491$ & $0.955$ & $\mathbf{0.956}$ \\
+        \bottomrule
+    \end{tabular}
+\end{table}
 
 \newpage
 \section*{Checklist}
@@ -88,45 +382,45 @@ Options for filling it out are:
 \item General points:
 \begin{enumerate}
   \item Do the main claims made in the abstract and introduction accurately reflect your contributions and scope?
-    \answerTODO{}
+    \answerYes{} The claims are limited to one task, one recurrent architecture and the four truncation lengths actually run.
   \item Did you cite all relevant related work?
-    \answerTODO{}
+    \answerYes{} See Section~2 (recurrent policies in POMDPs, truncated BPTT and stored states, tuning protocols in RL).
   \item Did you describe the limitations of your work?
-    \answerTODO{}
+    \answerYes{} Section~5: single task and architecture, threshold bracketed rather than located, five seeds, one evaluation seed.
   \item Did you include a discussion of future work?
-    \answerTODO{}
+    \answerYes{} Section~5, three concrete extensions.
 \end{enumerate}
 
 \item If you are including theoretical results...
 \begin{enumerate}
   \item Did you state the full set of assumptions of all theoretical results?
-    \answerTODO{}
+    \answerNA{} The report is purely empirical.
 	\item Did you include complete proofs of all theoretical results?
-    \answerTODO{}
+    \answerNA{}
 \end{enumerate}
 
 \item If you ran experiments (e.g. for benchmarks)...
 \begin{enumerate}
   \item Did you include the code, data, and instructions needed to reproduce the main experimental results (either in the supplemental material or as a URL)?
-    \answerTODO{}
+    \answerYes{} Code, the exact command per study, and the finished Optuna studies with the winning checkpoints are at \url{https://github.com/khoaphamanh/rl_project}.
   \item Did you specify all the training details (e.g., data splits, hyperparameters, how they were chosen)?
-    \answerTODO{}
+    \answerYes{} Protocol in Section~3; search space and selected values in Appendix~\ref{app:params}.
   \item Did you run at least 10 repetitions of your method?
-    \answerTODO{}
+    \answerNo{} Each configuration was trained on five seeds $[0,15,12,97,98]$, the same five in every trial of every study, for $250$ training runs and $\approx 236$ GPU-hours. The measured effect ($0.500$ vs.\ $1.000$ success, across-seed std $\le 0.004$ on the solving arms) is far larger than the seed noise, so more repetitions would not change the conclusion; a finer comparison between the two chance-level arms would need them.
   \item Did you report error bars (e.g., with respect to the random seed after running experiments multiple times)?
-    \answerTODO{}
+    \answerYes{} All tables report mean $\pm$ std across seeds, Figure~\ref{fig:curves} shades $\pm 1$ std, and the tuning objective is itself mean minus one std across seeds.
   \item Did you include the total amount of compute and the type of resources used (e.g., type of GPUs, internal cluster, or cloud provider)?
-    \answerTODO{}
+    \answerYes{} Section~4: one RTX 3060 Laptop GPU (12\,GB), Ryzen 9 7950X, $\approx 236$ GPU-hours in total.
 \end{enumerate}
 
 \item If you are using existing assets (e.g., code, data, models) or curating/releasing new assets...
 \begin{enumerate}
   \item If your work uses existing assets, did you cite the creators?
-    \answerTODO{}
+    \answerYes{} MiniGrid \citep{minigrid}, Gymnasium \citep{gymnasium}, Optuna \citep{optuna} and PyTorch \citep{pytorch} are cited where used.
   \item Did you make sure the license of the assets permits usage?
-    \answerTODO{}
+    \answerYes{} All four are permissively licensed (MIT/BSD-style) and used unmodified.
   \item Did you reference the assets directly within your code and repository?
-    \answerTODO{}
+    \answerYes{} They are pinned in \texttt{requirements.txt} and named in the repository README.
 \end{enumerate}
 \end{enumerate}
 \end{document}
