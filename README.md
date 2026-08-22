@@ -66,12 +66,7 @@ Reward is MiniGrid's standard `1 - 0.9 * step_count / max_steps` on success and
 the actor, which scores the 7 actions, and the critic, which predicts the value
 of the state. The encoder is the only part that differs between arms.
 
-```mermaid
-flowchart LR
-    IN["observation<br/>7 x 7 x 3"] --> ENC["encoder<br/>MLP or GRU"]
-    ENC --> ACT["actor head<br/>Linear"] --> A["action<br/>7 logits"]
-    ENC --> CRI["critic head<br/>Linear"] --> V["value<br/>1"]
-```
+![The actor-critic network](figures/model_architecture.png)
 
 One call to `PPOAgent.train()` is one PPO iteration: collect a rollout, turn it
 into advantages, cut it into truncated sequences, then spend up to `n_epochs`
@@ -193,12 +188,17 @@ trial of that study, averaged over its five seeds; training time is that
 winning trial's own wall-clock time, all five seeds trained sequentially, on
 the hardware above.
 
-| study | encoder | return mean | success rate | hidden size | minibatch | training time |
-|---|---|---|---|---|---|---|
-| `pretrained_model_MLP/` | MLP, the baseline | 0.556 ± 0.029 | 0.59 | 360 (2 layers) | 1024 | 1.3 h |
-| `pretrained_model_GRU_tbptt1/` | GRU, `--tbptt 1` | 0.573 ± 0.064 | 0.59 | 216 | 4096 | 2.6 h |
-| `pretrained_model_GRU_tbptt8/` | GRU, `--tbptt 8` | **0.958 ± 0.004** | **1.00** | 480 | 4096 | 2.0 h |
-| `pretrained_model_GRU/` | GRU, full BPTT | **0.958 ± 0.002** | **1.00** | 280 | 512 | **1.3 h** |
+| study | encoder | return mean | success rate | len steps | hidden size | minibatch | training time |
+|---|---|---|---|---|---|---|---|
+| `pretrained_model_MLP/` | MLP, the baseline | 0.556 ± 0.029 | 0.59 | 24.3 ± 2.3 | 360 (2 layers) | 1024 | 1.3 h |
+| `pretrained_model_GRU_tbptt1/` | GRU, `--tbptt 1` | 0.573 ± 0.064 | 0.59 | 9.8 ± 4.1 | 216 | 4096 | 2.6 h |
+| `pretrained_model_GRU_tbptt8/` | GRU, `--tbptt 8` | **0.958 ± 0.004** | **1.00** | 16.8 ± 1.4 | 480 | 4096 | 2.0 h |
+| `pretrained_model_GRU/` | GRU, full BPTT | **0.958 ± 0.002** | **1.00** | 16.8 ± 0.9 | 280 | 512 | **1.3 h** |
+
+`len steps` is `length_mean`: the average number of environment steps an
+evaluation episode lasts, mean ± std across the five seeds like every other
+column. It is the diagnostic that says *how* an arm behaves, not just how well
+it scores.
 
 ![Return mean across studies](agents/comparison/compare_curve_return_mean.svg)
 
@@ -212,6 +212,13 @@ the hardware above.
 - `--tbptt 1` sits at chance too (0.59), despite carrying `h` forward. Passing
   the hidden state is not enough on its own — the gradient has to reach back
   far enough to credit the observation that produced it.
+- **`len steps` shows the two failures are different failures.** Both solvers
+  settle at ~16.8 steps: that is the detour route — turn back, look at the cue,
+  return to the fork. `--tbptt 1` finishes in 9.8 steps (three of its five seeds
+  at ~7), i.e. it sprints straight to the fork and guesses, never paying for
+  information it cannot use. The MLP takes 24.3 steps: it wanders and still
+  guesses. Full BPTT is also the most consistent about the route (±0.9 across
+  seeds, the tightest in the table).
 
 **Price: full BPTT is also the cheapest in time.**
 
@@ -220,6 +227,9 @@ the hardware above.
 - Why: one sequence per episode means few, long updates. Chopping to length 1
   multiplies how many minibatches an epoch must run, which is why `--tbptt 1`
   is the slowest study despite the shortest reach.
+- It also needs fewer iterations, not just cheaper ones: full BPTT first crosses
+  0.95 success at a median of 370 iterations (270–740 across seeds), against 640
+  for `--tbptt 8` (520–850). Both are run to the fixed 1000 either way.
 - What it pays instead is **VRAM per sequence**: its minibatch probes down to
   512, an order of magnitude below `--tbptt 8`'s 4096, because a full-length
   sequence costs far more memory.
@@ -276,10 +286,10 @@ continues where it left off. These are the exact commands that produced the
 four finished studies shipped in this repo:
 
 ```bash
-python main.py MLP                 # -> agents/pretrained_model_MLP/
-python main.py GRU --tbptt 1       # -> agents/pretrained_model_GRU_tbptt1/
-python main.py GRU --tbptt 8       # -> agents/pretrained_model_GRU_tbptt8/
-python main.py GRU                 # -> agents/pretrained_model_GRU/  (full BPTT, no --tbptt)
+python main.py MLP                 # saved in agents/pretrained_model_MLP/
+python main.py GRU --tbptt 1       # saved in agents/pretrained_model_GRU_tbptt1/
+python main.py GRU --tbptt 8       # saved in agents/pretrained_model_GRU_tbptt8/
+python main.py GRU                 # saved in agents/pretrained_model_GRU/  (full BPTT, no --tbptt)
 ```
 
 Once a study is finished it can be re-reported without retraining:
@@ -297,8 +307,8 @@ exists purely so a change (a new encoder, a different env, a refactor) can be
 smoke-tested in minutes instead of paying for a 50-trial search.
 
 ```bash
-python main_no_hpo.py GRU                  # one seed, full BPTT -> .../GRU/no_hpo/
-python main_no_hpo.py GRU --tbptt 20       # -> .../GRU_tbptt20/no_hpo/
+python main_no_hpo.py GRU                  # one seed, full BPTT, saved in .../GRU/no_hpo/
+python main_no_hpo.py GRU --tbptt 20       # saved in .../GRU_tbptt20/no_hpo/
 python main_no_hpo.py MLP --report-only    # re-print an existing run, no retraining
 ```
 
@@ -307,7 +317,17 @@ python main_no_hpo.py MLP --report-only    # re-print an existing run, no retrai
 To rerun the whole project, delete the relevant `agents/pretrained_model_*`
 directory (or just its `hpo/` subdirectory) before starting; otherwise
 `main.py` finds the old `.db` and resumes the finished study instead of
-starting a new one.
+starting a new one. From the repo root:
+
+```bash
+rm -rf agents/pretrained_model_GRU_tbptt8/hpo   # one study's search only, keeps its no_hpo/ run
+rm -rf agents/pretrained_model_GRU_tbptt8       # one study entirely
+rm -rf agents/pretrained_model_*                # every study: the whole project
+```
+
+These are the checkpoints shipped with the repo, and nothing is recoverable
+afterwards except by retraining, so copy the directory somewhere first if the
+old numbers still matter.
 
 Estimated running time for the whole project, all four studies above, back
 to back, on the hardware listed earlier, taken from the logged duration of
@@ -338,6 +358,7 @@ agents/
   hpo_ppo.py        HPOPPO: wraps PPOAgent in an Optuna study
 figures/
   make_task_figure.py   regenerates the task figure at the top of this README
+  make_model_figure.py  regenerates the network figure in Training
 main.py  main_no_hpo.py  compare.py  watch.py  control.py      entry points
 ```
 
