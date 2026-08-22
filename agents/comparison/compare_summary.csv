@@ -5,5 +5,7 @@ GRU (full BPTT),return_mean,999,0.9582,0.0023,5,mean_minus_1std(return_mean),0.9
 GRU (full BPTT),success_rate,999,1.0,0.0,5,mean_minus_1std(return_mean),0.9559
 GRU (tbptt 1),return_mean,999,0.573,0.0643,5,mean_minus_1std(return_mean),0.5087
 GRU (tbptt 1),success_rate,999,0.588,0.0676,5,mean_minus_1std(return_mean),0.5087
+GRU (tbptt 4),return_mean,999,0.4916,0.0006,5,mean_minus_1std(return_mean),0.4911
+GRU (tbptt 4),success_rate,999,0.5,0.0,5,mean_minus_1std(return_mean),0.4911
 GRU (tbptt 8),return_mean,999,0.9581,0.0036,5,mean_minus_1std(return_mean),0.9545
 GRU (tbptt 8),success_rate,999,1.0,0.0,5,mean_minus_1std(return_mean),0.9545

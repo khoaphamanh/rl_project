@@ -182,63 +182,60 @@ sequences take far more memory per sequence.
 
 ## Results
 
-Four finished studies ship with the repo, so the reporting and viewing commands
+Five finished studies ship with the repo, so the reporting and viewing commands
 work on a fresh clone without training anything. Every number is the winning
 trial of that study, averaged over its five seeds; training time is that
 winning trial's own wall-clock time, all five seeds trained sequentially, on
 the hardware above.
 
-| study | encoder | return mean | success rate | len steps | hidden size | minibatch | training time |
+| study | encoder | return mean | success rate | steps | hidden size | minibatch | training time |
 |---|---|---|---|---|---|---|---|
-| `pretrained_model_MLP/` | MLP, the baseline | 0.556 ± 0.029 | 0.59 | 24.3 ± 2.3 | 360 (2 layers) | 1024 | 1.3 h |
-| `pretrained_model_GRU_tbptt1/` | GRU, `--tbptt 1` | 0.573 ± 0.064 | 0.59 | 9.8 ± 4.1 | 216 | 4096 | 2.6 h |
-| `pretrained_model_GRU_tbptt8/` | GRU, `--tbptt 8` | **0.958 ± 0.004** | **1.00** | 16.8 ± 1.4 | 480 | 4096 | 2.0 h |
-| `pretrained_model_GRU/` | GRU, full BPTT | **0.958 ± 0.002** | **1.00** | 16.8 ± 0.9 | 280 | 512 | **1.3 h** |
+| `pretrained_model_MLP/` | MLP, the baseline | 0.556 ± 0.029 | 0.592 ± 0.027 | 24.3 ± 2.3 | 360 (2 layers) | 1024 | 1.3 h |
+| `pretrained_model_GRU_tbptt1/` | GRU, `--tbptt 1` | 0.573 ± 0.064 | 0.588 ± 0.068 | 9.8 ± 4.1 | 216 | 4096 | 2.6 h |
+| `pretrained_model_GRU_tbptt4/` | GRU, `--tbptt 4` | 0.492 ± 0.001 | 0.500 ± 0.000 | 7.0 ± 0.0 | 360 | 4096 | 1.6 h |
+| `pretrained_model_GRU_tbptt8/` | GRU, `--tbptt 8` | **0.958 ± 0.004** | **1.000 ± 0.000** | 16.8 ± 1.4 | 480 | 4096 | 2.0 h |
+| `pretrained_model_GRU/` | GRU, full BPTT | **0.958 ± 0.002** | **1.000 ± 0.000** | 16.8 ± 0.9 | 280 | 512 | **1.3 h** |
 
-`len steps` is `length_mean`: the average number of environment steps an
-evaluation episode lasts, mean ± std across the five seeds like every other
-column. It is the diagnostic that says *how* an arm behaves, not just how well
-it scores.
 
 ![Return mean across studies](agents/comparison/compare_curve_return_mean.svg)
 
-**Performance: reach is what solves the task.**
+**Performance: The cut-off is sharp, and it sits between L=4 and L=8.**
 
-- `--tbptt 8` and full BPTT both solve it outright: 1.00 success rate, 0.958
-  return. They are tied; full BPTT is only marginally steadier across seeds
-  (±0.002 vs ±0.004).
-- The MLP sits at chance (0.59), exactly what a memoryless policy should do
-  here.
-- `--tbptt 1` sits at chance too (0.59), despite carrying `h` forward. Passing
-  the hidden state is not enough on its own — the gradient has to reach back
-  far enough to credit the observation that produced it.
-- **`len steps` shows the two failures are different failures.** Both solvers
-  settle at ~16.8 steps: that is the detour route — turn back, look at the cue,
-  return to the fork. `--tbptt 1` finishes in 9.8 steps (three of its five seeds
-  at ~7), i.e. it sprints straight to the fork and guesses, never paying for
-  information it cannot use. The MLP takes 24.3 steps: it wanders and still
-  guesses. Full BPTT is also the most consistent about the route (±0.9 across
-  seeds, the tightest in the table).
+- `--tbptt 8` and full BPTT solve the task: 1.00 success, 0.958 return.
+- Everything shorter fails at chance: `--tbptt 4` at 0.500, `--tbptt 1` at
+  0.588, the MLP at 0.592. None of them beats a coin flip.
+- Reaching back further than 8 adds nothing. So carrying `h` forward is not the
+  thing that matters — every GRU arm does that. The *gradient* has to reach back
+  to the observation that filled it, and four steps is not far enough.
 
-**Price: full BPTT is also the cheapest in time.**
+**`steps` shows what the failures are doing.**
 
-- Full BPTT trains fastest of the three GRU arms: **1.3 h**, as fast as the MLP
-  baseline, vs 2.0 h for `--tbptt 8` and 2.6 h for `--tbptt 1`.
-- Why: one sequence per episode means few, long updates. Chopping to length 1
-  multiplies how many minibatches an epoch must run, which is why `--tbptt 1`
-  is the slowest study despite the shortest reach.
-- It also needs fewer iterations, not just cheaper ones: full BPTT first crosses
-  0.95 success at a median of 370 iterations (270–740 across seeds), against 640
-  for `--tbptt 8` (520–850). Both are run to the fixed 1000 either way.
-- What it pays instead is **VRAM per sequence**: its minibatch probes down to
-  512, an order of magnitude below `--tbptt 8`'s 4096, because a full-length
-  sequence costs far more memory.
+- **~16.8 steps = remembering.** Both solvers walk the detour: turn back, look
+  at the cue, return to the fork.
+- **~7 steps = guessing.** `--tbptt 4` runs straight to the fork and always
+  picks the same side — the upper prong on four seeds, the lower one on the
+  fifth, on every maze. In this eval set the upper prong is correct in exactly
+  25 of 50 mazes, so any fixed side scores exactly 25/50. That is why its spread
+  across seeds is 0.000: arithmetic, not convergence.
+- `--tbptt 1` (9.8 steps) does the same thing less tidily. The MLP (24.3 steps)
+  wanders first, then guesses.
 
-**Verdict: full BPTT (`pretrained_model_GRU/`) is the best option here.** It
-matches the best performance in the table at the lowest wall-clock cost, so
-nothing is gained by truncating. `--tbptt 8` is the fallback for the one case
-full BPTT loses: on a GPU smaller than the 12 GB above, its longer sequences
-are the first to run out of room.
+**Price: full BPTT is also the cheapest.**
+
+- It trains fastest of the GRU arms — **1.3 h**, matching the MLP — against
+  1.6 h (`--tbptt 4`), 2.0 h (`--tbptt 8`) and 2.6 h (`--tbptt 1`). Shorter
+  chunks mean more minibatches per epoch, so truncating hard costs time instead
+  of saving it. (The middle two also differ in width, so only the extremes are
+  a clean comparison.)
+- It converges sooner too: 0.95 success at a median of 370 iterations, against
+  640 for `--tbptt 8`.
+- What it pays is **VRAM**: its minibatch probes down to 512, against 4096 for
+  `--tbptt 8`, because full-length sequences are far bigger.
+
+**Verdict: use full BPTT (`pretrained_model_GRU/`).** Best score, lowest
+wall-clock, nothing gained by truncating. `--tbptt 8` is the fallback on a GPU
+smaller than the 12 GB above. Below 8 you do not get a cheaper solution, you
+get the MLP's guessing policy at GRU prices.
 
 ---
 
@@ -283,11 +280,12 @@ flag of every entry point is documented in its own `--help`, e.g.
 prints a report on the winner, and is resumable: it counts the trials already
 in a study's `.db` and runs only the difference, so an interrupted study just
 continues where it left off. These are the exact commands that produced the
-four finished studies shipped in this repo:
+five finished studies shipped in this repo:
 
 ```bash
 python main.py MLP                 # saved in agents/pretrained_model_MLP/
 python main.py GRU --tbptt 1       # saved in agents/pretrained_model_GRU_tbptt1/
+python main.py GRU --tbptt 4       # saved in agents/pretrained_model_GRU_tbptt4/
 python main.py GRU --tbptt 8       # saved in agents/pretrained_model_GRU_tbptt8/
 python main.py GRU                 # saved in agents/pretrained_model_GRU/  (full BPTT, no --tbptt)
 ```
@@ -329,11 +327,11 @@ These are the checkpoints shipped with the repo, and nothing is recoverable
 afterwards except by retraining, so copy the directory somewhere first if the
 old numbers still matter.
 
-Estimated running time for the whole project, all four studies above, back
+Estimated running time for the whole project, all five studies above, back
 to back, on the hardware listed earlier, taken from the logged duration of
-every trial in each study's `hpo_csv_*.csv`: **about 195 hours (~8 days)**,
-roughly 49 h (MLP), 61 h (`--tbptt 1`), 44 h (`--tbptt 8`), 41 h (full
-BPTT).
+every trial in each study's `hpo_csv_*.csv`: **about 236 hours (~10 days)**,
+roughly 49 h (MLP), 61 h (`--tbptt 1`), 41 h (`--tbptt 4`), 44 h
+(`--tbptt 8`), 41 h (full BPTT).
 
 ---
 
