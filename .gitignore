@@ -54,3 +54,4 @@ agents/pretrained_model_*/hpo/trial_*/
 # no-HPO run checkpoints/curves: local artefacts only, not tracked.
 agents/pretrained_model_*/no_hpo*/
 
+claude_playground/

@@ -7,6 +7,7 @@ then the panel frame is drawn around it and the columns are distributed over
 the page.
 """
 
+import os
 import re
 from PIL import ImageFont
 from pptx import Presentation
@@ -15,11 +16,14 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
 
-SRC = "/Volumes/khoa_ssd/uni/RL/rl_project/claude_playground/poster.pptx"
-OUT = "/Volumes/khoa_ssd/uni/RL/rl_project/claude_playground/poster_tbptt.pptx"
-FIG = "/Volumes/khoa_ssd/uni/RL/rl_project/claude_playground/figures/"
+HERE = os.path.dirname(os.path.abspath(__file__))
+SRC = os.path.join(HERE, "poster.pptx")
+OUT = os.path.join(HERE, "poster_tbptt.pptx")
+FIG = os.path.join(HERE, "figures") + os.sep
 # compare_curves.png is the rasterised compare_curves.pdf (PowerPoint
 # cannot place a PDF); qr_repo.png points at the repository.
+# model_architecture_poster.png is the rasterised .svg of the same name, and
+# ppo_losses.png is written by _make_loss_figure() below.
 
 BLUE = RGBColor(0x0B, 0x53, 0x94)
 DARK = RGBColor(0x20, 0x21, 0x24)
@@ -35,7 +39,12 @@ SILVER = RGBColor(0x9E, 0x9E, 0x9E)
 
 SANS = "IBM Plex Sans"
 MONO = "IBM Plex Mono"
-ARIAL = "/System/Library/Fonts/Supplemental/Arial.ttf"
+# any Arial-metric font will do: it is only used to measure line breaks
+ARIAL = next((p for p in (
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+) if os.path.exists(p)))
 LH = 1.30           # line height as a multiple of the point size
 SAFETY = 1.07       # IBM Plex Sans runs a little wider than the Arial we measure with
 
@@ -75,6 +84,42 @@ def n_lines(s, width_in, size_pt):
 
 def plain(s):
     return s.replace("**", "").replace("`", "")
+
+
+# ---------------------------------------------------- the PPO loss equations
+def _make_loss_figure(path, width_in=11.0):
+    """Render the four PPO loss terms to a transparent PNG (matplotlib)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    plt.rcParams["mathtext.fontset"] = "cm"
+
+    rows = [
+        (r"$\rho_t=\pi_\theta(a_t\mid s_t)\,/\,"
+         r"\pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)$",
+         "probability ratio", 0.60),
+        (r"$\mathcal{L}^{\pi}=-\,\mathbb{E}_t\!\left[\min\!\left(\rho_t\hat{A}_t,"
+         r"\ \mathrm{clip}(\rho_t,1-\epsilon,1+\epsilon)\,\hat{A}_t\right)\right]$",
+         "clipped policy loss", 0.66),
+        (r"$\mathcal{L}^{V}=\mathbb{E}_t\!\left[(V_\theta(s_t)-\hat{R}_t)^2\right]$",
+         "value loss", 0.60),
+        (r"$\mathcal{L}^{H}=\mathbb{E}_t\!\left[\mathcal{H}"
+         r"(\pi_\theta(\cdot\mid s_t))\right]$",
+         "entropy bonus", 0.60),
+        (r"$\mathcal{L}=\mathcal{L}^{\pi}+c_v\,\mathcal{L}^{V}"
+         r"-c_e\,\mathcal{L}^{H}$",
+         "what is backpropagated", 0.52),
+    ]
+    h = sum(r[2] for r in rows) + 0.10
+    fig = plt.figure(figsize=(width_in, h))
+    y = h - 0.06
+    for eq, lab, dy in rows:
+        fig.text(0.008, y / h, eq, fontsize=25, va="top", color="#202124")
+        fig.text(0.995, (y - 0.10) / h, lab, fontsize=15, va="top", ha="right",
+                 color="#5F6368")
+        y -= dy
+    fig.savefig(path, dpi=200, transparent=True)
+    plt.close(fig)
 
 
 # ------------------------------------------------------------------- drawing
@@ -248,17 +293,24 @@ class Section:
         return y + self.h
 
 
+def _svg_to_png(name, scale=4.0):
+    """Rasterise figures/<name>.svg to figures/<name>.png (PowerPoint cannot
+    place an SVG through python-pptx). Skipped if the PNG is already newer."""
+    svg, png = FIG + name + ".svg", FIG + name + ".png"
+    if os.path.exists(png) and os.path.getmtime(png) >= os.path.getmtime(svg):
+        return png
+    import cairosvg
+    cairosvg.svg2png(url=svg, write_to=png, scale=scale, background_color="white")
+    return png
+
+
+_svg_to_png("model_architecture_poster")
+_make_loss_figure(FIG + "ppo_losses.png", width_in=11.0)
+
 # ================================================================== header ===
-text(0.30, 0.95, 22.4, ["How Far Back Must the Gradient Reach?"],
-     size=76, color=DARK, bold=True, space=0.96)
-text(0.32, 2.55, 22.4,
-     ["Truncated BPTT length and memory in PPO on MiniGrid"],
-     size=52, color=BLUE)
-text(0.32, 3.85, 30.0, ["Anh Khoa Pham   ·   github.com/khoaphamanh/rl_project"],
-     size=40)
-text(0.32, 4.95, 30.0,
-     ["Poster presentation in context of the Reinforcement Learning lecture"],
-     size=37, color=SILVER)
+text(0.30, 1.85, 22.4, ["Memory Reach: GRU vs MLP under PPO on MiniGrid Memory"],
+     size=62, color=DARK, bold=True, space=0.96)
+text(0.32, 4.15, 22.4, ["Anh Khoa Pham"], size=44, bold=True)
 
 # QR to the repository, in the free strip under the logos
 shapes.add_picture(FIG + "qr_repo.png", Inches(30.55), Inches(3.42),
@@ -271,96 +323,103 @@ LX, LW = 0.28, 12.40
 RX, RW = 12.99, 19.77
 TOP, BOT = 6.92, 46.52
 
-# ============================================================== 1  TL;DR =====
-s1 = Section(LX, LW, 1, "TL;DR")
-s1.text(["A recurrent policy can only use a memory that its **gradient** has "
-         "taught it to write. One PPO pipeline, fixed; the only thing varied "
-         "is how far back that gradient may reach — the TBPTT window `L`.",
-         ("**The threshold is sharp.** `L` ≥ 8 solves the task on every seed; "
-          "`L` ≤ 4 never beats a coin flip. Reaching further costs VRAM, "
-          "not time.", {"gap": 0.22})],
-        size=29, space=1.06)
-s1.gap(0.38)
-tiles = [("1.000", "success at\nL = 8 and full BPTT", GREEN),
-         ("0.500", "success at L = 4\n(chance)", RED),
-         ("8", "steps of reach\nsuffice (4 do not)", BLUE),
-         ("8×", "the VRAM it costs\n(the time: none)", BLUE)]
-tw = (s1.cw - 3 * 0.22) / 4
-for i, (big, lab, col) in enumerate(tiles):
-    tx = s1.cx + i * (tw + 0.22)
-    box(tx, s1.cur, tw, 2.36, TINT, TINT)
-    text(tx + 0.12, s1.cur + 0.26, tw - 0.24, [big], size=48, color=col,
-         align=PP_ALIGN.CENTER, bold=True)
-    text(tx + 0.12, s1.cur + 1.26, tw - 0.24, lab.split("\n"), size=21,
-         color=MUTED, align=PP_ALIGN.CENTER, space=1.05)
-s1.cur += 2.36
-s1.gap(0.26)
+# ========================================================== 1  Motivation ====
+s1 = Section(LX, LW, 1, "Motivation")
+s1.text(["• **The task is a POMDP.** The agent never sees the state, only a "
+         "small egocentric patch, so the optimal action depends on information "
+         "that has already left the observation.",
+         ("• **The remedy is a recurrent policy** carrying a hidden state `h` "
+          "forward, so an observation from a hundred steps ago can still be "
+          "present at the decision.", {"gap": 0.14}),
+         ("• **The concession is truncation:** full BPTT costs memory linear in "
+          "sequence length, so the backward pass is cut to `L` steps — a value "
+          "usually inherited in silence from whatever codebase one starts from.",
+          {"gap": 0.14}),
+         ("• **A memoryless policy is capped at chance (0.5)** here, so the gap "
+          "from 0.5 to 1.0 success is exactly the memory a run has acquired.",
+          {"gap": 0.14}),
+         ("• **One PPO pipeline stays fixed;** only the encoder changes (MLP or "
+          "GRU) and, for the GRU, the reach `L` ∈ {1, 4, 8, full BPTT}.",
+          {"gap": 0.14})],
+        size=23, space=1.06, indent=0.30)
+s1.gap(0.20)
+s1.tint([("**Core question:** how far back does a policy's gradient need to "
+          "reach before it can solve a task a memoryless policy can't — and "
+          "what does that reach cost in training time and memory?")],
+        size=26, pad=0.26)
+s1.gap(0.16)
 s1.text(["5 studies × 50 trials × 5 seeds = **250 training runs**, ≈ 236 "
          "GPU-hours on one RTX 3060 Laptop (12 GB)."],
-        size=24, color=MUTED, space=1.05)
+        size=22, color=MUTED, space=1.05)
 s1.close()
 
-# ============================================ 2  Motivation & problem ========
-s2 = Section(RX, RW, 2, "Motivation & Problem Setting")
-s2.text(["In a POMDP the optimal action depends on information that has left "
-         "the observation. The usual remedy is a recurrent policy; the usual "
-         "concession is to **truncate the backward pass to `L` steps**, a "
-         "value inherited in silence from whatever codebase one starts from.",
-         ("`MiniGrid-MemoryS17Random-v0` makes it measurable. A cue visible only "
-          "in the west room decides which prong of the T-junction at the far "
-          "end pays, and the 7 × 7 egocentric view makes both prongs "
-          "identical: a **memoryless policy is capped at 0.5**, so the gap "
-          "from 0.5 to 1.0 is exactly the memory a run has acquired.",
-          {"gap": 0.18})],
-        size=27, space=1.06)
-s2.gap(0.30)
-s2.tint([("**Q1** — How far back must the gradient reach? Carrying `h` forward "
-          "is free at any `L`, so is a short window enough to **learn what to "
-          "store**?"),
-         ("**Q2** — What does that reach cost in time and in VRAM? A shorter "
-          "window is intuitively cheaper — we check whether it is.",
-          {"gap": 0.12})], size=25, pad=0.24)
-s2.gap(0.34)
-s2.pic(FIG + "task_memory_s17.png", width=12.6)
+# ===================================================== 2  Problem setting ====
+s2 = Section(RX, RW, 2, "Problem Setting")
+s2.head("The environment")
+s2.text(["• `MiniGrid-MemoryS17Random-v0`: a **cue** (a key or a ball) sits in a "
+         "room at the west end; the corridor forks into a **T-junction** at the "
+         "east end with a key at one prong and a ball at the other. The episode "
+         "succeeds **only** if the agent walks to the prong matching the cue. "
+         "Reward is `1 − 0.9 · steps / max_steps` on success, 0 otherwise.",
+         ("• **The agent only sees a partial view in front of it:** a 7 × 7 "
+          "egocentric patch of what lies ahead (7 × 7 × 3 → one-hot 980 "
+          "features, 7 discrete actions). Walls block the view.", {"gap": 0.13}),
+         ("• **The cue is out of sight when the decision is made.** At the "
+          "junction the observation is identical whichever answer is correct, "
+          "so a memoryless policy cannot beat chance however well it is trained.",
+          {"gap": 0.13}),
+         ("• **The information has to be sought out.** The agent spawns at a "
+          "random corridor position facing east, away from the cue, so it must "
+          "turn around, walk back, look and turn again — a detour that costs "
+          "reward at once and pays nothing until the memory also works.",
+          {"gap": 0.13})],
+        size=23, space=1.06, indent=0.30)
+s2.gap(0.26)
+s2.head("The two encoders")
+s2.text(["• **MLP — memoryless (the baseline).** 1–4 Linear+ReLU blocks applied "
+         "to each timestep independently: no state crosses the sequence and its "
+         "gradient spans a single step. Whatever it scores is the ceiling for a "
+         "policy that can only react to the frame in front of it.",
+         ("• **GRU — with memory.** The same input plus a single recurrent layer "
+          "of tuned width carrying `h` forward; the gradient flows backwards "
+          "along that chain and `L` caps how many steps back it may reach. "
+          "Everything else — PPO, rollout, budget, evaluation — is identical.",
+          {"gap": 0.14})],
+        size=23, space=1.06, indent=0.30)
+s2.gap(0.28)
+s2.pic(FIG + "task_memory_s17.png", width=8.6)
+s2.gap(0.10)
+s2.caption("The cue sits in the west room; the agent spawns in the corridor "
+           "facing away from it, so the information has to be sought out.",
+           size=22)
 s2.close()
 
 # ============================================================ 3  Approach ====
 s3 = Section(LX, LW, 3, "Approach")
 s3.head("Network")
-s3.pic(FIG + "model_architecture.png", width=9.6)
-s3.gap(0.08)
+s3.pic(FIG + "model_architecture_poster.png", width=10.0)
+s3.gap(0.06)
 s3.caption("7 × 7 × 3 view → one-hot (980) → encoder → linear actor + linear "
-           "critic. The encoder is the **only** difference between arms: an "
-           "MLP (memoryless) or a single GRU layer carrying `h` forward.",
-           size=23)
-s3.gap(0.30)
-s3.head("The knob under study")
-s3.text(["Before every update the rollout is cut at each **episode boundary "
-         "and every `L` steps**. A chunk starting mid-episode is seeded with "
-         "the hidden state the rollout recorded there, so the forward pass "
-         "still sees the whole episode and **only the backward pass is "
-         "shortened** — every GRU arm carries identical information forward."],
-        size=26, space=1.06)
-s3.gap(0.30)
-_pad, _lines = 0.26, [
-    ("One PPO iteration", {"bold": True, "size": 25}),
-    ("1  collect W = 32 workers × T = 361 steps, recording (o, a, log π, V, r, d, **h**)",
-     {"gap": 0.14}),
-    ("2  GAE over the **whole** rollout, before any split; standardise Â", {"gap": 0.06}),
-    ("3  **cut into chunks of ≤ L steps, each seeded with its stored h**",
-     {"gap": 0.06, "color": ORANGE}),
-    ("4  3 shuffled epochs of the clipped PPO loss; padding never enters it", {"gap": 0.06}),
-    ("L = ∞ (full BPTT) cuts at episode boundaries only; a smaller L means "
-     "more, shorter sequences — ⌈T/L⌉ of them.",
-     {"gap": 0.12, "color": MUTED, "size": 21}),
-]
-_h = sum(i[1].get("gap", 0) + n_lines(plain(i[0]), s3.cw - 2 * _pad,
-                                      i[1].get("size", 22))
-         * i[1].get("size", 22) * LH * 1.05 / 72 for i in _lines)
-box(s3.cx, s3.cur, s3.cw, _h + 2 * _pad, GREY, GREY)
-text(s3.cx + _pad, s3.cur + _pad, s3.cw - 2 * _pad, _lines, size=22, space=1.05)
-s3.cur += _h + 2 * _pad
-s3.gap(0.32)
+           "critic. The encoder is the **only** difference between arms.",
+           size=22)
+s3.gap(0.12)
+s3.head("PPO objective")
+s3.text(["• One iteration collects W = 32 workers × T = 361 steps and computes "
+         "**GAE advantages over the whole rollout**, before any split, with "
+         "returns R̂ = Â + V(s).",
+         ("• The rollout is then cut at every episode boundary **and every `L` "
+          "steps**, each chunk seeded with the hidden state recorded there, so "
+          "**only the backward pass is shortened**.", {"gap": 0.13}),
+         ("• Three shuffled epochs minimise a clipped policy loss, a value loss "
+          "and an entropy bonus:", {"gap": 0.13})],
+        size=23, space=1.06, indent=0.30)
+s3.gap(0.08)
+s3.pic(FIG + "ppo_losses.png", width=9.8)
+s3.gap(0.06)
+s3.caption("Every expectation covers real timesteps only: chunks are padded "
+           "inside a minibatch and padding never enters the loss; the gradient "
+           "norm is clipped before each Adam step.", size=22)
+s3.gap(0.12)
 s3.head("Tuning protocol")
 s3.text(["• One Optuna study **per arm**: 50 TPE trials over **identical** "
          "ranges — no arm is judged on another's settings.",
@@ -370,7 +429,7 @@ s3.text(["• One Optuna study **per arm**: 50 TPE trials over **identical** "
          ("• Nothing that buys compute is searchable; the minibatch size is "
           "set by a VRAM probe, so every arm is measured at the **same "
           "memory budget**.", {"gap": 0.12})],
-        size=26, space=1.06, indent=0.28)
+        size=23, space=1.06, indent=0.28)
 s3.close()
 
 # ============================================================= 4  Results ====
@@ -384,7 +443,7 @@ rows = [
     ["GRU, L = 8", "0.958 ± 0.004", "1.000 ± 0.000", "16.8", "4096", "2.0 h"],
     ["GRU, full BPTT", "0.958 ± 0.002", "1.000 ± 0.000", "16.8", "512", "1.3 h"],
 ]
-WIN, RH = {3, 4}, 0.66
+WIN, RH = {3, 4}, 0.60
 rule(s4.cx, s4.cur, s4.cw, BLUE, 3)
 xo = s4.cx
 for j, c in enumerate(hdr):
@@ -413,7 +472,7 @@ s4.caption("Winning trial per study, averaged over its five seeds; ± is the "
            "spread across seeds. No setting produced an intermediate score.",
            size=22)
 s4.gap(0.38)
-s4.pic(FIG + "compare_curves.png", width=13.6)
+s4.pic(FIG + "compare_curves.png", width=12.3)
 s4.gap(0.12)
 s4.caption("Mean over 5 seeds, band at ± 1 std, dashed line at chance. The "
            "two solving arms separate before iteration 400; the three failing "
@@ -421,71 +480,56 @@ s4.caption("Mean over 5 seeds, band at ± 1 std, dashed line at chance. The "
 s4.close()
 
 # ======================================================== 5  Key insights ====
-s5 = Section(RX, RW, 5, "Key Insights")
-items = [
-    ("Carrying `h` forward is not what matters.",
-     "Every GRU arm does it identically, including the ones that fail. What "
-     "separates them is whether the **gradient** reaches back to the "
-     "observation that filled `h` — and reaching past 8 adds nothing."),
-    ("What has to fit inside `L` is the **gap**, not the episode.",
-     "The gap is the number of actions between the agent's last sighting of "
-     "the cue and its choice at the fork. By BFS over the environment's own "
-     "visibility model, a gap ≤ 8 is attainable in **62 %** of mazes but a gap "
-     "≤ 4 in only **26 %**; replaying the checkpoints, cue and decision share "
-     "a chunk in 16 % of the L = 8 agent's episodes and in **0 of 50** of the "
-     "L = 4 agent's."),
-    ("The failing arms are not partially remembering.",
-     "At 7.0 steps the L = 4 arm dashes straight to the fork and always picks "
-     "the same side — exactly 25/50 here. Its across-seed std of 0.000 is "
-     "**arithmetic, not convergence**."),
-    ("The reach costs memory, not time.",
-     "Full BPTT is the **fastest** GRU arm (1.3 h vs 2.6 h at L = 1) and the "
-     "earliest (0.95 success at a median of 370 iterations vs 640 for L = 8): "
-     "halving `L` doubles the padded, launch-bound sequences. What it pays is "
-     "VRAM — minibatch 512 vs 4096."),
-]
-for k, (head, body) in enumerate(items):
-    n = box(s5.cx, s5.cur + 0.04, 0.58, 0.58, BLUE, BLUE, shape=MSO_SHAPE.OVAL)
-    nt = n.text_frame
-    nt.vertical_anchor = MSO_ANCHOR.MIDDLE
-    np_ = nt.paragraphs[0]
-    np_.alignment = PP_ALIGN.CENTER
-    _runs(np_, str(k + 1), 25, WHITE, True, SANS, 1.0)
-    h = text(s5.cx + 0.82, s5.cur, s5.cw - 0.82,
-             [(head, {"bold": True}), body], size=25, space=1.05)
-    s5.cur += h + (0.24 if k < len(items) - 1 else 0)
-s5.gap(0.32)
+s5 = Section(LX, LW, 5, "Key Insights")
+s5.text(["• **Carrying `h` forward is not what matters.** Every GRU arm "
+         "does that, including the ones that fail. What separates them is "
+         "whether the **gradient** reaches back far enough; past 8 steps "
+         "adds nothing.",
+         ("• **What must fit inside `L` is the gap, not the episode.** The "
+          "gap runs from the last sighting of the cue to the choice at the "
+          "fork: ≤ 8 steps in **62 %** of mazes by BFS, ≤ 4 in only "
+          "**26 %**.", {"gap": 0.06}),
+         ("• **The failing arms are not partially remembering.** At 7.0 "
+          "steps the L = 4 arm rushes to the fork and always picks the "
+          "same side, 25 of 50 here: its std of 0.000 is **arithmetic, "
+          "not convergence**.", {"gap": 0.06}),
+         ("• **The reach costs memory, not time.** Full BPTT is the "
+          "**fastest** GRU arm (1.3 h vs 2.6 h at L = 1); halving `L` "
+          "doubles the padded sequences. What it pays instead is VRAM: "
+          "512 vs 4096.", {"gap": 0.06})],
+        size=23, space=1.06, indent=0.30)
+s5.gap(0.08)
 s5.tint(["**Recommendation.** On this task: full BPTT, with L = 8 as the "
          "fallback on a smaller GPU. Below 8 you do not get a cheaper "
-         "solution — you get the MLP's guessing policy at GRU prices."],
-        size=26, pad=0.26)
+         "solution; you get the MLP's guessing policy at GRU prices."],
+        size=24, pad=0.12)
 s5.close()
 
 # =========================================================== 6  Future work ==
-s6 = Section(LX, LW, 6, "Limitations & Future Work")
-s6.text(["**One task, one architecture, one algorithm.** `L` ∈ {5,6,7} was "
+s6 = Section(RX, RW, 6, "Limitations & Future Work")
+s6.text(["• **One task, one architecture, one algorithm.** `L` ∈ {5,6,7} was "
          "never run, so the threshold is **bracketed, not located**, and five "
          "seeds separate 0.5 from 1.0 safely but support no finer claim.",
          ("• **Locate the threshold.** Sweep `L` ∈ {5,6,7} and set the "
-          "corridor length directly instead of leaving it to the environment "
-          "— a causal test of the gap account.", {"gap": 0.20}),
+          "corridor length directly instead of leaving it to the "
+          "environment: a causal test of the gap account.", {"gap": 0.28}),
          ("• **Add R2D2-style burn-in.** Does a short window then behave "
           "like a long one? If so the threshold is about optimisation, not "
-          "the gradient path.", {"gap": 0.12}),
+          "the gradient path.", {"gap": 0.22}),
          ("• **Repeat with an LSTM and a small transformer**, where the "
-          "analogous knob is the attention window.", {"gap": 0.10})],
-        size=26, space=1.06, indent=0.28)
-s6.gap(0.30)
+          "analogous knob is the attention window.", {"gap": 0.20})],
+        size=25, space=1.08, indent=0.30)
+s6.gap(0.40)
 rule(s6.cx, s6.cur, s6.cw, RGBColor(0xD5, 0xD8, 0xDC), 1.5)
-s6.gap(0.16)
+s6.gap(0.24)
 s6.text(["**References.** Hausknecht & Stone 2015 · Kapturowski et al. 2019 "
          "(R2D2) · Ni et al. 2022 · Schulman et al. 2017 (PPO) · "
          "Chevalier-Boisvert et al. 2023 (MiniGrid)"],
-        size=20, color=MUTED, space=1.05)
+        size=22, color=MUTED, space=1.08)
 s6.close()
 
 # ============================================================ distribute =====
-for col, secs in (("left", [s1, s3, s6]), ("right", [s2, s4, s5])):
+for col, secs in (("left", [s1, s3, s5]), ("right", [s2, s4, s6])):
     used = sum(s.h for s in secs)
     slack = (BOT - TOP) - used
     gap = slack / (len(secs) - 1)
