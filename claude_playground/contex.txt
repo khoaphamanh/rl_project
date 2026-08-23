@@ -1,7 +1,0 @@
-fix the file poster_tbptt.pptx with these rules
-1. always write in bullet points
-2. dont write too long text
-3. dont use dashes "-" in text, that sounds like AI text
-4. Always check the formatting of the blocks to ensure they are not misaligned and are properly lined up.
-5. The font size for the title is 80, the author's name is 43, the section headers are 52, and the body text within the blocks is 43.
-6. refer the content from README.md and report.tex
