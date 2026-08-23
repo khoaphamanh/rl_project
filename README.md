@@ -229,37 +229,48 @@ cue into `h`, and for that the gradient from the reward at the fork has to reach
 the encoder at the cue, which happens only when both steps land in the same
 chunk.
 
-So the interval that must fit inside `L` is the **gap** -- the actions between
-the agent's last sighting of the cue and its choice at the fork -- not the
-episode. Everything before the sighting needs no memory at all. The gap is set by
-the corridor length, redrawn every reset, and by the 7x7 view reaching six tiles
-back from the junction:
+So the quantity that matters is `d_informed`: the fewest actions from spawn to
+a correct decision, for an agent that goes and looks at the cue first. Measured
+by breadth-first search over the env's own state and MiniGrid's visibility
+model, on 2000 mazes plus the 50 eval mazes:
 
-| `hallway_end` | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| shortest possible gap | 2 | 2 | 2 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+```
+d_informed <= 4  :   0.0%
+d_informed <= 8  :  29.6%
+d_informed <= 16 :  93.9%
+```
 
-- **8 clears the floor of the task, 4 does not.** A gap of <=8 is reachable in
-  62% of mazes; <=4 in only 26%, and no maze at all can be solved from the spawn
-  in 4 actions (the minimum is 5: glance at the cue, glance back, step into the
-  junction, turn, step). Replaying the checkpoints over the 50 eval mazes, cue
-  and decision share a chunk in 16% of the `--tbptt 8` agent's episodes and in
-  **0 of 50** of the `--tbptt 4` agent's.
+mean 11.0, median 11 (p25 8, p75 14), min 5, max 21.
+
+- **8 clears the floor of the task, 4 does not.** The floor is 5 actions --
+  seeing the cue costs at least one turn, and the cheapest route from there is
+  turn-back + forward + turn + forward -- and it is hit in only 99 of the
+  2000 mazes, the ones where the agent spawns exactly at the junction mouth.
+  No maze at all is solvable, informed, in 4 actions, so `--tbptt 4` has
+  **zero** mazes where the gradient can ever pair the cue with the reward.
+  `--tbptt 8` reaches 29.6% of mazes -- a real, if thin, slice of the short
+  tail. Replaying the trained checkpoints over the 50 eval mazes confirms it:
+  cue and decision share a chunk in 16% of the `--tbptt 8` agent's episodes
+  and in **0 of 50** of the `--tbptt 4` agent's.
 - **A GRU is one rule reused at every step.** The write rule learned on a
-  short-corridor episode is the same weight matrix applied at step 14 of a long
-  one, so it transfers to every distance for free. `L=8` only has to cover *some*
-  of the distribution, not its mean -- which is also why no curriculum is needed:
-  every batch already contains all corridor lengths.
+  6-step episode is the same weight matrix applied at step 14 of a 20-step
+  one, so it transfers to every distance for free. `L=8` only has to cover the
+  *tail* of the distribution, not its mean -- which is also why no curriculum
+  is needed: every batch already contains all corridor lengths.
 - **Credit still crosses chunk boundaries.** GAE runs over the full rollout
   before the split, so every advantage already reflects the terminal reward.
   Truncation removes the gradient through `h`, not the reward signal.
-- **`--tbptt 4` has an easier answer available.** A blind dash reaches the fork
-  within 4 actions in 26% of mazes, pays 0.5, and destroys the look-back
-  behaviour that its only learning route depends on. Hence 0.500 at 7.0 steps.
+- **`--tbptt 4` has an easier answer available.** A blind dash (3 actions,
+  guess a prong, never look back) reaches the fork within 4 actions in 25.9%
+  of mazes, pays 0.5, and destroys the look-back behaviour that its only
+  learning route depends on. It also stops looking almost entirely: the
+  trained `--tbptt 4` checkpoint sees the cue in just 11 of 50 episodes.
+  Hence 0.500 at 7.0 steps.
 
-The gap figures above are measured (breadth-first search over the env's own
-state and visibility model, plus a replay of the trained checkpoints). What is
-still open is where exactly the threshold sits: sweep `--tbptt 5..7`.
+The `d_informed` figures above are measured (breadth-first search over the
+env's own state and visibility model, plus a replay of the trained
+checkpoints). What is still open is where exactly the threshold sits: sweep
+`--tbptt 5..7`.
 
 **Price: full BPTT is also the cheapest.**
 
