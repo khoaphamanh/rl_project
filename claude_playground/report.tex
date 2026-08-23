@@ -95,8 +95,8 @@ protocol at a stated budget that we follow below.
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=0.68\linewidth]{task_memory_s17.png}\\[6pt]
-    \includegraphics[width=0.96\linewidth]{model_architecture.png}
+    \includegraphics[width=1.0\linewidth]{task_memory_s17.png}\\[6pt]
+    \includegraphics[width=1.0\linewidth]{model_architecture.png}
     \caption{\textbf{Top:} \texttt{MiniGrid-MemoryS17Random-v0}. A cue (key or
     ball) sits in the west room; the corridor forks into a T with a key at one
     prong and a ball at the other, and success requires reaching the prong
@@ -241,24 +241,35 @@ the gradient reaches back to the observation that filled $h$, and four steps is
 not far enough while eight is. Reaching further than $8$ adds nothing, since
 full BPTT matches $L=8$ within noise.
 
-\paragraph{Why eight steps suffice for a seventeen-step solution.} A solving
-episode lasts $16.8$ steps, so $L=8$ spans only about half of it and still loses
-nothing to full BPTT. Three things reconcile this. First, BPTT is not the path
-that carries reward credit: GAE bootstraps through the value function over the
-whole episode irrespective of $L$ (Eq.~\ref{eq:gae}), so the backward window has
-only to shape the encoder's representation, namely writing the cue into $h$,
-holding it, and reading it at the fork. Second, only part of the trajectory has
-to be held: the steps before the agent turns around and sights the cue need no
-memory at all, so the interval to be spanned is the return leg rather than the
-episode. Third, chunks tile the episode and each is seeded with the recorded $h$,
-so every step still receives gradient in every epoch and neighbouring windows
-hand credit across their shared boundary over successive updates; a single window
-therefore has only to teach the local behaviour of leaving $h$ intact while
-nothing relevant is in view, which the forward pass carries arbitrarily far. The
-equality of $L=8$ and full BPTT is the evidence for this reading: the longer
-reach is available to the full-BPTT arm and changes neither its score nor its
-$16.8$ steps, so the bar to clear is the effective gradient horizon and not the
-episode length.
+\paragraph{Why eight steps suffice for a seventeen-step solution.} The
+$16.8$-step episode is the wrong comparison. Truncation never limits how long the
+policy can \emph{remember}, since the forward pass is untouched and every arm
+carries $h$ across the whole episode; it limits only whether the encoder can
+\emph{learn to write} the cue into $h$, which requires the cue observation and
+the rewarded decision to fall inside the same chunk. The interval that must fit
+inside $L$ is therefore the \emph{gap}, the number of actions between the agent's
+last sighting of the cue and its choice at the fork, and not the episode: every
+step before the sighting needs no memory. We measured this gap by breadth-first
+search over the environment's own state and visibility model. It is governed by
+the corridor length, redrawn at every reset
+($\texttt{hallway\_end} \in \{4,\dots,14\}$), together with the fact that the
+$7 \times 7$ view reaches six tiles back from the junction: the shortest
+attainable gap is $2$ for corridors up to $6$ and then grows linearly to $12$ at
+$14$. A gap of at most $8$ is attainable in $62\%$ of mazes, one of at most $4$
+in only $26\%$, and no maze at all can be solved from the spawn within four
+actions, the minimum being five. Replaying the trained checkpoints over the $50$
+evaluation mazes confirms the consequence: cue and decision share a chunk in
+$16\%$ of the $L=8$ agent's episodes and in $0$ of $50$ of the $L=4$ agent's.
+Two further facts explain why partial coverage is sufficient. Because a GRU
+applies the same weights at every timestep, the write rule acquired in short-gap
+episodes transfers to every distance at no cost, so $L=8$ need only cover part of
+the maze distribution rather than its mean; and GAE, computed over the full
+rollout before the split (Eq.~\ref{eq:gae}), carries reward credit across chunk
+boundaries irrespective of $L$, so truncation removes the gradient through $h$
+and not the reward signal. The $L=4$ arm, meanwhile, has an easier target
+available: a blind dash reaches the fork within four actions in $26\%$ of mazes,
+pays $0.5$, and removes the look-back behaviour on which its only learning route
+depends.
 
 \paragraph{The failing arms have solved a different problem.} Mean episode
 length separates two policies more cleanly than return does. At $\approx 16.8$
@@ -313,9 +324,10 @@ MemoryS17Random, and we did not resolve $L \in \{5,6,7\}$, so it is bracketed
 rather than located. Five seeds separate $0.5$ from $1.0$ safely but do not support
 fine claims such as the $0.556$ versus $0.573$ ordering of two chance-level
 arms, and evaluation uses $50$ fixed mazes from a single seed. Three extensions
-follow directly: sweep $L \in \{5,6,7\}$, log the distance from the cue sighting
-to the fork, and vary the corridor length, which together would turn the reading
-of Section~4 into a measurement; add R2D2-style burn-in \citep{r2d2}, which
+follow directly: sweep $L \in \{5,6,7\}$ and control the corridor length
+directly instead of leaving it to the environment's randomisation, which would
+locate the threshold rather than bracket it and test the gap account of
+Section~4 causally; add R2D2-style burn-in \citep{r2d2}, which
 would tell us whether a short window can be made to behave like a long one, in which case the threshold is about optimisation rather
 than the gradient path itself; and repeat the protocol with an LSTM
 \citep{lstm} and a small transformer \citep{gtrxl}, where the analogous knob is

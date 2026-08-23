@@ -222,28 +222,44 @@ the hardware above.
 
 **Why is 8 enough, when a solved episode takes ~16.8 steps?**
 
-`--tbptt 8` spans about half the trajectory it has to solve, and still loses
-nothing to full BPTT. Four reasons it does not need to span the whole thing:
+Because 16.8 is the wrong number to compare against. `--tbptt L` never limits how
+long the agent can *remember*: the forward pass is untouched, so every GRU arm
+carries `h` across the whole episode. What `L` limits is *learning to write* the
+cue into `h`, and for that the gradient from the reward at the fork has to reach
+the encoder at the cue, which happens only when both steps land in the same
+chunk.
 
-- **The gradient is not what carries the reward back.** GAE and the critic do
-  that, over the whole episode, whatever `L` is. The window only has to teach the
-  encoder to write the cue into `h`, hold it, and read it at the fork.
-- **Only the return leg has to be held.** Everything before the agent turns
-  around and sights the cue needs no memory at all, so the interval that must be
-  spanned is a part of the 16.8, not all of it.
-- **The chunks compose.** They tile the episode and each is seeded with the `h`
-  the rollout recorded there, so every step still gets a gradient every epoch,
-  and neighbouring chunks hand credit across their shared boundary over
-  successive updates. One window only has to teach a local habit: leave `h` alone
-  while nothing relevant is in view. The forward pass carries it the rest of the
-  way.
-- **8 is already past the point where more reach helps.** Full BPTT has the whole
-  episode available and scores the same 0.958, the same 1.000, the same 16.8
-  steps. The bar to clear is the gradient's effective horizon, not the episode
-  length.
+So the interval that must fit inside `L` is the **gap** -- the actions between
+the agent's last sighting of the cue and its choice at the fork -- not the
+episode. Everything before the sighting needs no memory at all. The gap is set by
+the corridor length, redrawn every reset, and by the 7x7 view reaching six tiles
+back from the junction:
 
-That is a reading of the numbers, not a measurement. What would settle it: sweep
-`--tbptt 5..7`, and log the distance from the cue sighting to the fork.
+| `hallway_end` | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| shortest possible gap | 2 | 2 | 2 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+
+- **8 clears the floor of the task, 4 does not.** A gap of <=8 is reachable in
+  62% of mazes; <=4 in only 26%, and no maze at all can be solved from the spawn
+  in 4 actions (the minimum is 5: glance at the cue, glance back, step into the
+  junction, turn, step). Replaying the checkpoints over the 50 eval mazes, cue
+  and decision share a chunk in 16% of the `--tbptt 8` agent's episodes and in
+  **0 of 50** of the `--tbptt 4` agent's.
+- **A GRU is one rule reused at every step.** The write rule learned on a
+  short-corridor episode is the same weight matrix applied at step 14 of a long
+  one, so it transfers to every distance for free. `L=8` only has to cover *some*
+  of the distribution, not its mean -- which is also why no curriculum is needed:
+  every batch already contains all corridor lengths.
+- **Credit still crosses chunk boundaries.** GAE runs over the full rollout
+  before the split, so every advantage already reflects the terminal reward.
+  Truncation removes the gradient through `h`, not the reward signal.
+- **`--tbptt 4` has an easier answer available.** A blind dash reaches the fork
+  within 4 actions in 26% of mazes, pays 0.5, and destroys the look-back
+  behaviour that its only learning route depends on. Hence 0.500 at 7.0 steps.
+
+The gap figures above are measured (breadth-first search over the env's own
+state and visibility model, plus a replay of the trained checkpoints). What is
+still open is where exactly the threshold sits: sweep `--tbptt 5..7`.
 
 **Price: full BPTT is also the cheapest.**
 
@@ -270,20 +286,23 @@ Everything here reads checkpoints already on disk; nothing here trains.
 
 ```bash
 python compare.py                                  # redraw every finished study's comparison figures
-python watch.py MLP                                # replay the hand-picked MLP run (the default)
-python watch.py GRU                                # replay the hand-picked GRU run
+python compare.py --models GRU GRU_tbptt8          # just the two solving arms, on shared axes
+python watch.py MLP                                # replay the MLP study's winning trial (the default)
+python watch.py GRU                                # replay the full-BPTT GRU winner
+python watch.py GRU --tbptt 8                      # replay the --tbptt 8 winner (also solves it)
+python watch.py GRU --tbptt 4                      # replay the --tbptt 4 winner (watch it guess)
+python watch.py GRU --tbptt 1                      # any study, any of its five seeds
 python control.py                                  # play the env yourself from the keyboard
 ```
 
 `compare.py` draws the winning trial of every finished study on shared axes,
 one figure per metric, into `agents/comparison/`.
 
-`watch.py` replays a trained checkpoint in a pygame window, stepping through
-its evaluation episodes so a run can be watched and compared rather than just
-scored. The commands above are the hand-picked (`no_hpo/`) runs shown by
-default; `--hpo` watches a tuned run instead, and `--seed`, `--tbptt` and a
-steps-per-sec argument select among them. See `python watch.py --help` for
-every flag and in-window control.
+`watch.py` replays a pretrained agent in a pygame window, stepping through its
+50 evaluation mazes so a run can be watched instead of only scored. It loads the
+tuned checkpoints the [Results](#results) table is built from: `--tbptt L` picks
+the study and `--seed` its seed. See `python watch.py --help` for every flag and
+in-window control.
 
 `control.py` loads no model: it opens the exact env the agents train on and
 hands you the controls, so you can walk the corridor yourself, move the
