@@ -1,7 +1,8 @@
 """Watch a trained policy play in a pygame window: reads one checkpoint, trains
-nothing, writes nothing. `watch.py GRU --hpo` opens the GRU's winning trial,
-`watch.py GRU` the hand-picked run; --help lists every flag. The viewer itself
-is Helper.watch_agent in config/helper.py.
+nothing, writes nothing. `watch.py GRU` opens the GRU study's winning trial,
+`watch.py GRU --tbptt 8` the winner of the --tbptt 8 study, and `--no-hpo` the
+hand-picked run instead; --help lists every flag. The viewer itself is
+Helper.watch_agent in config/helper.py.
 """
 
 import argparse
@@ -13,9 +14,9 @@ from config.config_no_hpo import ConfigNoHPO
 def main():
     """Parse the command line, resolve it to exactly one checkpoint, and play
     it. Takes no arguments -- everything comes from argv: model (str, MLP|GRU),
-    steps_per_sec (float), --hpo / --fullscreen (flags), --tbptt (int, GRU
-    only), --seed (int, an INDEX into seed_list), --trial (str, best|N|final,
-    --hpo only). Blocks until the window closes."""
+    steps_per_sec (float), --hpo/--no-hpo and --fullscreen (flags), --tbptt
+    (int, GRU only), --seed (int, an INDEX into seed_list), --trial (str,
+    best|N|final, tuned runs only). Blocks until the window closes."""
     parser = argparse.ArgumentParser(
         description="Watch a trained PPO policy play in a pygame window."
     )
@@ -34,11 +35,14 @@ def main():
         default=None,  # None -> use watch_agent's own default, not duplicated here
         help="agent steps per second (default 2.5)",
     )
+    # Default ON: the tuned runs are what the results are reported from, and
+    # the only ones a fresh clone ships. --no-hpo opts out of them.
     parser.add_argument(
         "--hpo",
-        action="store_true",
-        help="watch the TUNED run (pretrained_model_<ENC>/hpo/) instead of the "
-        "hand-picked one (no_hpo/)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="watch the TUNED run, pretrained_model_<ENC>/hpo/ (the default); "
+        "--no-hpo watches the hand-picked one in no_hpo/ instead",
     )
     parser.add_argument(
         "--tbptt",
@@ -64,21 +68,23 @@ def main():
         help="which seed to watch, as an INDEX into config.seed_list (default 0)",
     )
     # default=None, not "best", so "not given" and "given as best" stay
-    # distinguishable -- that is what makes --trial without --hpo an error.
+    # distinguishable -- that is what makes --trial with --no-hpo an error.
     parser.add_argument(
         "--trial",
         type=str,
         default=None,
         metavar="WHICH",
-        help="with --hpo: 'best' (the winning trial, default), a trial number, "
-        "or 'final' (an accepted alias for 'best')",
+        help="which tuned run: 'best' (the winning trial, default), a trial "
+        "number, or 'final' (an accepted alias for 'best'). Not valid with "
+        "--no-hpo.",
     )
     args = parser.parse_args()
 
     if args.trial is not None and not args.hpo:
         parser.error(
-            f"--trial {args.trial} needs --hpo. A hand-picked run has no trials "
-            f"-- it is one run, in no_hpo/, and --seed alone picks the file."
+            f"--trial {args.trial} cannot be combined with --no-hpo. A "
+            f"hand-picked run has no trials -- it is one run, in no_hpo/, and "
+            f"--seed alone picks the file."
         )
 
     # The flag picks the config class, and the class knows where its own

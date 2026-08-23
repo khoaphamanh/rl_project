@@ -229,64 +229,44 @@ seeds, with $\pm$ denoting the standard deviation across seeds.
     \label{fig:curves}
 \end{figure}
 
-\paragraph{The cut-off is sharp and sits between $L=4$ and $L=8$.}
-Table~\ref{tab:results} and Figure~\ref{fig:curves} answer the first question
-categorically rather than gradually. The arms with $L \in \{8, \infty\}$ solve
-the task, at $1.000$ success on all five seeds and return $0.958$, while $L=4$
+\paragraph{The cut-off is sharp, and eight steps suffice for a seventeen-step
+solution.} Table~\ref{tab:results} and Figure~\ref{fig:curves} answer the first
+question categorically rather than gradually: $L \in \{8, \infty\}$ solve the
+task at $1.000$ success on all five seeds and return $0.958$, while $L=4$
 ($0.500$), $L=1$ ($0.588$) and the MLP ($0.592$) never beat a coin flip, and no
 setting produced an intermediate score such as $0.75$. Carrying $h$ forward is
-therefore not what matters, because every GRU arm does that identically,
-including the ones that fail; what separates them is whether
-the gradient reaches back to the observation that filled $h$, and four steps is
-not far enough while eight is. Reaching further than $8$ adds nothing, since
-full BPTT matches $L=8$ within noise.
-
-\paragraph{Why eight steps suffice for a seventeen-step solution.} The
-$16.8$-step episode is the wrong comparison. Truncation never limits how long the
-policy can \emph{remember}, since the forward pass is untouched and every arm
-carries $h$ across the whole episode; it limits only whether the encoder can
+therefore not what matters, since every GRU arm does that identically, including
+the ones that fail; what separates them is whether the gradient reaches back to
+the observation that filled $h$, and reaching further than $8$ adds nothing, as
+full BPTT matches $L=8$ within noise. Why eight is enough is not explained by
+the $16.8$-step episode, which is the wrong comparison: truncation never limits
+how long the policy can \emph{remember}, only whether the encoder can
 \emph{learn to write} the cue into $h$, which requires the cue observation and
 the rewarded decision to fall inside the same chunk. The interval that must fit
-inside $L$ is therefore the \emph{gap}, the number of actions between the agent's
-last sighting of the cue and its choice at the fork, and not the episode: every
-step before the sighting needs no memory. We measured this gap by breadth-first
-search over the environment's own state and visibility model. It is governed by
-the corridor length, redrawn at every reset
-($\texttt{hallway\_end} \in \{4,\dots,14\}$), together with the fact that the
-$7 \times 7$ view reaches six tiles back from the junction: the shortest
-attainable gap is $2$ for corridors up to $6$ and then grows linearly to $12$ at
-$14$. A gap of at most $8$ is attainable in $62\%$ of mazes, one of at most $4$
-in only $26\%$, and no maze at all can be solved from the spawn within four
-actions, the minimum being five. Replaying the trained checkpoints over the $50$
-evaluation mazes confirms the consequence: cue and decision share a chunk in
-$16\%$ of the $L=8$ agent's episodes and in $0$ of $50$ of the $L=4$ agent's.
-Two further facts explain why partial coverage is sufficient. Because a GRU
-applies the same weights at every timestep, the write rule acquired in short-gap
-episodes transfers to every distance at no cost, so $L=8$ need only cover part of
-the maze distribution rather than its mean; and GAE, computed over the full
-rollout before the split (Eq.~\ref{eq:gae}), carries reward credit across chunk
-boundaries irrespective of $L$, so truncation removes the gradient through $h$
-and not the reward signal. The $L=4$ arm, meanwhile, has an easier target
-available: a blind dash reaches the fork within four actions in $26\%$ of mazes,
-pays $0.5$, and removes the look-back behaviour on which its only learning route
-depends.
-
-\paragraph{The failing arms have solved a different problem.} Mean episode
-length separates two policies more cleanly than return does. At $\approx 16.8$
-steps the solving arms take the detour (turn back, look, return to the fork) and
-pay the small step cost that keeps their return at $0.958$ rather than $1.0$. At
-$7.0$ steps the $L=4$ arm walks straight to the fork and always picks the same
-side, the upper prong on four seeds and the lower on the fifth, on
-\emph{every} maze. The upper prong is correct in exactly $25$ of the $50$
-evaluation mazes, so any fixed side scores exactly $25/50$; its across-seed
-spread of $0.000$ is arithmetic, not convergence. Sub-threshold arms are thus not partially remembering but have settled in a
-stable memory-free optimum, which is easy to reach because the detour costs
-reward immediately and pays nothing until the memory works. The $L=1$ arm
-($9.8$ steps) does the same less tidily and the MLP ($24.3$ steps) wanders
-before guessing; the small excess of these two above $0.5$ is sampling noise
-over $50$ mazes, since their across-seed spreads ($\pm 0.07$ and $\pm 0.03$)
-cover chance comfortably. All three are flat from about iteration $50$ onwards
-in Figure~\ref{fig:curves}, so a larger budget would not rescue them.
+inside $L$ is thus the \emph{gap}, the number of actions between the agent's
+last sighting of the cue and its choice at the fork; every step before the
+sighting needs no memory. Measuring that gap by breadth-first search over the
+environment's own state and visibility model shows it is governed by the
+corridor length, redrawn at every reset
+($\texttt{hallway\_end} \in \{4,\dots,14\}$): because the $7 \times 7$ view
+reaches six tiles back from the junction, the shortest attainable gap is $2$ for
+corridors up to $6$ and then grows linearly to $12$ at $14$. A gap of at most
+$8$ is attainable in $62\%$ of mazes but one of at most $4$ in only $26\%$, and
+no maze at all can be solved from the spawn within four actions, the minimum
+being five; replaying the trained checkpoints over the $50$ evaluation mazes,
+cue and decision share a chunk in $16\%$ of the $L=8$ agent's episodes and in
+$0$ of $50$ of the $L=4$ agent's. Partial coverage suffices because a GRU
+applies the same weights at every timestep, so the write rule acquired in
+short-gap episodes transfers to every distance at no cost, and because GAE,
+computed over the full rollout before the split (Eq.~\ref{eq:gae}), carries
+reward credit across chunk boundaries irrespective of $L$. The failing arms are
+correspondingly not partially remembering: at $7.0$ steps the $L=4$ arm dashes
+straight to the fork and always picks the same side, which scores exactly
+$25/50$ on this evaluation set, so its across-seed spread of $0.000$ is
+arithmetic rather than convergence. That memory-free optimum is easy to reach,
+since the detour costs reward immediately and pays nothing until the memory
+works, and reaching it destroys the look-back behaviour on which the only
+learning route available to $L=4$ depends.
 
 \paragraph{The reach costs memory, not time.} Full BPTT is the fastest GRU arm
 at $1.3$\,h, matching the memoryless MLP, against $1.6$\,h ($L=4$), $2.0$\,h
