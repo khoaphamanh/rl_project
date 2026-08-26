@@ -242,20 +242,20 @@ d_informed <= 16 :  93.9%
 
 mean 11.0, median 11 (p25 8, p75 14), min 5, max 21.
 
-- **8 clears the floor of the task, 4 does not.** The floor is 5 actions --
-  seeing the cue costs at least one turn, and the cheapest route from there is
-  turn-back + forward + turn + forward -- and it is hit in only 99 of the
+- **8 clears the floor of the task, 4 does not.** The floor is 5 actions
+  (seeing the cue costs at least one turn, and the cheapest route from there
+  is turn-back + forward + turn + forward), and it is hit in only 99 of the
   2000 mazes, the ones where the agent spawns exactly at the junction mouth.
   No maze at all is solvable, informed, in 4 actions, so `--tbptt 4` has
   **zero** mazes where the gradient can ever pair the cue with the reward.
-  `--tbptt 8` reaches 29.6% of mazes -- a real, if thin, slice of the short
+  `--tbptt 8` reaches 29.6% of mazes, a real if thin slice of the short
   tail. Replaying the trained checkpoints over the 50 eval mazes confirms it:
   cue and decision share a chunk in 16% of the `--tbptt 8` agent's episodes
   and in **0 of 50** of the `--tbptt 4` agent's.
 - **A GRU is one rule reused at every step.** The write rule learned on a
   6-step episode is the same weight matrix applied at step 14 of a 20-step
   one, so it transfers to every distance for free. `L=8` only has to cover the
-  *tail* of the distribution, not its mean -- which is also why no curriculum
+  *tail* of the distribution, not its mean, which is also why no curriculum
   is needed: every batch already contains all corridor lengths.
 - **Credit still crosses chunk boundaries.** GAE runs over the full rollout
   before the split, so every advantage already reflects the terminal reward.
@@ -392,27 +392,35 @@ roughly 49 h (MLP), 61 h (`--tbptt 1`), 41 h (`--tbptt 4`), 44 h
 
 ## Layout
 
+Only the files a run actually touches:
+
 ```
+main.py                  entry point: Optuna search for one arm
+main_no_hpo.py           entry point: one seed at hand-picked values
+compare.py               entry point: redraw the cross-study figures
+watch.py                 entry point: replay a trained agent in a window
+control.py               entry point: play the env from the keyboard
+requirements.txt         the pinned dependencies
+
 config/
-  config.py         Config: every shared PPO/env/eval/HPO knob. Abstract.
-  config_{mlp,gru}.py   one per encoder; sets the extractor plus its architecture
-                        knobs and appends them to the shared search space
-  config_no_hpo.py  ConfigNoHPO: everything hand-picked, search_space = []
-  helper.py         Helper: env builders, checkpoint I/O, batch-size probing,
-                    Optuna persistence, plotting, both pygame viewers, Timing,
-                    SequenceDataset
+  config.py              Config: every shared PPO/env/eval/HPO knob. Abstract.
+  config_mlp.py          the MLP arm: sets the extractor and appends its
+                         architecture knobs to the shared search space
+  config_gru.py          the GRU arm, same shape
+  config_no_hpo.py       ConfigNoHPO: everything hand-picked, search_space = []
+  helper.py              Helper: env builders, checkpoint I/O, batch-size
+                         probing, Optuna persistence, plotting, both pygame
+                         viewers, Timing, SequenceDataset
 models/
-  feature_extractor.py  MLP / GRU, both mapping
-                        (batch, seq_len, 7, 7, 3) -> (batch, seq_len, hidden_size)
-  model.py              Network: encoder plus linear actor head and critic head
+  feature_extractor.py   MLP / GRU, both mapping
+                         (batch, seq_len, 7, 7, 3) -> (batch, seq_len, hidden_size)
+  model.py               Network: encoder plus linear actor head and critic head
 agents/
-  ppo.py            PPOAgent: rollouts, GAE, sequence batching, clipped loss,
-                    evaluation, the training loop
-  hpo_ppo.py        HPOPPO: wraps PPOAgent in an Optuna study
-figures/
-  make_task_figure.py   regenerates the task figure at the top of this README
-  make_model_figure.py  regenerates the network figure in Training
-main.py  main_no_hpo.py  compare.py  watch.py  control.py      entry points
+  ppo.py                 PPOAgent: rollouts, GAE, sequence batching, clipped
+                         loss, evaluation, the training loop
+  hpo_ppo.py             HPOPPO: wraps PPOAgent in an Optuna study
+  pretrained_model_*/    the five finished studies the results are read from
+  comparison/            where compare.py writes its figures
 ```
 
 ---
